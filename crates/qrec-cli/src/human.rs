@@ -681,17 +681,23 @@ pub(crate) fn sources(inv: &Value) -> Vec<String> {
 }
 
 /// `qrec doctor` from the `DoctorReport` JSON: the lines and whether an
-/// app check (`required`) failed (exit 5). A failed check is `MISSING`
-/// when the app needs it, `off` when only features do (`neededFor`) and
-/// optional otherwise; the global shortcuts for the desktop (`shortcuts`:
-/// its heading, then its text) and a line per feature that is off
-/// (`featuresOff`) come before the verdict.
+/// app check (`required`) failed (exit 5). The session line (`session`:
+/// "Session: X11 (xfce) · screens: x11 (DISPLAY=:0)") comes first, then
+/// the checks: a failed one is `MISSING` when the app needs it, `off` when
+/// only features do (`neededFor`) and optional otherwise; the global
+/// shortcuts for the desktop (`shortcuts`: its heading, then its text) and
+/// a line per feature that is off (`featuresOff`) come before the verdict.
 pub(crate) fn doctor(report: &Value, verbose: u8) -> (Vec<String>, bool) {
     let checks = report
         .get("checks")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let mut lines = Vec::new();
+    if let Some(session) = report.get("session").and_then(Value::as_str) {
+        lines.push(format!("Session: {session}"));
+        lines.push(String::new());
+    }
     let mut failed_required = false;
     let mut rows = Vec::new();
     let mut hints = Vec::new();
@@ -727,7 +733,7 @@ pub(crate) fn doctor(report: &Value, verbose: u8) -> (Vec<String>, bool) {
         }
         rows.push(vec![status.to_owned(), id, detail]);
     }
-    let mut lines = layout(&["STATUS", "CHECK", "DETAIL"], &rows, &[]);
+    lines.extend(layout(&["STATUS", "CHECK", "DETAIL"], &rows, &[]));
     if !hints.is_empty() {
         lines.push(String::new());
         lines.push("How to fix:".to_owned());
@@ -1224,12 +1230,18 @@ mod tests {
         let inv = json!({"warnings": ["screens:  ", "elsewhere: something"]});
         assert_eq!(sources(&inv)[..2], ["Screens", "  none found"]);
 
+        // The session line first (W11), then the checks.
         let report = json!({
             "checks": [
                 {"id": "ffmpeg", "required": true, "neededFor": ["app"], "ok": true, "detail": "8.1.2", "hint": null},
-                {"id": "wl-copy", "required": false, "neededFor": [], "ok": false, "detail": "not found", "hint": "install wl-clipboard"}
+                {"id": "portal.registry", "required": false, "neededFor": [], "ok": false,
+                 "detail": "no host app registry", "hint": "update xdg-desktop-portal to 1.19 or newer"}
             ],
             "featuresOff": [],
+            "platform": {"session": "wayland", "desktop": "sway", "distro": "arch",
+                         "sandbox": "none", "nixShell": false},
+            "screenBackend": "portal",
+            "session": "Wayland (sway) · screens: portal",
             "shortcuts": {"heading": "Global shortcuts for sway (paste into ~/.config/sway/config):",
                           "text": "bindsym $mod+Shift+r exec qrec record toggle\n"},
             "niriSnippet": "binds {\n}",
@@ -1237,10 +1249,20 @@ mod tests {
         });
         let (lines, failed) = doctor(&report, 0);
         assert!(!failed);
-        assert_eq!(lines[1], "ok                  ffmpeg   8.1.2");
-        assert_eq!(lines[2], "missing (optional)  wl-copy  not found");
+        assert_eq!(
+            lines[..5],
+            [
+                "Session: Wayland (sway) · screens: portal",
+                "",
+                "STATUS              CHECK            DETAIL",
+                "ok                  ffmpeg           8.1.2",
+                "missing (optional)  portal.registry  no host app registry",
+            ]
+        );
         assert!(
-            lines.contains(&"  wl-copy: install wl-clipboard".to_owned()),
+            lines.contains(
+                &"  portal.registry: update xdg-desktop-portal to 1.19 or newer".to_owned()
+            ),
             "{lines:?}"
         );
         // The desktop's shortcuts, not niri's.
@@ -1266,31 +1288,36 @@ mod tests {
         );
 
         // Only features off: exit 0, a line each, and no claim that Qrec
-        // can't record or export.
+        // can't record or export. (An X server out of reach: no screens.)
         let screens_off = json!({
             "checks": [
                 {"id": "ffmpeg", "required": true, "neededFor": ["app"], "ok": true, "detail": "8.1.2", "hint": null},
-                {"id": "portal.screencast", "required": false, "neededFor": ["screens"], "ok": false,
-                 "detail": "no ScreenCast portal: no session bus", "hint": "install xdg-desktop-portal"}
+                {"id": "x11.randr", "required": false, "neededFor": ["screens"], "ok": false,
+                 "detail": "X11 (DISPLAY=:0): can't connect: no X server listens there",
+                 "hint": "check that DISPLAY=:0 names a running X server"}
             ],
-            "featuresOff": [{"feature": "screens", "checks": ["portal.screencast"],
-                             "message": "Screen capture is off: no ScreenCast portal: no session bus"}],
+            "featuresOff": [{"feature": "screens", "checks": ["x11.randr"],
+                             "message": "Screen capture is off: X11 (DISPLAY=:0): can't connect: no X server listens there"}],
+            "session": "X11 (xfce) · screens: x11 (DISPLAY=:0)",
             "va": null
         });
         let (lines, failed) = doctor(&screens_off, 0);
         assert!(!failed);
+        assert_eq!(lines[0], "Session: X11 (xfce) · screens: x11 (DISPLAY=:0)");
         assert_eq!(
-            lines[2],
-            "off     portal.screencast  no ScreenCast portal: no session bus"
+            lines[4],
+            "off     x11.randr  X11 (DISPLAY=:0): can't connect: no X server listens there"
         );
         assert!(
-            lines.contains(&"  portal.screencast: install xdg-desktop-portal".to_owned()),
+            lines.contains(
+                &"  x11.randr: check that DISPLAY=:0 names a running X server".to_owned()
+            ),
             "{lines:?}"
         );
         assert_eq!(
             &lines[lines.len() - 2..],
             [
-                "Screen capture is off: no ScreenCast portal: no session bus",
+                "Screen capture is off: X11 (DISPLAY=:0): can't connect: no X server listens there",
                 "Everything else Qrec needs is here."
             ]
         );

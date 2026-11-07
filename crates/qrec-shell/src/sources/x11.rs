@@ -26,7 +26,11 @@
 //! engine, which grabs an X11 screen as a fixed part of the root window:
 //! the root's `ConfigureNotify` (its size, and RandR 1.5 sends one when a
 //! monitor is set or deleted) and RandR's screen, CRTC and output
-//! notifications wake it.
+//! notifications wake it. [`server`] is what `qrec doctor` asks: the
+//! server's RandR version and the screens discovery reads.
+//!
+//! A display nothing listens on (no socket, a refused port) is "can't
+//! connect: no X server listens there", not the socket's `ENOENT`.
 
 use std::io;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -45,7 +49,7 @@ use x11rb::reexports::x11rb_protocol::xauth::{Family, get_auth};
 use x11rb::rust_connection::{DefaultStream, PollMode, RustConnection, Stream};
 use x11rb::utils::RawFdContainer;
 
-use super::{X11_TIMEOUT, X11Layout};
+use super::{X11_TIMEOUT, X11Layout, X11Server};
 
 /// The name of the root-window fallback.
 const ROOT_NAME: &str = "screen";
@@ -56,6 +60,9 @@ const EDID_LONGS: u32 = 128 / 4;
 /// How often a [`watch`] with nothing to read looks at its stop flag.
 const WATCH_TICK: Duration = Duration::from_millis(200);
 
+/// The RandR version discovery asks for: 1.5's `GetMonitors`.
+const MONITORS_VERSION: (u32, u32) = (1, 5);
+
 /// The size of the root window (width, height) of the X server at
 /// `display`, and its screens, within `timeout`. `Err` when it can't be
 /// reached or doesn't answer in time.
@@ -63,16 +70,45 @@ pub(super) fn monitors(
     display: &str,
     timeout: Duration,
 ) -> Result<((u32, u32), Vec<ScreenInfo>), String> {
+    ask(display, timeout, |conn, screen| {
+        read_screens(conn, screen).map_err(|e| format!("can't read its monitors: {e}"))
+    })
+}
+
+/// What `qrec doctor` asks the X server at `display`, within `timeout`:
+/// the RandR version it speaks (up to x11rb's, 1.6; `None` without the
+/// extension) and its screens, read as [`monitors`] reads them. `Err` as
+/// [`monitors`]'s.
+pub(super) fn server(display: &str, timeout: Duration) -> Result<X11Server, String> {
+    ask(display, timeout, read_server)
+}
+
+/// [`server`]'s requests, on a connection to `screen`'s server.
+fn read_server(conn: &impl Connection, screen: usize) -> Result<X11Server, String> {
+    let randr = fallback(randr_version(conn, randr::X11_XML_VERSION), "QueryVersion")
+        .map_err(|e| format!("can't ask for its RandR version: {e}"))?
+        .flatten();
+    let (_, screens) =
+        read_screens(conn, screen).map_err(|e| format!("can't read its monitors: {e}"))?;
+    Ok(X11Server { randr, screens })
+}
+
+/// `ask` on a connection to the X server at `display`, on a helper thread
+/// the caller waits for at most `timeout`; the thread's connect and every
+/// wait on the connection end at the same deadline.
+fn ask<T: Send + 'static>(
+    display: &str,
+    timeout: Duration,
+    ask: impl FnOnce(&RustConnection<DeadlineStream>, usize) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
     let deadline = Instant::now() + timeout;
     let (tx, rx) = crossbeam_channel::bounded(1);
     let name = display.to_owned();
     std::thread::Builder::new()
         .name("qrec-x11-screens".into())
         .spawn(move || {
-            let screens = connect(&name, deadline).and_then(|(conn, screen)| {
-                read_screens(&conn, screen).map_err(|e| format!("can't read its monitors: {e}"))
-            });
-            let _ = tx.send(screens);
+            let answer = connect(&name, deadline).and_then(|(conn, screen)| ask(&conn, screen));
+            let _ = tx.send(answer);
         })
         .map_err(|e| format!("can't start the X11 discovery thread: {e}"))?;
     rx.recv_timeout(timeout)
@@ -144,7 +180,7 @@ fn select_changes(conn: &impl Connection, window: xproto::Window) -> Result<(), 
     let structure =
         xproto::ChangeWindowAttributesAux::new().event_mask(xproto::EventMask::STRUCTURE_NOTIFY);
     conn.change_window_attributes(window, &structure)?.check()?;
-    if randr_version(conn)?.is_some() {
+    if randr_version(conn, MONITORS_VERSION)?.is_some() {
         let notify = randr::NotifyMask::SCREEN_CHANGE
             | randr::NotifyMask::CRTC_CHANGE
             | randr::NotifyMask::OUTPUT_CHANGE;
@@ -189,7 +225,7 @@ fn connect(
 ) -> Result<(RustConnection<DeadlineStream>, usize), String> {
     let parsed = parse_display(Some(display)).map_err(|e| format!("can't use it: {e}"))?;
     let screen = usize::from(parsed.screen);
-    let mut first_error = None;
+    let mut errors = Vec::new();
     for address in parsed.connect_instruction() {
         match open(&address, deadline) {
             Ok((stream, (family, peer))) => {
@@ -204,15 +240,25 @@ fn connect(
                 .map_err(|e| format!("can't connect: {e}"))?;
                 return Ok((conn, screen));
             }
-            Err(e) => {
-                first_error.get_or_insert(e);
-            }
+            Err(e) => errors.push(e),
         }
     }
-    Err(match first_error {
-        Some(e) => format!("can't connect: {e}"),
+    Err(match errors.first() {
         None => "can't connect: no address to try".to_owned(),
+        Some(_) if errors.iter().all(nothing_listens) => {
+            "can't connect: no X server listens there".to_owned()
+        }
+        Some(first) => format!("can't connect: {first}"),
     })
+}
+
+/// A connect that found no server at its address: no socket file (the
+/// usual answer when nothing runs on the display), or a refused port.
+fn nothing_listens(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+    )
 }
 
 /// `DefaultStream::connect`, whose TCP connect (a `host:N` display) gives
@@ -358,7 +404,7 @@ pub(super) fn read_screens(
         },
     };
     let whole = (u32::from(size.width), u32::from(size.height));
-    let version = fallback(randr_version(conn), "QueryVersion")?.flatten();
+    let version = fallback(randr_version(conn, MONITORS_VERSION), "QueryVersion")?.flatten();
     if version >= Some((1, 5)) {
         let screens = fallback(monitor_replies(conn, window), "GetMonitors")?
             .map(|monitors| from_monitors(&monitors, size));
@@ -398,16 +444,19 @@ fn root_geometry(
     conn.get_geometry(window)?.reply()
 }
 
-/// The server's RandR version (at most the 1.5 asked for); `None` without
-/// the extension.
-fn randr_version(conn: &impl Connection) -> Result<Option<(u32, u32)>, ReplyError> {
+/// The server's RandR version, at most the `asked` one (the server answers
+/// with the lower of the two); `None` without the extension.
+fn randr_version(
+    conn: &impl Connection,
+    (major, minor): (u32, u32),
+) -> Result<Option<(u32, u32)>, ReplyError> {
     if conn
         .extension_information(randr::X11_EXTENSION_NAME)?
         .is_none()
     {
         return Ok(None);
     }
-    let reply = conn.randr_query_version(1, 5)?.reply()?;
+    let reply = conn.randr_query_version(major, minor)?.reply()?;
     Ok(Some((reply.major_version, reply.minor_version)))
 }
 
@@ -1008,7 +1057,27 @@ mod tests {
             summary(&from_crtcs(&crtcs, ROOT)),
             [row("screen", "screen", (0, 0, 1920, 1080))]
         );
-        assert_eq!(randr_version(&conn).unwrap(), Some((1, 5)));
+        // The server answers with the lower of its version and the asked one.
+        assert_eq!(
+            randr_version(&conn, MONITORS_VERSION).unwrap(),
+            Some((1, 5))
+        );
+        assert_eq!(
+            randr_version(&conn, randr::X11_XML_VERSION).unwrap(),
+            Some((1, 6))
+        );
+        // The doctor's question: Xvfb's RandR 1.6 and the screens
+        // discovery lists.
+        let server = read_server(&conn, screen).unwrap();
+        assert_eq!(server.randr, Some((1, 6)));
+        assert_eq!(
+            summary(&server.screens),
+            [
+                row("VIRT-L", "VIRT-L", (0, 0, 960, 1080)),
+                row("screen", "screen", (0, 0, 1920, 1080)),
+                row("VIRT-R", "VIRT-R", (960, 0, 960, 1080)),
+            ]
+        );
     }
 
     /// A watch reads the monitors at once, then again after each change: a
@@ -1082,16 +1151,27 @@ mod tests {
         assert!(told.elapsed() < WATCH_TICK * 5, "{:?}", told.elapsed());
     }
 
-    /// Nothing listens there: an error well within the timeout. (A
-    /// display number no test server takes; its socket doesn't exist.)
+    /// Nothing listens there: an error well within the timeout that says
+    /// so, not the socket's "No such file or directory". (A display number
+    /// no test server takes: its socket doesn't exist, its port refuses.)
     #[test]
     fn an_unreachable_display_is_an_error() {
         let started = Instant::now();
         let err = monitors(":59000", Duration::from_secs(2)).unwrap_err();
-        assert!(err.starts_with("can't connect: "), "{err}");
+        assert_eq!(err, "can't connect: no X server listens there");
         assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            server(":59000", Duration::from_secs(2)).unwrap_err(),
+            "can't connect: no X server listens there"
+        );
         let err = monitors("not a display", Duration::from_secs(2)).unwrap_err();
         assert!(err.starts_with("can't use it: "), "{err}");
+        // Only a missing server reads so; another failure keeps its words.
+        let missing = io::Error::from(io::ErrorKind::NotFound);
+        let refused = io::Error::from(io::ErrorKind::ConnectionRefused);
+        let denied = io::Error::from(io::ErrorKind::PermissionDenied);
+        assert!(nothing_listens(&missing) && nothing_listens(&refused));
+        assert!(!nothing_listens(&denied));
     }
 
     /// A server that accepts the connection and never answers (a stopped

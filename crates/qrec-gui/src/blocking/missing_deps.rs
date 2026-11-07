@@ -648,6 +648,7 @@ impl PageView for MissingDepsView {
 
 #[cfg(test)]
 mod tests {
+    use qrec_core::ctx::ScreenBackendKind;
     use qrec_core::keymap::global_snippet;
     use qrec_core::platform::{Need, PlatformEnv, detect, install_hint};
     use qrec_core::view::blocking::BlockingAction;
@@ -659,7 +660,11 @@ mod tests {
     /// command is the doctor's fix for this machine.
     #[test]
     fn the_rows_read_the_doctors_checks() {
-        let debian = detect(&PlatformEnv::default().with_os_release("ID=debian\n"));
+        let debian = detect(
+            &PlatformEnv::default()
+                .with("DISPLAY", ":0")
+                .with_os_release("ID=debian\n"),
+        );
         let fix = install_hint(Need::GstGtk4, &debian);
         let report = DoctorReport {
             checks: vec![
@@ -674,11 +679,11 @@ mod tests {
                     fix: Some(fix.clone()),
                 },
                 Check {
-                    id: "wl-copy".into(),
+                    id: "x11.randr".into(),
                     required: false,
-                    needed_for: vec![],
+                    needed_for: vec![Feature::Screens],
                     ok: true,
-                    detail: "/run/current-system/sw/bin/wl-copy".into(),
+                    detail: "RandR 1.6: 1 screen (eDP-1)".into(),
                     hint: None,
                     fix: None,
                 },
@@ -686,6 +691,8 @@ mod tests {
             features_off: vec![],
             shortcuts: global_snippet(&debian.desktop),
             platform: debian,
+            screen_backend: ScreenBackendKind::X11,
+            session: "X11 · screens: x11 (DISPLAY=:0)".into(),
             niri_snippet: String::new(),
             va: None,
         };
@@ -702,10 +709,10 @@ mod tests {
                     fix: Some(fix),
                 },
                 CheckView {
-                    id: "wl-copy".into(),
+                    id: "x11.randr".into(),
                     required: false,
                     ok: true,
-                    detail: "/run/current-system/sw/bin/wl-copy".into(),
+                    detail: "RandR 1.6: 1 screen (eDP-1)".into(),
                     hint: None,
                     fix: None,
                 },

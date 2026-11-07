@@ -1361,9 +1361,9 @@ mod tests {
     }
 
     /// S23 from a report where the app and some features fail together
-    /// (`doctor::run` on Debian without gst-libav, Xfce on Xorg, ffmpeg
-    /// without libx264, PulseAudio 15): the app's rows alone, with
-    /// Debian's fixes.
+    /// (`doctor::run` on Debian without gst-libav, Xfce on an X server
+    /// without RandR and a GStreamer without ximagesrc, ffmpeg without
+    /// libx264, PulseAudio 15): the app's rows alone, with Debian's fixes.
     #[test]
     fn s23_from_a_mixed_report() {
         let xfce = host(DistroFamily::Debian, Desktop::Xfce, SessionType::X11);
@@ -1391,10 +1391,10 @@ mod tests {
                 &xfce,
             ),
             failed(
-                "portal.screencast",
+                "gst.ximagesrc",
                 false,
-                "no ScreenCast portal: busctl exited with status 1",
-                Need::ScreenCastPortal,
+                "ximagesrc (X11 screen capture) isn't in the GStreamer registry",
+                Need::GstPluginsGood,
                 &xfce,
             ),
             check(
@@ -1405,10 +1405,10 @@ mod tests {
                 Some("update the PulseAudio client tools (pactl) to 16 or newer"),
             ),
             failed(
-                "wl-copy",
+                "x11.randr",
                 false,
-                "not found: saved frames can't be copied to the clipboard",
-                Need::WlClipboard,
+                "the X server has no RandR: Qrec records its whole screen (1920x1080) as one",
+                Need::RandR,
                 &xfce,
             ),
             check("ffmpeg", true, true, "ffmpeg version 8.1.2", None),

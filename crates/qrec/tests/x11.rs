@@ -75,6 +75,15 @@ impl X11Setup {
     /// `qrec <args>` in `dir` on the X server, with `vars` on top: whether
     /// it succeeded, its one JSON object on stdout and its stderr.
     fn run(&self, dir: &Path, args: &[&str], vars: &[(&str, &str)]) -> (bool, Value, String) {
+        let (success, stdout, stderr) = self.run_text(dir, args, vars);
+        let reply = serde_json::from_str(stdout.trim())
+            .unwrap_or_else(|e| panic!("qrec {args:?}: {stdout}: {e}\n{stderr}"));
+        (success, reply, stderr)
+    }
+
+    /// `qrec <args>` in `dir` on the X server, with `vars` on top: whether
+    /// it succeeded, its stdout and its stderr.
+    fn run_text(&self, dir: &Path, args: &[&str], vars: &[(&str, &str)]) -> (bool, String, String) {
         let mut path = OsString::from(&self.bin);
         path.push(":");
         path.push(std::env::var_os("PATH").unwrap_or_default());
@@ -92,10 +101,8 @@ impl X11Setup {
             )
             .envs(vars.iter().copied());
         let out = run_tool(&mut command, Duration::from_secs(120));
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let reply = serde_json::from_str(stdout.trim())
-            .unwrap_or_else(|e| panic!("qrec {args:?}: {stdout}: {e}\n{}", out.stderr));
-        (out.status.success(), reply, out.stderr)
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        (out.status.success(), stdout, out.stderr)
     }
 
     /// What the fake `niri` was run with, one line per run.
@@ -165,6 +172,105 @@ fn x11_screens_are_the_randr_monitors() {
     let layer = &status["data"]["project"]["scene"]["layers"][0];
     assert_eq!(layer["source"]["output"], "VIRT-R", "{layer}");
     assert_eq!(x.niri_calls(), "", "niri msg never runs on X11");
+}
+
+/// `qrec doctor` on the X server (W11): the session line says X11 and
+/// its display; ximagesrc and the server (Xvfb's RandR 1.6 and the three
+/// screens discovery lists) are what screen capture needs; no portal is
+/// asked (there is no session bus here, which X11 doesn't need) and no
+/// PipeWire socket looked for; exit 0. A display nothing listens on turns
+/// screen capture off in discovery's words. A configured VA device that
+/// is no render node keeps the GPU probes out of it.
+#[test]
+#[ignore = "starts a private Xvfb (scripts/check-full)"]
+fn x11_doctor_checks_the_x_server_and_no_portal() {
+    let x = X11Setup::new();
+    let dir = x.env.empty_dir("doctor");
+    let config_dir = x.env.config_home().join("qrec");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        "[encoder]\nvaapi_device = \"/nonexistent/renderD999\"\n",
+    )
+    .unwrap();
+    let display = x.xvfb.display();
+    let randr = "RandR 1.6: 3 screens (VIRT-L, screen, VIRT-R)";
+
+    let (success, out, stderr) = x.run_text(&dir, &["doctor"], &[]);
+    assert!(success, "{out}\n{stderr}");
+    assert!(
+        out.starts_with(&format!(
+            "Session: X11 · screens: x11 (DISPLAY={display})\n\n"
+        )),
+        "{out}"
+    );
+    let row = |id: &str| {
+        out.lines()
+            .find(|line| line.split_whitespace().nth(1) == Some(id))
+            .unwrap_or_else(|| panic!("no {id} row in:\n{out}"))
+    };
+    assert!(row("gst.ximagesrc").starts_with("ok "), "{out}");
+    let x11_row = row("x11.randr");
+    assert!(
+        x11_row.starts_with("ok ") && x11_row.ends_with(randr),
+        "{out}"
+    );
+    for absent in ["portal.", "pipewire.daemon", "gst.pipewiresrc", "wl-copy"] {
+        assert!(!out.contains(absent), "{absent}: {out}");
+    }
+    assert!(!out.contains("Screen capture is off"), "{out}");
+
+    let (success, reply, stderr) = x.run(&dir, &["--json", "doctor"], &[]);
+    assert!(success, "{reply}\n{stderr}");
+    let report = &reply["data"];
+    assert_eq!(report["screenBackend"], "x11", "{report}");
+    assert_eq!(report["platform"]["session"], "x11", "{report}");
+    let checks = report["checks"].as_array().expect("the checks");
+    let check = |id: &str| {
+        checks
+            .iter()
+            .find(|c| c["id"] == id)
+            .unwrap_or_else(|| panic!("no {id}: {report}"))
+    };
+    for id in ["gst.ximagesrc", "x11.randr"] {
+        let c = check(id);
+        assert_eq!(
+            (&c["ok"], &c["neededFor"]),
+            (&Value::Bool(true), &serde_json::json!(["screens"])),
+            "{c}"
+        );
+    }
+    assert_eq!(check("x11.randr")["detail"], randr);
+    let off: Vec<&str> = report["featuresOff"]
+        .as_array()
+        .expect("featuresOff")
+        .iter()
+        .map(|f| f["feature"].as_str().expect("a feature"))
+        .collect();
+    assert!(!off.contains(&"screens"), "{report}");
+
+    // Nothing listens on that display (a number no test server takes):
+    // screen capture is off, as discovery says why.
+    let gone = ":59000";
+    let (success, reply, stderr) = x.run(&dir, &["--json", "doctor"], &[("DISPLAY", gone)]);
+    assert!(success, "{reply}\n{stderr}");
+    let report = &reply["data"];
+    let why = format!("X11 (DISPLAY={gone}): can't connect: no X server listens there");
+    let randr = report["checks"]
+        .as_array()
+        .expect("the checks")
+        .iter()
+        .find(|c| c["id"] == "x11.randr")
+        .unwrap_or_else(|| panic!("no x11.randr: {report}"));
+    assert_eq!(
+        (&randr["ok"], &randr["detail"]),
+        (&Value::Bool(false), &Value::from(why.as_str()))
+    );
+    assert_eq!(
+        report["featuresOff"][0]["message"],
+        format!("Screen capture is off: {why}"),
+        "{report}"
+    );
 }
 
 /// `QREC_SCREEN_BACKEND=portal` overrides the session: the Wayland path

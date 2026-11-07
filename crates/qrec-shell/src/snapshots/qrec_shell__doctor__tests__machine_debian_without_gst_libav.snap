@@ -285,6 +285,16 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
         "required": false
       },
       {
+        "detail": "/run/user/1000/pipewire-0 (the portal's screen casts)",
+        "hint": null,
+        "id": "pipewire.daemon",
+        "neededFor": [
+          "screens"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
         "detail": "xdg-desktop-portal ScreenCast v5 (monitors, windows, virtual)",
         "hint": null,
         "id": "portal.screencast",
@@ -323,14 +333,6 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
         "required": false
       },
       {
-        "detail": "/nix/bin/wl-copy",
-        "hint": null,
-        "id": "wl-copy",
-        "neededFor": [],
-        "ok": true,
-        "required": false
-      },
-      {
         "detail": "/dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=iHD · ffmpeg h264_vaapi works",
         "hint": null,
         "id": "vaapi",
@@ -348,6 +350,8 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
       "sandbox": "none",
       "session": "wayland"
     },
+    "screenBackend": "portal",
+    "session": "Wayland (gnome) · screens: portal",
     "shortcuts": {
       "button": "Copy snippet",
       "desktop": "gnome",
@@ -384,6 +388,8 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
   "text": [
     "Qrec doctor",
     "",
+    "Session: Wayland (gnome) · screens: portal",
+    "",
     "  ok        gstreamer              GStreamer 1.26.11",
     "  ok        gst.pipewiresrc        pipewiresrc (screen capture)",
     "  ok        gst.v4l2src            v4l2src (cameras)",
@@ -413,11 +419,11 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "  ok        ffmpeg.libvpx-vp9      libvpx-vp9 (WebM exports)",
     "  ok        ffmpeg.libopus         libopus (WebM audio)",
     "  ok        ffmpeg.libsvtav1       libsvtav1 (AV1 WebM exports)",
+    "  ok        pipewire.daemon        /run/user/1000/pipewire-0 (the portal's screen casts)",
     "  ok        portal.screencast      xdg-desktop-portal ScreenCast v5 (monitors, windows, virtual)",
     "  ok        portal.registry        host app registry v1",
     "  ok        pactl                  pactl 17.0 (/nix/bin/pactl)",
     "  ok        sound.server           PulseAudio (on PipeWire 1.6.6)",
-    "  ok        wl-copy                /nix/bin/wl-copy",
     "  ok        vaapi                  /dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=iHD · ffmpeg h264_vaapi works",
     "",
     "VA-API render nodes: /dev/dri/renderD128 (Intel)",

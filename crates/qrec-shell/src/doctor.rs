@@ -6,8 +6,13 @@
 //! - the app itself: GStreamer ≥ 1.24 (initialized under the init
 //!   watchdog), GES, the preview's elements and a software H.264 decoder,
 //!   ffmpeg/ffprobe with the decoders and the demuxer the takes need;
-//! - screen capture: the ScreenCast portal (D-Bus, with a timeout; v3
-//!   works with the picker on every take) and pipewiresrc;
+//! - screen capture, as the session's screen backend records it
+//!   (`capture::ScreenBackend`): under the portal, pipewiresrc, the
+//!   PipeWire daemon's socket (a file system check) and the ScreenCast
+//!   portal (D-Bus, with a timeout; v3 works with the picker on every
+//!   take); on X11, ximagesrc and the X server (connected within 2 s, its
+//!   RandR version and the screens discovery lists), never the portal;
+//!   without a display, nothing records screens;
 //! - cameras: v4l2src; audio capture: pulsesrc, `pactl` 16 or newer and
 //!   the sound server it reaches (PipeWire or PulseAudio);
 //! - recording: an H.264 encoder (the `va*h264enc`, else the
@@ -17,13 +22,14 @@
 //!   on the render node once the h264_vaapi check passed, else libx264,
 //!   else libopenh264).
 //!
-//! Checks nothing needs only inform: the optional `wl-copy`, the portal's
-//! app registry and the VA-API report (render nodes, the effective device,
-//! `LIBVA_DRIVER_NAME`, the h264_vaapi export check as a 10 s child
-//! process; NVIDIA nodes are never probed). The report also says where
-//! Qrec runs (`platform::current`) and how to bind the global shortcuts
-//! there (SPEC §10.2, `keymap::global_snippet`: niri's KDL, sway's
-//! `bindsym`, GNOME's custom shortcuts, …).
+//! Checks nothing needs only inform: the portal's app registry, an X
+//! server without RandR (its whole screen is one) and the VA-API report
+//! (render nodes, the effective device, `LIBVA_DRIVER_NAME`, the
+//! h264_vaapi export check as a 10 s child process; NVIDIA nodes are never
+//! probed). The report also says where Qrec runs (`platform::current`, and
+//! the screen backend: its session line) and how to bind the global
+//! shortcuts there (SPEC §10.2, `keymap::global_snippet`: niri's KDL,
+//! sway's `bindsym`, GNOME's custom shortcuts, …).
 //!
 //! Only a failed app check is `missing_dependency` (JSON `required`, exit
 //! 5, and the GUI's "The swamp is missing something" page, which lists
@@ -42,21 +48,23 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use qrec_core::ctx::ScreenBackendKind;
 use qrec_core::keymap::{GlobalSnippet, NIRI_SNIPPET, global_snippet};
 use qrec_core::media_argv::vaapi_check_argv;
 use qrec_core::platform::{Hint, Need, VaGpu, install_hint};
 use qrec_core::{CoreError, ErrorCode};
 use serde::{Deserialize, Serialize};
 
+use crate::capture::ScreenBackend;
 use crate::gpu::{
     self, DeviceOrigin, VENDOR_AMD as PCI_AMD, VENDOR_INTEL as PCI_INTEL,
     VENDOR_NVIDIA as PCI_NVIDIA, libva_driver_for, vendor_name,
 };
-use crate::platform::HostPlatform;
-use crate::sources;
+use crate::platform::{Desktop, HostPlatform, SessionType};
+use crate::sources::{self, X11Server};
 
 /// The exit code when an app check fails (`missing_dependency`).
 pub const MISSING_DEPENDENCY_EXIT: u8 = 5;
@@ -84,6 +92,16 @@ pub struct DoctorReport {
     pub features_off: Vec<FeatureOff>,
     /// Where Qrec runs.
     pub platform: HostPlatform,
+    /// How screens are listed and recorded there, which the screen checks
+    /// follow: the session's `ScreenBackend`, with the same values as
+    /// `qrec sources list` (`portal`, `x11` or `none`). Under the fake
+    /// capture backend this is still the session's backend, where
+    /// `sources list` says `portal`.
+    pub screen_backend: ScreenBackendKind,
+    /// The session line for people: the session, its desktop and the
+    /// screen backend with its display, "X11 (xfce) · screens: x11
+    /// (DISPLAY=:0)" (the text prints it as "Session: …").
+    pub session: String,
     /// How to bind the global shortcuts on `platform`'s desktop.
     pub shortcuts: GlobalSnippet,
     /// SPEC §10.2's niri binds, whatever the desktop: `shortcuts` replaced
@@ -251,9 +269,10 @@ pub struct PortalInfo {
 /// How to run the checks.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DoctorOptions {
-    /// `QREC_CAPTURE_BACKEND=fake`: test sources instead of the portal,
-    /// cameras and PipeWire, x264enc (else openh264enc) for recordings and
-    /// libx264 (else libopenh264) for MP4 exports.
+    /// `QREC_CAPTURE_BACKEND=fake`: test sources instead of the screen
+    /// backend, cameras and PipeWire (their checks only inform), x264enc
+    /// (else openh264enc) for recordings and libx264 (else libopenh264) for
+    /// MP4 exports.
     pub fake_backend: bool,
     /// `recording.vaapiDevice` of the project in scope, if any.
     pub project_vaapi_device: Option<String>,
@@ -299,7 +318,17 @@ pub trait Probe {
     fn ffmpeg_decoders(&self) -> Result<BTreeMap<String, String>, String>;
     /// `ffmpeg -demuxers` names (`matroska,webm` is both).
     fn ffmpeg_demuxers(&self) -> Result<BTreeSet<String>, String>;
+    /// The session's screen backend (`ScreenBackend::from_env`): which
+    /// screen checks run.
+    fn screen_backend(&self) -> ScreenBackend;
+    /// Whether a Unix socket is at `path` (the file system only: nothing
+    /// connects to it); `Err` says what is there instead, if anything.
+    fn unix_socket(&self, path: &Path) -> Result<(), String>;
+    /// The ScreenCast portal (asked only when the portal records screens).
     fn portal(&self) -> Result<PortalInfo, String>;
+    /// The X server at `display` (`sources::x11_server`: connected within
+    /// 2 s); `Err` is discovery's warning (`X11 (DISPLAY=:1): …`).
+    fn x11(&self, display: &str) -> Result<X11Server, String>;
     /// The first line of `pactl --version` (`pactl 17.0`).
     fn pactl_version(&self) -> Result<String, String>;
     /// `pactl --format=json info` → `server_name`.
@@ -327,10 +356,11 @@ pub fn run(opts: &DoctorOptions) -> DoctorReport {
 /// Runs every check against `probe`.
 pub fn run_with(probe: &dyn Probe, opts: &DoctorOptions) -> DoctorReport {
     let platform = probe.platform();
+    let screens = probe.screen_backend();
     let fix = |need| install_hint(need, &platform);
     let mut checks = Vec::new();
     // Asked only once GStreamer works: a stuck plugin scan isn't waited for twice.
-    let gst_va_encoders = gstreamer_checks(probe, opts, &fix, &mut checks);
+    let gst_va_encoders = gstreamer_checks(probe, opts, &screens, &fix, &mut checks);
     let va = va_report(probe, opts, gst_va_encoders.clone().unwrap_or_default());
     if gst_va_encoders.is_some() {
         encoder_checks(&va, opts, &fix, &mut checks);
@@ -345,26 +375,40 @@ pub fn run_with(probe: &dyn Probe, opts: &DoctorOptions) -> DoctorReport {
         });
     }
     ffmpeg_checks(probe, &va, opts, &fix, &mut checks);
-    desktop_checks(probe, opts, &fix, &mut checks);
-    checks.push(match probe.which("wl-copy") {
-        Some(path) => ok("wl-copy", NOTHING, path.display().to_string()),
-        None => fail_fix(
-            "wl-copy",
-            NOTHING,
-            "not found: saved frames can't be copied to the clipboard",
-            fix(Need::WlClipboard),
-        ),
-    });
+    // The fake backend captures test sources: it needs none of these.
+    let real = |features: &'static [Feature]| {
+        if opts.fake_backend { NOTHING } else { features }
+    };
+    screen_checks(probe, &screens, real(SCREENS), &fix, &mut checks);
+    audio_checks(probe, real(AUDIO), &fix, &mut checks);
     let cpu = on_the_cpu(&checks);
     checks.push(va_check(&va, &fix, cpu));
     DoctorReport {
         features_off: features_off(&checks),
         checks,
         shortcuts: global_snippet(&platform.desktop),
+        session: session_line(&platform, &screens),
+        screen_backend: sources::backend_kind(&screens),
         platform,
         niri_snippet: NIRI_SNIPPET.to_owned(),
         va: Some(va),
     }
+}
+
+/// [`DoctorReport::session`]: the session ("no display" without one), its
+/// desktop when known, and the screen backend as [`ScreenBackend`] says
+/// it (`portal`, `x11 (DISPLAY=:0)` or `none`).
+fn session_line(platform: &HostPlatform, screens: &ScreenBackend) -> String {
+    let session = match platform.session {
+        SessionType::Wayland => "Wayland",
+        SessionType::X11 => "X11",
+        SessionType::Unknown => "no display",
+    };
+    let desktop = match &platform.desktop {
+        Desktop::Unknown => String::new(),
+        desktop => format!(" ({})", desktop.as_str()),
+    };
+    format!("{session}{desktop} · screens: {screens}")
 }
 
 /// The fix of a [`Need`] where Qrec runs (`run_with`'s platform).
@@ -463,14 +507,36 @@ struct Element {
     real_only: bool,
 }
 
+/// What records the portal's screens (its PipeWire streams).
+const PIPEWIRESRC: Element = Element {
+    name: "pipewiresrc",
+    role: "screen capture",
+    need: Need::GstPipewire,
+    needed_for: SCREENS,
+    real_only: true,
+};
+
+/// What records an X server's screens (parts of its root window).
+const XIMAGESRC: Element = Element {
+    name: "ximagesrc",
+    role: "screen capture",
+    need: Need::GstPluginsGood,
+    needed_for: SCREENS,
+    real_only: true,
+};
+
+/// The element that records screens under `screens`; none without a
+/// display.
+fn screen_element(screens: &ScreenBackend) -> Option<&'static Element> {
+    match screens {
+        ScreenBackend::Portal => Some(&PIPEWIRESRC),
+        ScreenBackend::X11 { .. } => Some(&XIMAGESRC),
+        ScreenBackend::None => None,
+    }
+}
+
+/// The rest, after the screens' element ([`screen_element`]).
 const ELEMENTS: &[Element] = &[
-    Element {
-        name: "pipewiresrc",
-        role: "screen capture",
-        need: Need::GstPipewire,
-        needed_for: SCREENS,
-        real_only: true,
-    },
     Element {
         name: "v4l2src",
         role: "cameras",
@@ -578,11 +644,13 @@ const FAKE_ELEMENTS: &[Element] = &[
 ];
 
 /// The GStreamer checks but the encoders' and GES's: the version, the
-/// elements and the H.264 decoder. Returns the VA H.264 encoders when
-/// GStreamer works, `None` when it doesn't.
+/// elements (the one that records `screens` first) and the H.264 decoder.
+/// Returns the VA H.264 encoders when GStreamer works, `None` when it
+/// doesn't.
 fn gstreamer_checks(
     probe: &dyn Probe,
     opts: &DoctorOptions,
+    screens: &ScreenBackend,
     fix: Fix<'_>,
     checks: &mut Vec<Check>,
 ) -> Option<Vec<String>> {
@@ -615,7 +683,11 @@ fn gstreamer_checks(
     } else {
         &[]
     };
-    for element in ELEMENTS.iter().chain(extra) {
+    for element in screen_element(screens)
+        .into_iter()
+        .chain(ELEMENTS)
+        .chain(extra)
+    {
         let needed_for = if element.real_only && opts.fake_backend {
             NOTHING
         } else {
@@ -1074,12 +1146,132 @@ fn decoders_check(decoders: &BTreeMap<String, String>, fix: Fix<'_>) -> Check {
     }
 }
 
-fn desktop_checks(probe: &dyn Probe, opts: &DoctorOptions, fix: Fix<'_>, checks: &mut Vec<Check>) {
-    // The fake backend captures test sources: it needs none of these.
-    let real = |features: &'static [Feature]| {
-        if opts.fake_backend { NOTHING } else { features }
+/// The screen backend's checks besides its element's
+/// ([`screen_element`]), needed for `screens` (nothing under the fake
+/// backend): under the portal, the PipeWire daemon and the ScreenCast
+/// portal; on X11, the X server, and never the portal (KDE's answers on
+/// X11 and can't capture there); without a display, `display`, which
+/// says there is none.
+fn screen_checks(
+    probe: &dyn Probe,
+    backend: &ScreenBackend,
+    screens: &[Feature],
+    fix: Fix<'_>,
+    checks: &mut Vec<Check>,
+) {
+    match backend {
+        ScreenBackend::Portal => {
+            checks.push(pipewire_check(probe, screens, fix));
+            portal_checks(probe, screens, fix, checks);
+        }
+        ScreenBackend::X11 { display } => checks.push(x11_check(probe, display, screens, fix)),
+        ScreenBackend::None => checks.push(fail(
+            "display",
+            screens,
+            sources::NO_DISPLAY,
+            "start Qrec in a Wayland or X11 session: it records that session's screens",
+        )),
+    }
+}
+
+/// `pipewire.daemon`: the PipeWire daemon's socket where its clients look
+/// for it, `pipewire-0` in `$PIPEWIRE_RUNTIME_DIR`, else in
+/// `$XDG_RUNTIME_DIR` (the portal streams the screens through the
+/// daemon). Only the file is looked at: nothing connects to it.
+fn pipewire_check(probe: &dyn Probe, screens: &[Feature], fix: Fix<'_>) -> Check {
+    const ID: &str = "pipewire.daemon";
+    let dir = ["PIPEWIRE_RUNTIME_DIR", "XDG_RUNTIME_DIR"]
+        .into_iter()
+        .find_map(|key| probe.env(key));
+    let Some(dir) = dir else {
+        return fail(
+            ID,
+            screens,
+            "no PipeWire daemon to find: neither PIPEWIRE_RUNTIME_DIR nor XDG_RUNTIME_DIR is set",
+            "start Qrec in your desktop session, which sets XDG_RUNTIME_DIR",
+        );
     };
-    let screens = real(SCREENS);
+    let socket = Path::new(&dir).join("pipewire-0");
+    match probe.unix_socket(&socket) {
+        Ok(()) => ok(
+            ID,
+            screens,
+            format!("{} (the portal's screen casts)", socket.display()),
+        ),
+        Err(e) => fail_fix(
+            ID,
+            screens,
+            format!("no PipeWire daemon: {e}"),
+            fix(Need::PipeWire),
+        ),
+    }
+}
+
+/// `x11.randr`: the X server at `display` (connected within 2 s), its
+/// RandR version and the screens discovery lists. A server Qrec can't
+/// reach, or that shows no screen, turns screen capture off with
+/// discovery's warning; without RandR, or before 1.3 (Qrec reads the
+/// outputs from 1.3 on, the monitors from 1.5), its whole screen is one
+/// screen, which only informs.
+fn x11_check(probe: &dyn Probe, display: &str, screens: &[Feature], fix: Fix<'_>) -> Check {
+    const ID: &str = "x11.randr";
+    let server = match probe.x11(display) {
+        Ok(server) => server,
+        Err(e) => {
+            return fail(
+                ID,
+                screens,
+                e,
+                format!(
+                    "check that DISPLAY={display} names a running X server that lets Qrec in \
+                     (its cookie in XAUTHORITY, else ~/.Xauthority)"
+                ),
+            );
+        }
+    };
+    let Some(first) = server.screens.first() else {
+        return fail(
+            ID,
+            screens,
+            format!("X11 (DISPLAY={display}): its screen is empty"),
+            "give the X server a screen to record",
+        );
+    };
+    let whole = format!(
+        "Qrec records its whole screen ({}x{}) as one",
+        first.width, first.height
+    );
+    match server.randr {
+        Some((major, minor)) if (major, minor) >= (1, 3) => {
+            let names: Vec<&str> = server.screens.iter().map(|s| s.output.as_str()).collect();
+            let count = match names.len() {
+                1 => "1 screen".to_owned(),
+                n => format!("{n} screens"),
+            };
+            ok(
+                ID,
+                screens,
+                format!("RandR {major}.{minor}: {count} ({})", names.join(", ")),
+            )
+        }
+        Some((major, minor)) => fail(
+            ID,
+            NOTHING,
+            format!("RandR {major}.{minor}: {whole}; it reads the outputs from RandR 1.3 on"),
+            "update the X server: Qrec lists its outputs with RandR 1.3, its monitors with 1.5",
+        ),
+        None => fail_fix(
+            ID,
+            NOTHING,
+            format!("the X server has no RandR: {whole}"),
+            fix(Need::RandR),
+        ),
+    }
+}
+
+/// `portal.screencast`, and `portal.registry` (which only informs) once
+/// the portal answered.
+fn portal_checks(probe: &dyn Probe, screens: &[Feature], fix: Fix<'_>, checks: &mut Vec<Check>) {
     let portal = probe.portal();
     checks.push(match &portal {
         // The backend that answers can't: the desktop's own can.
@@ -1135,7 +1327,6 @@ fn desktop_checks(probe: &dyn Probe, opts: &DoctorOptions, fix: Fix<'_>, checks:
             ),
         });
     }
-    audio_checks(probe, real(AUDIO), fix, checks);
 }
 
 /// `pactl` (its version first: Qrec reads `--format=json`) and, once it
@@ -1373,12 +1564,13 @@ impl DoctorReport {
         )
     }
 
-    /// The human report: one line per check (`ok`, `MISSING` for an app
-    /// check, `off` when features need it, else `optional`), a hint under
-    /// each failure, the VA-API summary, the global shortcuts for the
-    /// desktop, then a line per feature that is off and the verdict.
+    /// The human report: the session line, then one line per check (`ok`,
+    /// `MISSING` for an app check, `off` when features need it, else
+    /// `optional`), a hint under each failure, the VA-API summary, the
+    /// global shortcuts for the desktop, then a line per feature that is
+    /// off and the verdict.
     pub fn to_text(&self) -> String {
-        let mut out = String::from("Qrec doctor\n\n");
+        let mut out = format!("Qrec doctor\n\nSession: {}\n\n", self.session);
         let width = self.checks.iter().map(|c| c.id.len()).max().unwrap_or(0);
         for check in &self.checks {
             let status = match (check.ok, check.required, check.needed_for.is_empty()) {
@@ -1493,6 +1685,26 @@ impl Probe for SystemProbe {
     fn ffmpeg_demuxers(&self) -> Result<BTreeSet<String>, String> {
         let out = sources::tool_output(&["ffmpeg", "-hide_banner", "-demuxers"], FFMPEG_TIMEOUT)?;
         Ok(parse_demuxers(&out))
+    }
+
+    fn screen_backend(&self) -> ScreenBackend {
+        ScreenBackend::from_env()
+    }
+
+    fn unix_socket(&self, path: &Path) -> Result<(), String> {
+        use std::os::unix::fs::FileTypeExt as _;
+        match std::fs::metadata(path) {
+            Ok(meta) if meta.file_type().is_socket() => Ok(()),
+            Ok(_) => Err(format!("{} isn't a socket", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(format!("nothing at {}", path.display()))
+            }
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
+    }
+
+    fn x11(&self, display: &str) -> Result<X11Server, String> {
+        sources::x11_server(display)
     }
 
     fn portal(&self) -> Result<PortalInfo, String> {
@@ -1788,8 +2000,12 @@ mod gst_impl {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
+    use qrec_core::ctx::ScreenInfo;
+
     use super::*;
-    use crate::platform::{Desktop, PlatformEnv, detect};
+    use crate::platform::{PlatformEnv, detect};
 
     /// A machine described by data.
     #[derive(Clone)]
@@ -1802,7 +2018,11 @@ mod tests {
         encoders: BTreeSet<String>,
         decoders: BTreeMap<String, String>,
         demuxers: BTreeSet<String>,
+        screens: ScreenBackend,
+        /// The Unix sockets there are.
+        sockets: BTreeSet<PathBuf>,
         portal: Result<PortalInfo, String>,
+        x11: Result<X11Server, String>,
         pactl: Result<String, String>,
         pulse: Result<String, String>,
         nodes: Vec<gpu::RenderNode>,
@@ -1811,8 +2031,10 @@ mod tests {
         va_factory: Result<Option<String>, String>,
         startup: Vec<String>,
         platform: HostPlatform,
-        vaapi_probed: std::cell::Cell<u32>,
-        factory_probed: std::cell::Cell<u32>,
+        vaapi_probed: Cell<u32>,
+        factory_probed: Cell<u32>,
+        portal_asked: Cell<u32>,
+        x11_asked: Cell<u32>,
     }
 
     fn node(path: &str, vendor: u16) -> gpu::RenderNode {
@@ -1838,14 +2060,38 @@ mod tests {
         names.iter().map(|n| (*n).to_owned()).collect()
     }
 
+    /// An X server's answer: its RandR version and its screens, each a
+    /// name and a size, side by side.
+    fn x_server(randr: Option<(u32, u32)>, screens: &[(&str, u32, u32)]) -> X11Server {
+        let mut x = 0;
+        let screens = screens
+            .iter()
+            .map(|&(output, width, height)| {
+                let screen = ScreenInfo {
+                    output: output.to_owned(),
+                    description: output.to_owned(),
+                    x,
+                    y: 0,
+                    width,
+                    height,
+                    scale: 1.0,
+                };
+                x += i32::try_from(width).unwrap();
+                screen
+            })
+            .collect();
+        X11Server { randr, screens }
+    }
+
     impl Fake {
         /// The dev machine: niri on NixOS, everything present, Intel
         /// renderD129 + NVIDIA renderD128.
         fn healthy() -> Self {
             Fake {
                 gst: Ok("GStreamer 1.26.11".to_owned()),
-                elements: ELEMENTS
-                    .iter()
+                elements: [&PIPEWIRESRC, &XIMAGESRC]
+                    .into_iter()
+                    .chain(ELEMENTS)
                     .chain(FAKE_ELEMENTS)
                     .map(|e| e.name)
                     .collect(),
@@ -1855,7 +2101,6 @@ mod tests {
                     ("ffmpeg", "/nix/bin/ffmpeg"),
                     ("ffprobe", "/nix/bin/ffprobe"),
                     ("pactl", "/nix/bin/pactl"),
-                    ("wl-copy", "/nix/bin/wl-copy"),
                 ]
                 .into(),
                 // ffmpeg-full's: the doctor's encoders and h264_vaapi.
@@ -1870,18 +2115,30 @@ mod tests {
                     .map(|(n, c)| ((*n).to_owned(), (*c).to_owned()))
                     .collect(),
                 demuxers: names(&["matroska", "webm", "mov"]),
+                screens: ScreenBackend::Portal,
+                sockets: [PathBuf::from("/run/user/1000/pipewire-0")].into(),
                 portal: Ok(PortalInfo {
                     screencast_version: 5,
                     source_types: Some(7),
                     registry_version: Some(1),
                 }),
+                // Nobody asks it on Wayland; an X11 machine's has two
+                // monitors.
+                x11: Ok(x_server(
+                    Some((1, 6)),
+                    &[("eDP-1", 1920, 1080), ("HDMI-1", 2560, 1440)],
+                )),
                 pactl: Ok("pactl 17.0".to_owned()),
                 pulse: Ok("PulseAudio (on PipeWire 1.6.6)".to_owned()),
                 nodes: vec![
                     node("/dev/dri/renderD128", PCI_NVIDIA),
                     node("/dev/dri/renderD129", PCI_INTEL),
                 ],
-                env: [("LIBVA_DRIVER_NAME", "iHD")].into(),
+                env: [
+                    ("LIBVA_DRIVER_NAME", "iHD"),
+                    ("XDG_RUNTIME_DIR", "/run/user/1000"),
+                ]
+                .into(),
                 vaapi: Ok(()),
                 va_factory: Ok(Some("vah264enc".to_owned())),
                 startup: vec!["set LIBVA_DRIVER_NAME=iHD (was nvidia)".to_owned()],
@@ -1893,9 +2150,24 @@ mod tests {
                     ],
                     "ID=nixos\n",
                 ),
-                vaapi_probed: std::cell::Cell::new(0),
-                factory_probed: std::cell::Cell::new(0),
+                vaapi_probed: Cell::new(0),
+                factory_probed: Cell::new(0),
+                portal_asked: Cell::new(0),
+                x11_asked: Cell::new(0),
             }
+        }
+
+        /// The session of these variables and os-release: its platform and
+        /// the screen backend it picks (`QREC_SCREEN_BACKEND` among them).
+        fn on(mut self, vars: &[(&str, &str)], os_release: &str) -> Self {
+            self.platform = platform(vars, os_release);
+            let var = |key: &str| vars.iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
+            self.screens = ScreenBackend::select(
+                self.platform.session,
+                var("DISPLAY"),
+                var("QREC_SCREEN_BACKEND"),
+            );
+            self
         }
 
         /// One Intel node (renderD128) whose VA encoder is `vah264enc`.
@@ -1951,8 +2223,24 @@ mod tests {
         fn ffmpeg_demuxers(&self) -> Result<BTreeSet<String>, String> {
             Ok(self.demuxers.clone())
         }
+        fn screen_backend(&self) -> ScreenBackend {
+            self.screens.clone()
+        }
+        fn unix_socket(&self, path: &Path) -> Result<(), String> {
+            if self.sockets.contains(path) {
+                Ok(())
+            } else {
+                Err(format!("nothing at {}", path.display()))
+            }
+        }
         fn portal(&self) -> Result<PortalInfo, String> {
+            self.portal_asked.set(self.portal_asked.get() + 1);
             self.portal.clone()
+        }
+        fn x11(&self, display: &str) -> Result<X11Server, String> {
+            assert_eq!(self.screens.to_string(), format!("x11 (DISPLAY={display})"));
+            self.x11_asked.set(self.x11_asked.get() + 1);
+            self.x11.clone()
         }
         fn pactl_version(&self) -> Result<String, String> {
             self.pactl.clone()
@@ -2067,11 +2355,11 @@ mod tests {
             "ffmpeg.libvpx-vp9",
             "ffmpeg.libopus",
             "ffmpeg.libsvtav1",
+            "pipewire.daemon",
             "portal.screencast",
             "portal.registry",
             "pactl",
             "sound.server",
-            "wl-copy",
             "vaapi",
         ] {
             let c = check(&report, id);
@@ -2088,7 +2376,19 @@ mod tests {
         ] {
             assert_eq!(needs(id), [Feature::App], "{id}");
         }
-        assert_eq!(needs("portal.screencast"), [Feature::Screens]);
+        // niri records screens through the portal: its checks, no X
+        // server's, and no wl-copy (the GUI copies through GDK).
+        for id in ["gst.pipewiresrc", "pipewire.daemon", "portal.screencast"] {
+            assert_eq!(needs(id), [Feature::Screens], "{id}");
+        }
+        for id in ["gst.ximagesrc", "x11.randr", "display", "wl-copy"] {
+            assert!(report.checks.iter().all(|c| c.id != id), "{id}");
+        }
+        assert_eq!((fake.portal_asked.get(), fake.x11_asked.get()), (1, 0));
+        assert_eq!(
+            check(&report, "pipewire.daemon").detail,
+            "/run/user/1000/pipewire-0 (the portal's screen casts)"
+        );
         assert_eq!(needs("gst.v4l2src"), [Feature::Cameras]);
         assert_eq!(needs("pactl"), [Feature::Audio]);
         assert_eq!(needs("sound.server"), [Feature::Audio]);
@@ -2099,7 +2399,7 @@ mod tests {
             [Feature::ExportWebm, Feature::ExportAv1]
         );
         assert_eq!(needs("ffmpeg.libsvtav1"), [Feature::ExportAv1]);
-        for id in ["gst.vah264enc", "wl-copy", "vaapi", "portal.registry"] {
+        for id in ["gst.vah264enc", "vaapi", "portal.registry"] {
             assert!(needs(id).is_empty(), "{id}");
         }
         // The dev box records and exports MP4 with VA, so x264enc,
@@ -2133,7 +2433,15 @@ mod tests {
         );
         assert_eq!(report.niri_snippet, NIRI_SNIPPET);
         assert_eq!(report.shortcuts, global_snippet(&Desktop::Niri));
+        assert_eq!(report.screen_backend, ScreenBackendKind::Portal);
+        assert_eq!(report.session, "Wayland (niri) · screens: portal");
         let text = report.to_text();
+        assert!(
+            text.starts_with(
+                "Qrec doctor\n\nSession: Wayland (niri) · screens: portal\n\n  ok        gstreamer "
+            ),
+            "{text}"
+        );
         assert!(
             text.contains(
                 "\nGlobal shortcuts for niri (paste into ~/.config/niri/config.kdl):\n\n\
@@ -2148,6 +2456,8 @@ mod tests {
         assert_eq!(json["checks"][0]["neededFor"], serde_json::json!(["app"]));
         assert_eq!(json["featuresOff"], serde_json::json!([]));
         assert_eq!(json["platform"]["desktop"], "niri");
+        assert_eq!(json["screenBackend"], "portal");
+        assert_eq!(json["session"], "Wayland (niri) · screens: portal");
         assert_eq!(json["shortcuts"]["desktop"], "niri");
         assert_eq!(json["shortcuts"]["text"], NIRI_SNIPPET);
         assert_eq!(json["niriSnippet"], NIRI_SNIPPET);
@@ -2164,7 +2474,6 @@ mod tests {
         let mut fake = Fake::healthy();
         fake.encoders.remove("aac");
         fake.encoders.remove("libsvtav1");
-        fake.programs.remove("wl-copy");
         fake.portal = Err("busctl exited with status 1".to_owned());
         let report = run_with(&fake, &opts());
         assert_eq!(report.exit_code(), 0, "{}", report.to_text());
@@ -2185,7 +2494,6 @@ mod tests {
         assert!(report.checks.iter().all(|c| c.id != "portal.registry"));
         let text = report.to_text();
         assert!(text.contains("off       portal.screencast"), "{text}");
-        assert!(text.contains("optional  wl-copy"), "{text}");
         assert!(
             text.contains("MP4 export is off: ffmpeg has no aac encoder (MP4 audio)\n"),
             "{text}"
@@ -2422,7 +2730,7 @@ mod tests {
         let mut fake = Fake::healthy();
         fake.platform = gnome("ID=fedora\nVERSION_ID=44\n");
         fake.nodes = vec![node("/dev/dri/renderD128", PCI_AMD)];
-        fake.env = [("LIBVA_DRIVER_NAME", "radeonsi")].into();
+        fake.env.insert("LIBVA_DRIVER_NAME", "radeonsi");
         fake.startup.clear();
         fake.va_encoders.clear();
         fake.vaapi = Err("ffmpeg exited with status 1".to_owned());
@@ -2457,7 +2765,7 @@ mod tests {
         // Arch on Intel, whose h264_vaapi encodes: only the plugin is missing.
         fake.platform = gnome("ID=arch\n");
         fake.nodes = vec![node("/dev/dri/renderD128", PCI_INTEL)];
-        fake.env = [("LIBVA_DRIVER_NAME", "iHD")].into();
+        fake.env.insert("LIBVA_DRIVER_NAME", "iHD");
         fake.vaapi = Ok(());
         let report = run_with(&fake, &opts());
         assert_eq!(report.va.as_ref().unwrap().ffmpeg_h264, Some(true));
@@ -2474,7 +2782,7 @@ mod tests {
         );
         // No Intel or AMD node: the plugin.
         fake.nodes = vec![node("/dev/dri/renderD128", PCI_NVIDIA)];
-        fake.env.clear();
+        fake.env.remove("LIBVA_DRIVER_NAME");
         let report = run_with(&fake, &opts());
         assert_eq!(check(&report, "gst.vah264enc").hint.as_deref(), plugin);
     }
@@ -2630,7 +2938,7 @@ mod tests {
     fn without_a_va_node_the_cpu_encoders_are_named() {
         let mut fake = Fake::healthy();
         fake.nodes = vec![node("/dev/dri/renderD128", PCI_NVIDIA)];
-        fake.env.clear();
+        fake.env.remove("LIBVA_DRIVER_NAME");
         let detail = |fake: &Fake| check(&run_with(fake, &opts()), "vaapi").detail.clone();
         assert_eq!(
             detail(&fake),
@@ -2707,6 +3015,7 @@ mod tests {
     fn the_fake_backend_needs_test_sources_instead_of_devices() {
         let mut fake = Fake::healthy();
         fake.elements.remove("pipewiresrc");
+        fake.sockets.clear();
         fake.portal = Err("no session bus".to_owned());
         fake.programs.remove("pactl");
         let report = run_with(
@@ -2721,10 +3030,45 @@ mod tests {
         for id in [
             "gst.pipewiresrc",
             "gst.v4l2src",
+            "pipewire.daemon",
             "portal.screencast",
             "pactl",
         ] {
             assert!(check(&report, id).needed_for.is_empty(), "{id}");
+        }
+        // The session's screen checks only inform there, whichever backend
+        // the session has: an X server out of reach, no display at all.
+        for (vars, id, element) in [
+            (&[("DISPLAY", ":0")][..], "x11.randr", Some("gst.ximagesrc")),
+            (&[][..], "display", None),
+        ] {
+            let mut session = fake.clone().on(vars, "ID=debian\n");
+            session.x11 = Err("X11 (DISPLAY=:0): can't connect: no X server listens there".into());
+            session.elements.remove("ximagesrc");
+            let report = run_with(
+                &session,
+                &DoctorOptions {
+                    fake_backend: true,
+                    ..opts()
+                },
+            );
+            assert!(report.features_off.is_empty(), "{:?}", report.features_off);
+            let c = check(&report, id);
+            assert!(!c.ok && c.needed_for.is_empty(), "{c:?}");
+            match element {
+                Some(element) => {
+                    let e = check(&report, element);
+                    assert!(!e.ok && e.needed_for.is_empty(), "{e:?}");
+                }
+                None => assert!(
+                    report
+                        .checks
+                        .iter()
+                        .all(|c| c.id != "gst.pipewiresrc" && c.id != "gst.ximagesrc"),
+                    "no element records screens without a display: {:?}",
+                    report.checks
+                ),
+            }
         }
         assert_eq!(
             check(&report, "gst.videotestsrc").needed_for,
@@ -2755,6 +3099,127 @@ mod tests {
         );
         assert_eq!(report.exit_code(), 0);
         assert_eq!(off(&report), [Feature::Screens, Feature::Cameras]);
+    }
+
+    /// The screen checks follow the session's screen backend: an X server
+    /// Qrec can't reach turns screen capture off with discovery's warning,
+    /// an old RandR records its whole screen (which only informs), no
+    /// display at all turns it off; PipeWire's socket is looked for where
+    /// its clients look; `QREC_SCREEN_BACKEND=portal` brings the portal's
+    /// checks to an X11 session.
+    #[test]
+    fn the_screen_checks_follow_the_screen_backend() {
+        let x11 = Fake::healthy().on(&[("DISPLAY", ":0")], "ID=arch\n");
+        let report = run_with(&x11, &opts());
+        assert_eq!(report.session, "X11 · screens: x11 (DISPLAY=:0)");
+        assert!(report.features_off.is_empty(), "{:?}", report.features_off);
+
+        // Nothing listens on the display: discovery's words, screens off.
+        let mut gone = x11.clone();
+        gone.x11 = Err("X11 (DISPLAY=:0): can't connect: no X server listens there".to_owned());
+        let report = run_with(&gone, &opts());
+        let c = check(&report, "x11.randr");
+        assert_eq!(
+            (c.ok, &c.needed_for, c.detail.as_str()),
+            (
+                false,
+                &vec![Feature::Screens],
+                "X11 (DISPLAY=:0): can't connect: no X server listens there"
+            )
+        );
+        assert!(
+            c.hint
+                .as_deref()
+                .is_some_and(|h| h.starts_with("check that DISPLAY=:0 names a running X server")),
+            "{c:?}"
+        );
+        assert_eq!(
+            report.features_off[0].message,
+            "Screen capture is off: X11 (DISPLAY=:0): can't connect: no X server listens there"
+        );
+        // ximagesrc missing: off too, with the good plugins' fix.
+        let mut no_ximagesrc = x11.clone();
+        no_ximagesrc.elements.remove("ximagesrc");
+        let report = run_with(&no_ximagesrc, &opts());
+        assert_eq!(off(&report), [Feature::Screens]);
+        assert_eq!(
+            check(&report, "gst.ximagesrc").hint.as_deref(),
+            Some("sudo pacman -S gst-plugins-good")
+        );
+
+        // RandR 1.3 and 1.4 list the lit outputs; before that, the whole
+        // screen is one, which only informs.
+        let mut old = x11.clone();
+        old.x11 = Ok(x_server(Some((1, 4)), &[("LVDS-1", 1366, 768)]));
+        assert_eq!(
+            check(&run_with(&old, &opts()), "x11.randr").detail,
+            "RandR 1.4: 1 screen (LVDS-1)"
+        );
+        old.x11 = Ok(x_server(Some((1, 2)), &[("screen", 1024, 768)]));
+        let report = run_with(&old, &opts());
+        let c = check(&report, "x11.randr");
+        assert!(!c.ok && c.needed_for.is_empty(), "{c:?}");
+        assert_eq!(
+            c.detail,
+            "RandR 1.2: Qrec records its whole screen (1024x768) as one; it reads the \
+             outputs from RandR 1.3 on"
+        );
+        assert!(report.features_off.is_empty(), "{:?}", report.features_off);
+
+        // No display: nothing records screens.
+        let tty = Fake::healthy().on(&[("XDG_SESSION_TYPE", "tty")], "ID=debian\n");
+        let report = run_with(&tty, &opts());
+        assert_eq!(report.screen_backend, ScreenBackendKind::None);
+        assert_eq!(report.session, "no display · screens: none");
+        assert_eq!(
+            report.features_off[0].message,
+            "Screen capture is off: no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display"
+        );
+        assert_eq!(report.features_off[0].checks, ["display"]);
+        for id in [
+            "gst.pipewiresrc",
+            "gst.ximagesrc",
+            "portal.screencast",
+            "x11.randr",
+        ] {
+            assert!(report.checks.iter().all(|c| c.id != id), "{id}");
+        }
+        assert_eq!((tty.portal_asked.get(), tty.x11_asked.get()), (0, 0));
+
+        // PipeWire's own runtime dir wins over XDG_RUNTIME_DIR; without
+        // either there is nowhere to look.
+        let mut moved = Fake::healthy();
+        moved.env.insert("PIPEWIRE_RUNTIME_DIR", "/run/pipewire");
+        assert_eq!(off(&run_with(&moved, &opts())), [Feature::Screens]);
+        moved
+            .sockets
+            .insert(PathBuf::from("/run/pipewire/pipewire-0"));
+        assert_eq!(
+            check(&run_with(&moved, &opts()), "pipewire.daemon").detail,
+            "/run/pipewire/pipewire-0 (the portal's screen casts)"
+        );
+        moved.env.remove("PIPEWIRE_RUNTIME_DIR");
+        moved.env.remove("XDG_RUNTIME_DIR");
+        let report = run_with(&moved, &opts());
+        let c = check(&report, "pipewire.daemon");
+        assert_eq!(
+            (c.ok, c.detail.as_str()),
+            (
+                false,
+                "no PipeWire daemon to find: neither PIPEWIRE_RUNTIME_DIR nor XDG_RUNTIME_DIR \
+                 is set"
+            )
+        );
+
+        // The override: the portal's checks in an X11 session.
+        let forced = Fake::healthy().on(
+            &[("DISPLAY", ":0"), ("QREC_SCREEN_BACKEND", "portal")],
+            "ID=arch\n",
+        );
+        let report = run_with(&forced, &opts());
+        assert_eq!(report.session, "X11 · screens: portal");
+        assert!(check(&report, "portal.screencast").ok);
+        assert!(report.checks.iter().all(|c| c.id != "x11.randr"));
     }
 
     #[test]
@@ -2827,7 +3292,7 @@ mod tests {
         // Only NVIDIA: nothing is picked automatically.
         let mut fake = Fake::healthy();
         fake.nodes = vec![node("/dev/dri/renderD128", PCI_NVIDIA)];
-        fake.env.clear();
+        fake.env.remove("LIBVA_DRIVER_NAME");
         let report = run_with(&fake, &opts());
         let va = report.va.as_ref().unwrap();
         assert_eq!((va.device.as_deref(), va.ffmpeg_h264), (None, None));
@@ -2986,8 +3451,8 @@ mod tests {
     /// The machines of issue #9 as fakes, each with what `qrec doctor`
     /// would print and its `--json` report.
     fn machines() -> Vec<(&'static str, Fake)> {
-        let gnome = |os_release: &str| {
-            platform(
+        let gnome = |fake: Fake, os_release: &str| {
+            fake.on(
                 &[
                     ("WAYLAND_DISPLAY", "wayland-0"),
                     ("XDG_SESSION_TYPE", "wayland"),
@@ -3001,18 +3466,24 @@ mod tests {
             fake.encoders.remove("libopenh264");
             fake
         };
+        // A session bus without xdg-desktop-portal.
+        let no_portal = || {
+            Err("busctl exited with status 1: Call failed: The name \
+                 org.freedesktop.portal.Desktop was not provided by any .service files"
+                .to_owned())
+        };
 
-        // PulseAudio itself (no PipeWire): Debian with GNOME.
-        let mut pulseaudio_16 = distro_ffmpeg(Fake::healthy().intel_only());
-        pulseaudio_16.platform = gnome("ID=debian\n");
+        // PulseAudio itself (PipeWire only for the portal's screen casts):
+        // Debian with GNOME.
+        let mut pulseaudio_16 = gnome(distro_ffmpeg(Fake::healthy().intel_only()), "ID=debian\n");
         pulseaudio_16.pactl = Ok("pactl 16.1".to_owned());
         pulseaudio_16.pulse = Ok("pulseaudio".to_owned());
         let mut pulseaudio_15 = pulseaudio_16.clone();
         pulseaudio_15.pactl = Ok("pactl 15.0".to_owned());
 
-        // Xfce on Xorg: no portal on the session bus, no wl-copy.
-        let mut xfce = distro_ffmpeg(Fake::healthy().intel_only());
-        xfce.platform = platform(
+        // Xfce on Xorg: no portal on the session bus, which X11 doesn't
+        // need: ximagesrc records the X server's two monitors.
+        let mut xfce = distro_ffmpeg(Fake::healthy().intel_only()).on(
             &[
                 ("DISPLAY", ":0"),
                 ("XDG_SESSION_TYPE", "x11"),
@@ -3020,19 +3491,55 @@ mod tests {
             ],
             "ID=debian\n",
         );
-        xfce.portal = Err(
-            "busctl exited with status 1: Call failed: The name org.freedesktop.portal.Desktop \
-             was not provided by any .service files"
-                .to_owned(),
-        );
-        xfce.programs.remove("wl-copy");
+        xfce.portal = no_portal();
         xfce.pulse = Ok("PulseAudio (on PipeWire 1.4.2)".to_owned());
+
+        // KDE Plasma on X11 (Kubuntu): its portal registers ScreenCast and
+        // can't capture there; the X server records.
+        let kde_x11 = distro_ffmpeg(Fake::healthy().intel_only()).on(
+            &[
+                ("DISPLAY", ":0"),
+                ("XDG_SESSION_TYPE", "x11"),
+                ("XDG_CURRENT_DESKTOP", "KDE"),
+            ],
+            "ID=ubuntu\nID_LIKE=debian\n",
+        );
+
+        // Ubuntu's "GNOME on Xorg": X11 too, the portal running.
+        let mut gnome_xorg = distro_ffmpeg(Fake::healthy().intel_only()).on(
+            &[
+                ("DISPLAY", ":1"),
+                ("XDG_SESSION_TYPE", "x11"),
+                ("XDG_CURRENT_DESKTOP", "ubuntu:GNOME"),
+            ],
+            "ID=ubuntu\nID_LIKE=debian\n",
+        );
+        gnome_xorg.x11 = Ok(x_server(Some((1, 6)), &[("eDP-1", 2880, 1800)]));
+
+        // A bare Xvfb started without RandR (a CI container): its whole
+        // screen is one screen; no portal, no session bus.
+        let mut xvfb = distro_ffmpeg(Fake::healthy().intel_only())
+            .on(&[("DISPLAY", ":99")], "ID=debian\nVERSION_ID=\"13\"\n");
+        xvfb.x11 = Ok(x_server(None, &[("screen", 1280, 1024)]));
+        xvfb.portal = Err("busctl exited with status 1: Failed to connect to bus".to_owned());
+
+        // Hyprland whose PipeWire daemon isn't running (PulseAudio plays
+        // the sound): the portal answers and can't cast a screen.
+        let mut hyprland = distro_ffmpeg(Fake::healthy()).on(
+            &[
+                ("WAYLAND_DISPLAY", "wayland-1"),
+                ("HYPRLAND_INSTANCE_SIGNATURE", "v0.50_1700000000_1234"),
+                ("XDG_CURRENT_DESKTOP", "Hyprland"),
+            ],
+            "ID=arch\n",
+        );
+        hyprland.sockets.clear();
+        hyprland.pulse = Ok("pulseaudio".to_owned());
 
         // Stock Fedora: no x264enc (plugins-ugly-free), ffmpeg-free (no
         // libx264, OpenH264 decodes), VA on Intel, which records and
         // encodes the MP4 exports.
-        let mut fedora = Fake::healthy().intel_only();
-        fedora.platform = gnome("ID=fedora\nVERSION_ID=44\n");
+        let mut fedora = gnome(Fake::healthy().intel_only(), "ID=fedora\nVERSION_ID=44\n");
         fedora.elements.remove("x264enc");
         fedora.h264_decoders = vec!["openh264dec".to_owned()];
         fedora.encoders.remove("libx264");
@@ -3041,7 +3548,6 @@ mod tests {
         fedora
             .decoders
             .insert("libopenh264".to_owned(), "h264".to_owned());
-        fedora.programs.insert("wl-copy", "/usr/bin/wl-copy");
 
         // Stock Fedora on AMD: Fedora's Mesa encodes no H.264, so GStreamer
         // has no VA encoder and ffmpeg's h264_vaapi check fails; with no
@@ -3049,7 +3555,7 @@ mod tests {
         // libopenh264 exports MP4.
         let mut fedora_amd = fedora.clone();
         fedora_amd.nodes = vec![node("/dev/dri/renderD128", PCI_AMD)];
-        fedora_amd.env = [("LIBVA_DRIVER_NAME", "radeonsi")].into();
+        fedora_amd.env.insert("LIBVA_DRIVER_NAME", "radeonsi");
         fedora_amd.startup.clear();
         fedora_amd.va_encoders.clear();
         fedora_amd.va_factory = Ok(None);
@@ -3057,8 +3563,7 @@ mod tests {
 
         // sway without xdg-desktop-portal-wlr: the frontend runs, nothing
         // answers for ScreenCast. AMD graphics.
-        let mut sway = distro_ffmpeg(Fake::healthy());
-        sway.platform = platform(
+        let mut sway = distro_ffmpeg(Fake::healthy()).on(
             &[
                 ("WAYLAND_DISPLAY", "wayland-1"),
                 ("SWAYSOCK", "/run/user/1000/sway-ipc.1000.1234.sock"),
@@ -3072,21 +3577,22 @@ mod tests {
                 .to_owned(),
         );
         sway.nodes = vec![node("/dev/dri/renderD128", PCI_AMD)];
-        sway.env = [("LIBVA_DRIVER_NAME", "radeonsi")].into();
+        sway.env.insert("LIBVA_DRIVER_NAME", "radeonsi");
         sway.va_factory = Ok(Some("vah264enc".to_owned()));
         sway.startup.clear();
 
         // NVIDIA only: no VA node Qrec would pick; x264 records.
-        let mut nvidia = distro_ffmpeg(Fake::healthy());
-        nvidia.platform = gnome("ID=ubuntu\nID_LIKE=debian\n");
+        let mut nvidia = gnome(
+            distro_ffmpeg(Fake::healthy()),
+            "ID=ubuntu\nID_LIKE=debian\n",
+        );
         nvidia.nodes = vec![node("/dev/dri/renderD128", PCI_NVIDIA)];
         nvidia.va_encoders.clear();
-        nvidia.env.clear();
+        nvidia.env.remove("LIBVA_DRIVER_NAME");
         nvidia.startup.clear();
 
         // A VM: virtio-gpu, no VA at all.
-        let mut vm = Fake::healthy();
-        vm.platform = platform(
+        let mut vm = Fake::healthy().on(
             &[
                 ("WAYLAND_DISPLAY", "wayland-0"),
                 ("XDG_CURRENT_DESKTOP", "KDE"),
@@ -3095,12 +3601,14 @@ mod tests {
         );
         vm.nodes = vec![node("/dev/dri/renderD128", 0x1af4)];
         vm.va_encoders.clear();
-        vm.env.clear();
+        vm.env.remove("LIBVA_DRIVER_NAME");
         vm.startup.clear();
 
         // Debian without gst-libav: no software H.264 decoder (app).
-        let mut debian = distro_ffmpeg(Fake::healthy().intel_only());
-        debian.platform = gnome("ID=debian\nVERSION_ID=\"13\"\n");
+        let mut debian = gnome(
+            distro_ffmpeg(Fake::healthy().intel_only()),
+            "ID=debian\nVERSION_ID=\"13\"\n",
+        );
         debian.h264_decoders.clear();
 
         vec![
@@ -3108,6 +3616,10 @@ mod tests {
             ("pulseaudio_15", pulseaudio_15),
             ("pulseaudio_16", pulseaudio_16),
             ("xfce_x11_no_portal", xfce),
+            ("kde_x11_with_portal", kde_x11),
+            ("gnome_xorg", gnome_xorg),
+            ("xvfb_without_randr", xvfb),
+            ("wayland_without_pipewire", hyprland),
             ("fedora_stock", fedora),
             ("fedora_stock_amd", fedora_amd),
             ("sway_without_xdpw", sway),
@@ -3140,7 +3652,11 @@ mod tests {
                 ("dev_box", 0, vec![]),
                 ("pulseaudio_15", 0, vec![Audio]),
                 ("pulseaudio_16", 0, vec![]),
-                ("xfce_x11_no_portal", 0, vec![Screens]),
+                ("xfce_x11_no_portal", 0, vec![]),
+                ("kde_x11_with_portal", 0, vec![]),
+                ("gnome_xorg", 0, vec![]),
+                ("xvfb_without_randr", 0, vec![]),
+                ("wayland_without_pipewire", 0, vec![Screens]),
                 ("fedora_stock", 0, vec![]),
                 ("fedora_stock_amd", 0, vec![]),
                 ("sway_without_xdpw", 0, vec![Screens]),
@@ -3149,13 +3665,74 @@ mod tests {
                 ("debian_without_gst_libav", 5, vec![]),
             ]
         );
+        let machine = |wanted: &str| {
+            let (_, fake) = machines()
+                .into_iter()
+                .find(|(name, _)| *name == wanted)
+                .unwrap();
+            let report = run_with(&fake, &opts());
+            (fake, report)
+        };
+        // On X11 the X server records the screens: ximagesrc and the
+        // server, never the portal (KDE's would answer, and can't capture
+        // there), nor PipeWire's socket.
+        for name in [
+            "xfce_x11_no_portal",
+            "kde_x11_with_portal",
+            "gnome_xorg",
+            "xvfb_without_randr",
+        ] {
+            let (fake, report) = machine(name);
+            assert_eq!(report.screen_backend, ScreenBackendKind::X11, "{name}");
+            assert_eq!((fake.portal_asked.get(), fake.x11_asked.get()), (0, 1));
+            assert_eq!(check(&report, "gst.ximagesrc").needed_for, [Screens]);
+            for c in &report.checks {
+                assert!(
+                    !c.id.starts_with("portal.")
+                        && !c.id.starts_with("pipewire")
+                        && c.id != "gst.pipewiresrc",
+                    "{name}: {c:?}"
+                );
+            }
+        }
+        let (_, kde) = machine("kde_x11_with_portal");
+        assert_eq!(kde.session, "X11 (kde) · screens: x11 (DISPLAY=:0)");
+        assert_eq!(
+            check(&kde, "x11.randr").detail,
+            "RandR 1.6: 2 screens (eDP-1, HDMI-1)"
+        );
+        // Without RandR its whole screen is one: that only informs.
+        let (_, xvfb) = machine("xvfb_without_randr");
+        assert_eq!(xvfb.session, "X11 · screens: x11 (DISPLAY=:99)");
+        let randr = check(&xvfb, "x11.randr");
+        assert!(!randr.ok && randr.needed_for.is_empty(), "{randr:?}");
+        assert_eq!(
+            randr.detail,
+            "the X server has no RandR: Qrec records its whole screen (1280x1024) as one"
+        );
+        assert_eq!(
+            randr.hint.as_deref(),
+            Some(
+                "start the X server with its RandR extension (Xvfb: +extension RANDR) to list \
+                 each monitor"
+            )
+        );
+        // A Wayland session without PipeWire's socket can't cast a screen.
+        let (_, hyprland) = machine("wayland_without_pipewire");
+        assert_eq!(
+            hyprland.features_off[0].message,
+            "Screen capture is off: no PipeWire daemon: nothing at /run/user/1000/pipewire-0"
+        );
+        assert_eq!(
+            check(&hyprland, "pipewire.daemon").hint.as_deref(),
+            Some(
+                "start the PipeWire daemon (with systemd: systemctl --user enable --now \
+                 pipewire.socket): the ScreenCast portal streams the screens through it"
+            )
+        );
         // Stock Fedora on AMD records with openh264enc and exports MP4 with
         // libopenh264, which is all it needs.
-        let (_, fedora_amd) = machines()
-            .into_iter()
-            .find(|(name, _)| *name == "fedora_stock_amd")
-            .unwrap();
-        let report = run_with(&fedora_amd, &opts());
+        let (_, report) = machine("fedora_stock_amd");
         assert_eq!(check(&report, "gst.openh264enc").needed_for, [Recording]);
         let x264 = check(&report, "gst.x264enc");
         assert!(x264.needed_for.is_empty(), "{x264:?}");
@@ -3283,8 +3860,17 @@ mod tests {
         fn ffmpeg_demuxers(&self) -> Result<BTreeSet<String>, String> {
             SystemProbe.ffmpeg_demuxers()
         }
+        fn screen_backend(&self) -> ScreenBackend {
+            SystemProbe.screen_backend()
+        }
+        fn unix_socket(&self, path: &Path) -> Result<(), String> {
+            SystemProbe.unix_socket(path)
+        }
         fn portal(&self) -> Result<PortalInfo, String> {
             SystemProbe.portal()
+        }
+        fn x11(&self, display: &str) -> Result<X11Server, String> {
+            SystemProbe.x11(display)
         }
         fn pactl_version(&self) -> Result<String, String> {
             SystemProbe.pactl_version()

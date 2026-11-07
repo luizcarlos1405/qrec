@@ -17,9 +17,9 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
         "required": true
       },
       {
-        "detail": "pipewiresrc (screen capture)",
+        "detail": "ximagesrc (screen capture)",
         "hint": null,
-        "id": "gst.pipewiresrc",
+        "id": "gst.ximagesrc",
         "neededFor": [
           "screens"
         ],
@@ -280,18 +280,13 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
         "required": false
       },
       {
-        "detail": "no ScreenCast portal: busctl exited with status 1: Call failed: The name org.freedesktop.portal.Desktop was not provided by any .service files",
-        "fix": {
-          "command": null,
-          "note": "an X11 session needs no ScreenCast portal",
-          "packages": []
-        },
-        "hint": "an X11 session needs no ScreenCast portal",
-        "id": "portal.screencast",
+        "detail": "RandR 1.6: 2 screens (eDP-1, HDMI-1)",
+        "hint": null,
+        "id": "x11.randr",
         "neededFor": [
           "screens"
         ],
-        "ok": false,
+        "ok": true,
         "required": false
       },
       {
@@ -315,19 +310,6 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
         "required": false
       },
       {
-        "detail": "not found: saved frames can't be copied to the clipboard",
-        "fix": {
-          "command": null,
-          "note": "install wl-copy (upstream wl-clipboard) with apt",
-          "packages": []
-        },
-        "hint": "install wl-copy (upstream wl-clipboard) with apt",
-        "id": "wl-copy",
-        "neededFor": [],
-        "ok": false,
-        "required": false
-      },
-      {
         "detail": "/dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=iHD · ffmpeg h264_vaapi works",
         "hint": null,
         "id": "vaapi",
@@ -336,15 +318,7 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
         "required": false
       }
     ],
-    "featuresOff": [
-      {
-        "checks": [
-          "portal.screencast"
-        ],
-        "feature": "screens",
-        "message": "Screen capture is off: no ScreenCast portal: busctl exited with status 1: Call failed: The name org.freedesktop.portal.Desktop was not provided by any .service files"
-      }
-    ],
+    "featuresOff": [],
     "niriSnippet": "binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }\n    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }\n}",
     "platform": {
       "desktop": "xfce",
@@ -353,6 +327,8 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
       "sandbox": "none",
       "session": "x11"
     },
+    "screenBackend": "x11",
+    "session": "X11 (xfce) · screens: x11 (DISPLAY=:0)",
     "shortcuts": {
       "button": "Copy snippet",
       "desktop": null,
@@ -389,8 +365,10 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
   "text": [
     "Qrec doctor",
     "",
+    "Session: X11 (xfce) · screens: x11 (DISPLAY=:0)",
+    "",
     "  ok        gstreamer              GStreamer 1.26.11",
-    "  ok        gst.pipewiresrc        pipewiresrc (screen capture)",
+    "  ok        gst.ximagesrc          ximagesrc (screen capture)",
     "  ok        gst.v4l2src            v4l2src (cameras)",
     "  ok        gst.pulsesrc           pulsesrc (audio capture)",
     "  ok        gst.compositor         compositor (live preview)",
@@ -417,12 +395,9 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "  ok        ffmpeg.libvpx-vp9      libvpx-vp9 (WebM exports)",
     "  ok        ffmpeg.libopus         libopus (WebM audio)",
     "  ok        ffmpeg.libsvtav1       libsvtav1 (AV1 WebM exports)",
-    "  off       portal.screencast      no ScreenCast portal: busctl exited with status 1: Call failed: The name org.freedesktop.portal.Desktop was not provided by any .service files",
-    "                                   → an X11 session needs no ScreenCast portal",
+    "  ok        x11.randr              RandR 1.6: 2 screens (eDP-1, HDMI-1)",
     "  ok        pactl                  pactl 17.0 (/nix/bin/pactl)",
     "  ok        sound.server           PulseAudio (on PipeWire 1.4.2)",
-    "  optional  wl-copy                not found: saved frames can't be copied to the clipboard",
-    "                                   → install wl-copy (upstream wl-clipboard) with apt",
     "  ok        vaapi                  /dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=iHD · ffmpeg h264_vaapi works",
     "",
     "VA-API render nodes: /dev/dri/renderD128 (Intel)",
@@ -436,7 +411,6 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "Record over        qrec record start --over-selection  Super+Shift+O",
     "Discard last take  qrec take discard-last              Super+Shift+D",
     "",
-    "Screen capture is off: no ScreenCast portal: busctl exited with status 1: Call failed: The name org.freedesktop.portal.Desktop was not provided by any .service files",
-    "Everything else Qrec needs is here."
+    "Everything Qrec needs is here."
   ]
 }

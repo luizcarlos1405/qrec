@@ -1219,8 +1219,12 @@ mod tests {
         }
     }
 
+    /// S23 lists the failed app checks alone; what only turns a feature
+    /// off (screen capture on an X server Qrec can't reach, where no portal
+    /// is asked) never blocks: without an app failure the window opens.
     #[test]
     fn the_missing_report_lists_failed_app_checks() {
+        use qrec_core::ctx::ScreenBackendKind;
         use qrec_core::keymap::global_snippet;
         use qrec_core::platform::{Desktop, PlatformEnv, detect};
         use qrec_shell::doctor::{Check, Feature, FeatureOff};
@@ -1245,26 +1249,30 @@ mod tests {
                 ),
                 check("gstreamer", &[Feature::App], true, "1.26", None),
                 check(
-                    "portal.screencast",
+                    "x11.randr",
                     &[Feature::Screens],
                     false,
-                    "no ScreenCast portal: no session bus",
-                    Some("install xdg-desktop-portal"),
+                    "X11 (DISPLAY=:0): can't connect: no X server listens there",
+                    Some("check that DISPLAY=:0 names a running X server"),
                 ),
                 check(
-                    "wl-copy",
+                    "portal.registry",
                     &[],
                     false,
-                    "not found",
-                    Some("install wl-clipboard"),
+                    "no host app registry",
+                    Some("update xdg-desktop-portal to 1.19 or newer"),
                 ),
             ],
             features_off: vec![FeatureOff {
                 feature: Feature::Screens,
-                checks: vec!["portal.screencast".into()],
-                message: "Screen capture is off: no ScreenCast portal: no session bus".into(),
+                checks: vec!["x11.randr".into()],
+                message: "Screen capture is off: X11 (DISPLAY=:0): can't connect: no X server \
+                          listens there"
+                    .into(),
             }],
-            platform: detect(&PlatformEnv::default()),
+            platform: detect(&PlatformEnv::default().with("DISPLAY", ":0")),
+            screen_backend: ScreenBackendKind::X11,
+            session: "X11 · screens: x11 (DISPLAY=:0)".into(),
             shortcuts: global_snippet(&Desktop::Unknown),
             niri_snippet: String::new(),
             va: None,
@@ -1273,6 +1281,13 @@ mod tests {
             missing_report(&report),
             "ffmpeg  ffmpeg wasn't found on PATH\n        → install ffmpeg"
         );
+        assert!(report.missing_dependency().is_some());
+        // ffmpeg there: screen capture alone is off, and nothing blocks.
+        let mut screens_off = report;
+        screens_off.checks[0] = check("ffmpeg", &[Feature::App], true, "8.1.2", None);
+        assert!(screens_off.ok(), "{screens_off:?}");
+        assert!(screens_off.missing_dependency().is_none());
+        assert_eq!(missing_report(&screens_off), "");
     }
 
     #[test]

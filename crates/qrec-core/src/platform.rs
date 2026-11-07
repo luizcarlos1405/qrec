@@ -11,8 +11,8 @@
 //!
 //! [`install_hint`] is the doctor's table of fixes: what a failed check
 //! needs ([`Need`]) as this distribution's packages and install command,
-//! the desktop's ScreenCast backend, or a generic sentence where the
-//! package names aren't known.
+//! the desktop's ScreenCast backend, a daemon or an X server extension to
+//! start, or a generic sentence where the package names aren't known.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -421,8 +421,9 @@ fn unquote(raw: &str) -> String {
 // ------------------------------------------------------------ install hints
 
 /// What a failed doctor check needs: a package, the sound server, the
-/// desktop's ScreenCast portal backend or a GPU's VA-API driver.
-/// [`install_hint`] says how to get it where Qrec runs.
+/// PipeWire daemon, the desktop's ScreenCast portal backend, the X
+/// server's RandR extension or a GPU's VA-API driver. [`install_hint`]
+/// says how to get it where Qrec runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Need {
     /// GStreamer itself, 1.24 or newer.
@@ -431,7 +432,8 @@ pub enum Need {
     Ges,
     /// gst-plugins-base: compositor, videorate, the test sources.
     GstPluginsBase,
-    /// gst-plugins-good: v4l2src, pulsesrc, the Matroska and FLAC elements.
+    /// gst-plugins-good: v4l2src, pulsesrc, ximagesrc (X11 screens), the
+    /// Matroska and FLAC elements.
     GstPluginsGood,
     /// gst-plugins-bad: h264parse.
     GstPluginsBad,
@@ -458,17 +460,21 @@ pub enum Need {
     /// A sound server pactl reaches: PipeWire with pipewire-pulse, or
     /// PulseAudio.
     SoundServer,
+    /// The PipeWire daemon (its `pipewire-0` socket), which the ScreenCast
+    /// portal streams the screens through.
+    PipeWire,
     /// xdg-desktop-portal with the desktop's ScreenCast backend.
     ScreenCastPortal,
+    /// The X server's RandR extension, which lists its monitors (without
+    /// it an X11 session's whole screen is one).
+    RandR,
     /// A GPU's VA-API driver.
     VaDriver(VaGpu),
-    /// wl-copy, from wl-clipboard.
-    WlClipboard,
 }
 
 impl Need {
     /// Every need, in the table's order.
-    pub const ALL: [Need; 20] = [
+    pub const ALL: [Need; 21] = [
         Need::Gstreamer,
         Need::Ges,
         Need::GstPluginsBase,
@@ -484,11 +490,12 @@ impl Need {
         Need::FullFfmpeg,
         Need::Pactl,
         Need::SoundServer,
+        Need::PipeWire,
         Need::ScreenCastPortal,
+        Need::RandR,
         Need::VaDriver(VaGpu::Intel),
         Need::VaDriver(VaGpu::IntelLegacy),
         Need::VaDriver(VaGpu::Amd),
-        Need::WlClipboard,
     ];
 
     /// What it is, as the generic sentence names it: upstream's names
@@ -514,10 +521,12 @@ impl Need {
             Need::FullFfmpeg => "a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1)",
             Need::Pactl => "the PulseAudio client tools (pactl) 16 or newer",
             Need::SoundServer => "the sound server: PipeWire with pipewire-pulse, or PulseAudio",
+            Need::PipeWire => "the PipeWire daemon",
             Need::ScreenCastPortal => {
                 "xdg-desktop-portal and your desktop's ScreenCast backend \
                  (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic)"
             }
+            Need::RandR => "the X server's RandR extension",
             Need::VaDriver(VaGpu::Intel) => {
                 "Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead)"
             }
@@ -525,13 +534,13 @@ impl Need {
                 "Intel's i965 VA-API driver (for chips older than Broadwell)"
             }
             Need::VaDriver(VaGpu::Amd) => "Mesa's VA-API driver (radeonsi)",
-            Need::WlClipboard => "wl-copy (upstream wl-clipboard)",
         }
     }
 
     /// The attribute of the Nix package set that Qrec's flake ships it as
     /// (its dev shell and its package); `None` for what the system
-    /// provides (the sound server, the portal, GPU drivers).
+    /// provides (the sound server, the PipeWire daemon, the portal, the X
+    /// server, GPU drivers).
     fn nix_attribute(self) -> Option<&'static str> {
         Some(match self {
             Need::Gstreamer => "gst_all_1.gstreamer",
@@ -545,8 +554,11 @@ impl Need {
             Need::GstPipewire => "pipewire",
             Need::Ffmpeg | Need::FullFfmpeg => "ffmpeg-full",
             Need::Pactl => "pulseaudio",
-            Need::WlClipboard => "wl-clipboard",
-            Need::SoundServer | Need::ScreenCastPortal | Need::VaDriver(_) => return None,
+            Need::SoundServer
+            | Need::PipeWire
+            | Need::ScreenCastPortal
+            | Need::RandR
+            | Need::VaDriver(_) => return None,
         })
     }
 }
@@ -619,15 +631,23 @@ impl Hint {
 /// `sudo dnf install …`, `sudo pacman -S …`, `sudo zypper install …`)
 /// where their names are known, else a sentence naming what to install and
 /// the family's package manager. The ScreenCast portal follows the session
-/// and the desktop (an X11 session needs none). Package names are the ones
-/// the distributions' repositories list (checked against their package
-/// lists, October 2026); a family whose name for it isn't known gets the
-/// sentence.
+/// and the desktop (an X11 session needs none); the sound server and the
+/// PipeWire daemon are started, not installed, and RandR comes with the X
+/// server. Package names are the ones the distributions' repositories list
+/// (checked against their package lists, October 2026); a family whose
+/// name for it isn't known gets the sentence.
 pub fn install_hint(need: Need, platform: &HostPlatform) -> Hint {
     let family = platform.distro;
     match need {
         Need::ScreenCastPortal => return portal_hint(platform),
         Need::SoundServer => return sound_server_hint(family),
+        Need::PipeWire => return pipewire_hint(family),
+        Need::RandR => {
+            return Hint::advice(
+                "start the X server with its RandR extension (Xvfb: +extension RANDR) to list \
+                 each monitor",
+            );
+        }
         _ => {}
     }
     if let Some(attribute) = need.nix_attribute() {
@@ -791,6 +811,29 @@ fn sound_server_hint(family: DistroFamily) -> Hint {
             .to_owned(),
         _ => format!("start {}", Need::SoundServer.what()),
     })
+}
+
+/// A PipeWire daemon that isn't running is usually one that wasn't
+/// started (the portal's backends come with PipeWire): start it, which
+/// systemd sessions do through its user socket.
+fn pipewire_hint(family: DistroFamily) -> Hint {
+    const WHY: &str = "the ScreenCast portal streams the screens through it";
+    let how = match family {
+        DistroFamily::NixOs => "services.pipewire.enable = true",
+        DistroFamily::Alpine => "run /usr/libexec/pipewire-launcher with your session",
+        DistroFamily::Gentoo => "with OpenRC, run gentoo-pipewire-launcher with your session",
+        DistroFamily::Void => "run pipewire from your session's autostart",
+        DistroFamily::Unknown => {
+            "with systemd: systemctl --user enable --now pipewire.socket; without it, run \
+             pipewire from your session's autostart"
+        }
+        DistroFamily::Debian
+        | DistroFamily::Ubuntu
+        | DistroFamily::Fedora
+        | DistroFamily::Arch
+        | DistroFamily::Suse => "with systemd: systemctl --user enable --now pipewire.socket",
+    };
+    Hint::advice(format!("start {} ({how}): {WHY}", Need::PipeWire.what()))
 }
 
 /// The ScreenCast backend of the desktop, and what it needs set up. An X11
@@ -1345,6 +1388,44 @@ mod tests {
         assert_eq!(
             portal(Desktop::Kde, SessionType::X11),
             "an X11 session needs no ScreenCast portal"
+        );
+    }
+
+    /// The PipeWire daemon (the portal's screens) and RandR (an X11
+    /// session's monitors) are started, not installed: a sentence, with no
+    /// package or command; NixOS starts PipeWire from its configuration,
+    /// and a Nix shell can't start either.
+    #[test]
+    fn the_pipewire_daemon_and_randr_are_started() {
+        let pipewire = |platform: &HostPlatform| install_hint(Need::PipeWire, platform);
+        let debian = pipewire(&wayland(DistroFamily::Debian));
+        assert_eq!((debian.packages.len(), &debian.command), (0, &None));
+        assert_eq!(
+            debian.line(),
+            "start the PipeWire daemon (with systemd: systemctl --user enable --now \
+             pipewire.socket): the ScreenCast portal streams the screens through it"
+        );
+        assert_eq!(
+            pipewire(&wayland(DistroFamily::NixOs)).line(),
+            "start the PipeWire daemon (services.pipewire.enable = true): the ScreenCast \
+             portal streams the screens through it"
+        );
+        let in_shell = host(
+            DistroFamily::Debian,
+            Desktop::Unknown,
+            SessionType::Wayland,
+            true,
+        );
+        assert_eq!(pipewire(&in_shell), debian);
+        let randr = install_hint(
+            Need::RandR,
+            &host(DistroFamily::Arch, Desktop::I3, SessionType::X11, true),
+        );
+        assert_eq!((randr.packages.len(), &randr.command), (0, &None));
+        assert_eq!(
+            randr.line(),
+            "start the X server with its RandR extension (Xvfb: +extension RANDR) to list each \
+             monitor"
         );
     }
 

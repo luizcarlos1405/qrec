@@ -1,0 +1,417 @@
+---
+source: crates/qrec-shell/src/doctor.rs
+expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\": text.lines().collect::<Vec<_>>(),\n    \"report\": report.to_json(),\n})"
+---
+{
+  "exitCode": 0,
+  "report": {
+    "checks": [
+      {
+        "detail": "GStreamer 1.26.11",
+        "hint": null,
+        "id": "gstreamer",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "ximagesrc (screen capture)",
+        "hint": null,
+        "id": "gst.ximagesrc",
+        "neededFor": [
+          "screens"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "v4l2src (cameras)",
+        "hint": null,
+        "id": "gst.v4l2src",
+        "neededFor": [
+          "cameras"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "pulsesrc (audio capture)",
+        "hint": null,
+        "id": "gst.pulsesrc",
+        "neededFor": [
+          "audio"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "compositor (live preview)",
+        "hint": null,
+        "id": "gst.compositor",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "videorate (constant frame rate)",
+        "hint": null,
+        "id": "gst.videorate",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "x264enc (H.264 recording)",
+        "hint": null,
+        "id": "gst.x264enc",
+        "neededFor": [],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "openh264enc (H.264 recording)",
+        "hint": null,
+        "id": "gst.openh264enc",
+        "neededFor": [],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "h264parse (H.264 recording)",
+        "hint": null,
+        "id": "gst.h264parse",
+        "neededFor": [
+          "recording"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "matroskamux (MKV files)",
+        "hint": null,
+        "id": "gst.matroskamux",
+        "neededFor": [
+          "recording"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "flacenc (lossless audio)",
+        "hint": null,
+        "id": "gst.flacenc",
+        "neededFor": [
+          "recording"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "matroskademux (reading the takes' MKV files)",
+        "hint": null,
+        "id": "gst.matroskademux",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "flacdec (the takes' FLAC audio)",
+        "hint": null,
+        "id": "gst.flacdec",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "gtk4paintablesink (the GUI preview)",
+        "hint": null,
+        "id": "gst.gtk4paintablesink",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "avdec_h264, openh264dec (the editor's preview of the takes)",
+        "hint": null,
+        "id": "gst.h264dec",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "vah264enc records on /dev/dri/renderD128",
+        "hint": null,
+        "id": "gst.vah264enc",
+        "neededFor": [],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "GStreamer Editing Services",
+        "hint": null,
+        "id": "ges",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "ffmpeg version 8.1.2 (/nix/bin/ffmpeg)",
+        "hint": null,
+        "id": "ffmpeg",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "ffprobe version 8.1.2 (/nix/bin/ffprobe)",
+        "hint": null,
+        "id": "ffprobe",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "h264 (the takes' video), flac (the takes' audio)",
+        "hint": null,
+        "id": "ffmpeg.decoders",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "matroska (the takes' MKV files)",
+        "hint": null,
+        "id": "ffmpeg.demuxers",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "libx264 (MP4 exports)",
+        "hint": null,
+        "id": "ffmpeg.libx264",
+        "neededFor": [],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "ffmpeg has no libopenh264 encoder: MP4 exports use h264_vaapi on /dev/dri/renderD128",
+        "hint": null,
+        "id": "ffmpeg.libopenh264",
+        "neededFor": [],
+        "ok": false,
+        "required": false
+      },
+      {
+        "detail": "aac (MP4 audio)",
+        "hint": null,
+        "id": "ffmpeg.aac",
+        "neededFor": [
+          "export.mp4"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "pcm_s16le (export segments)",
+        "hint": null,
+        "id": "ffmpeg.pcm_s16le",
+        "neededFor": [
+          "export.mp4",
+          "export.webm",
+          "export.av1"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "libvpx-vp9 (WebM exports)",
+        "hint": null,
+        "id": "ffmpeg.libvpx-vp9",
+        "neededFor": [
+          "export.webm"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "libopus (WebM audio)",
+        "hint": null,
+        "id": "ffmpeg.libopus",
+        "neededFor": [
+          "export.webm",
+          "export.av1"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "libsvtav1 (AV1 WebM exports)",
+        "hint": null,
+        "id": "ffmpeg.libsvtav1",
+        "neededFor": [
+          "export.av1"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "RandR 1.6: 1 screen (eDP-1)",
+        "hint": null,
+        "id": "x11.randr",
+        "neededFor": [
+          "screens"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "pactl 17.0 (/nix/bin/pactl)",
+        "hint": null,
+        "id": "pactl",
+        "neededFor": [
+          "audio"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "PulseAudio (on PipeWire 1.6.6)",
+        "hint": null,
+        "id": "sound.server",
+        "neededFor": [
+          "audio"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "/dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=iHD · ffmpeg h264_vaapi works",
+        "hint": null,
+        "id": "vaapi",
+        "neededFor": [],
+        "ok": true,
+        "required": false
+      }
+    ],
+    "featuresOff": [],
+    "niriSnippet": "binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }\n    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }\n}",
+    "platform": {
+      "desktop": "gnome",
+      "distro": "ubuntu",
+      "nixShell": false,
+      "sandbox": "none",
+      "session": "x11"
+    },
+    "screenBackend": "x11",
+    "session": "X11 (gnome) · screens: x11 (DISPLAY=:1)",
+    "shortcuts": {
+      "button": "Copy snippet",
+      "desktop": "gnome",
+      "file": null,
+      "heading": "Global shortcuts for GNOME:",
+      "language": "text",
+      "modifier": "Super",
+      "note": "Add these as custom shortcuts in GNOME Settings › Keyboard to record while another app has focus.",
+      "text": "In GNOME Settings › Keyboard › View and Customize Shortcuts › Custom Shortcuts,\nfor each line choose Add Shortcut (or +), type its name and command, then set its shortcut.\n\nName               Command                             Shortcut\nRecord toggle      qrec record toggle                  Super+Shift+R\nRecord over        qrec record start --over-selection  Super+Shift+O\nDiscard last take  qrec take discard-last              Super+Shift+D"
+    },
+    "va": {
+      "device": "/dev/dri/renderD128",
+      "expectedDriver": "iHD",
+      "ffmpegH264": true,
+      "gstEncoders": [
+        "vah264enc"
+      ],
+      "gstFactory": "vah264enc",
+      "libvaDriverName": "iHD",
+      "nodes": [
+        {
+          "driver": null,
+          "path": "/dev/dri/renderD128",
+          "vendor": 32902,
+          "vendorName": "Intel"
+        }
+      ],
+      "note": null,
+      "origin": "auto",
+      "startup": [],
+      "vendor": 32902
+    }
+  },
+  "text": [
+    "Qrec doctor",
+    "",
+    "Session: X11 (gnome) · screens: x11 (DISPLAY=:1)",
+    "",
+    "  ok        gstreamer              GStreamer 1.26.11",
+    "  ok        gst.ximagesrc          ximagesrc (screen capture)",
+    "  ok        gst.v4l2src            v4l2src (cameras)",
+    "  ok        gst.pulsesrc           pulsesrc (audio capture)",
+    "  ok        gst.compositor         compositor (live preview)",
+    "  ok        gst.videorate          videorate (constant frame rate)",
+    "  ok        gst.x264enc            x264enc (H.264 recording)",
+    "  ok        gst.openh264enc        openh264enc (H.264 recording)",
+    "  ok        gst.h264parse          h264parse (H.264 recording)",
+    "  ok        gst.matroskamux        matroskamux (MKV files)",
+    "  ok        gst.flacenc            flacenc (lossless audio)",
+    "  ok        gst.matroskademux      matroskademux (reading the takes' MKV files)",
+    "  ok        gst.flacdec            flacdec (the takes' FLAC audio)",
+    "  ok        gst.gtk4paintablesink  gtk4paintablesink (the GUI preview)",
+    "  ok        gst.h264dec            avdec_h264, openh264dec (the editor's preview of the takes)",
+    "  ok        gst.vah264enc          vah264enc records on /dev/dri/renderD128",
+    "  ok        ges                    GStreamer Editing Services",
+    "  ok        ffmpeg                 ffmpeg version 8.1.2 (/nix/bin/ffmpeg)",
+    "  ok        ffprobe                ffprobe version 8.1.2 (/nix/bin/ffprobe)",
+    "  ok        ffmpeg.decoders        h264 (the takes' video), flac (the takes' audio)",
+    "  ok        ffmpeg.demuxers        matroska (the takes' MKV files)",
+    "  ok        ffmpeg.libx264         libx264 (MP4 exports)",
+    "  optional  ffmpeg.libopenh264     ffmpeg has no libopenh264 encoder: MP4 exports use h264_vaapi on /dev/dri/renderD128",
+    "  ok        ffmpeg.aac             aac (MP4 audio)",
+    "  ok        ffmpeg.pcm_s16le       pcm_s16le (export segments)",
+    "  ok        ffmpeg.libvpx-vp9      libvpx-vp9 (WebM exports)",
+    "  ok        ffmpeg.libopus         libopus (WebM audio)",
+    "  ok        ffmpeg.libsvtav1       libsvtav1 (AV1 WebM exports)",
+    "  ok        x11.randr              RandR 1.6: 1 screen (eDP-1)",
+    "  ok        pactl                  pactl 17.0 (/nix/bin/pactl)",
+    "  ok        sound.server           PulseAudio (on PipeWire 1.6.6)",
+    "  ok        vaapi                  /dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=iHD · ffmpeg h264_vaapi works",
+    "",
+    "VA-API render nodes: /dev/dri/renderD128 (Intel)",
+    "",
+    "Global shortcuts for GNOME:",
+    "",
+    "In GNOME Settings › Keyboard › View and Customize Shortcuts › Custom Shortcuts,",
+    "for each line choose Add Shortcut (or +), type its name and command, then set its shortcut.",
+    "",
+    "Name               Command                             Shortcut",
+    "Record toggle      qrec record toggle                  Super+Shift+R",
+    "Record over        qrec record start --over-selection  Super+Shift+O",
+    "Discard last take  qrec take discard-last              Super+Shift+D",
+    "",
+    "Everything Qrec needs is here."
+  ]
+}

@@ -372,6 +372,26 @@ pub fn x11_layout(display: &str) -> Result<X11Layout, String> {
     Ok(X11Layout { root, screens })
 }
 
+/// What `qrec doctor` says of an X server ([`x11_server`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct X11Server {
+    /// The RandR version it speaks, up to 1.6 (what Qrec knows of);
+    /// `None` without the extension, when its whole screen is one.
+    pub randr: Option<(u32, u32)>,
+    /// Its screens, as [`discover_screens`] lists them.
+    pub screens: Vec<ScreenInfo>,
+}
+
+/// The X server at `display` as `qrec doctor` checks it: its RandR
+/// version and its screens, within [`X11_TIMEOUT`]. An error is the one
+/// discovery warns with (`X11 (DISPLAY=:1): can't connect: …`).
+pub fn x11_server(display: &str) -> Result<X11Server, String> {
+    let mut server =
+        x11::server(display, X11_TIMEOUT).map_err(|e| format!("X11 (DISPLAY={display}): {e}"))?;
+    sort_screens(&mut server.screens);
+    Ok(server)
+}
+
 /// [`discover_screens`] of the session's [`ScreenBackend`] (the facts'
 /// discovery hook).
 pub fn session_screens() -> Result<Vec<ScreenInfo>, String> {
@@ -380,7 +400,7 @@ pub fn session_screens() -> Result<Vec<ScreenInfo>, String> {
 
 /// What the core knows of a [`ScreenBackend`]: its kind, without the
 /// display.
-fn backend_kind(backend: &ScreenBackend) -> ScreenBackendKind {
+pub(crate) fn backend_kind(backend: &ScreenBackend) -> ScreenBackendKind {
     match backend {
         ScreenBackend::Portal => ScreenBackendKind::Portal,
         ScreenBackend::X11 { .. } => ScreenBackendKind::X11,

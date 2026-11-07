@@ -182,7 +182,7 @@ pub trait Backend {
 
     /// `qrec doctor` (A§8.12): the `DoctorReport` as JSON
     /// (`{checks:[{id,required,neededFor,ok,detail,hint,fix}], featuresOff,
-    /// platform, shortcuts, niriSnippet, va}`).
+    /// platform, screenBackend, session, shortcuts, niriSnippet, va}`).
     fn doctor(&mut self) -> Result<Value, CoreError>;
 
     /// The desktop Qrec runs on, as detected at startup: the agent guide

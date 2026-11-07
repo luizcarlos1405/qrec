@@ -182,6 +182,18 @@ SoundServer
   gentoo    start the sound server: PipeWire with pipewire-pulse, or PulseAudio
   unknown   start the sound server: PipeWire with pipewire-pulse, or PulseAudio
   nix shell start the sound server: PipeWire with pipewire-pulse, or PulseAudio
+PipeWire
+  debian    start the PipeWire daemon (with systemd: systemctl --user enable --now pipewire.socket): the ScreenCast portal streams the screens through it
+  ubuntu    start the PipeWire daemon (with systemd: systemctl --user enable --now pipewire.socket): the ScreenCast portal streams the screens through it
+  fedora    start the PipeWire daemon (with systemd: systemctl --user enable --now pipewire.socket): the ScreenCast portal streams the screens through it
+  arch      start the PipeWire daemon (with systemd: systemctl --user enable --now pipewire.socket): the ScreenCast portal streams the screens through it
+  suse      start the PipeWire daemon (with systemd: systemctl --user enable --now pipewire.socket): the ScreenCast portal streams the screens through it
+  nixos     start the PipeWire daemon (services.pipewire.enable = true): the ScreenCast portal streams the screens through it
+  alpine    start the PipeWire daemon (run /usr/libexec/pipewire-launcher with your session): the ScreenCast portal streams the screens through it
+  void      start the PipeWire daemon (run pipewire from your session's autostart): the ScreenCast portal streams the screens through it
+  gentoo    start the PipeWire daemon (with OpenRC, run gentoo-pipewire-launcher with your session): the ScreenCast portal streams the screens through it
+  unknown   start the PipeWire daemon (with systemd: systemctl --user enable --now pipewire.socket; without it, run pipewire from your session's autostart): the ScreenCast portal streams the screens through it
+  nix shell start the PipeWire daemon (with systemd: systemctl --user enable --now pipewire.socket): the ScreenCast portal streams the screens through it
 ScreenCastPortal
   debian    install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
   ubuntu    install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
@@ -194,6 +206,18 @@ ScreenCastPortal
   gentoo    install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
   unknown   install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
   nix shell install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+RandR
+  debian    start the X server with its RandR extension (Xvfb: +extension RANDR) to list each monitor
+  ubuntu    start the X server with its RandR extension (Xvfb: +extension RANDR) to list each monitor
+  fedora    start the X server with its RandR extension (Xvfb: +extension RANDR) to list each monitor
+  arch      start the X server with its RandR extension (Xvfb: +extension RANDR) to list each monitor
+  suse      start the X server with its RandR extension (Xvfb: +extension RANDR) to list each monitor
+  nixos     start the X server with its RandR extension (Xvfb: +extension RANDR) to list each monitor
+  alpine    start the X server with its RandR extension (Xvfb: +extension RANDR) to list each monitor
+  void      start the X server with its RandR extension (Xvfb: +extension RANDR) to list each monitor
+  gentoo    start the X server with its RandR extension (Xvfb: +extension RANDR) to list each monitor
+  unknown   start the X server with its RandR extension (Xvfb: +extension RANDR) to list each monitor
+  nix shell start the X server with its RandR extension (Xvfb: +extension RANDR) to list each monitor
 VaDriver(Intel)
   debian    install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with apt
   ubuntu    install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with apt
@@ -230,18 +254,6 @@ VaDriver(Amd)
   gentoo    install Mesa's VA-API driver (radeonsi) with emerge
   unknown   install Mesa's VA-API driver (radeonsi) with your distribution's package manager
   nix shell install Mesa's VA-API driver (radeonsi) with apt
-WlClipboard
-  debian    install wl-copy (upstream wl-clipboard) with apt
-  ubuntu    install wl-copy (upstream wl-clipboard) with apt
-  fedora    install wl-copy (upstream wl-clipboard) with dnf
-  arch      install wl-copy (upstream wl-clipboard) with pacman
-  suse      install wl-copy (upstream wl-clipboard) with zypper
-  nixos     run qrec from its Nix package, which ships wl-clipboard · [wl-clipboard]
-  alpine    install wl-copy (upstream wl-clipboard) with apk
-  void      install wl-copy (upstream wl-clipboard) with xbps-install
-  gentoo    install wl-copy (upstream wl-clipboard) with emerge
-  unknown   install wl-copy (upstream wl-clipboard) with your distribution's package manager
-  nix shell $ nix develop · the flake provides wl-clipboard
 ScreenCastPortal by desktop (Wayland)
   niri      on niri, install xdg-desktop-portal-gnome, then log out and back in
   gnome     install xdg-desktop-portal-gnome, GNOME's ScreenCast backend, then log out and back in

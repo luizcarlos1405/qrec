@@ -1500,37 +1500,50 @@ fn doctor_json_is_one_object_with_tiers() {
     assert_eq!(out.code, Some(if app_failed { 5 } else { 0 }), "{reply}");
     assert!(report["featuresOff"].is_array(), "{report}");
     assert!(report["platform"]["session"].is_string(), "{report}");
-    // The fake backend needs no portal: its failure turns nothing off.
-    let portal = checks
+    // No display here, so no screen backend: the screen checks are the
+    // display's alone (no portal is asked), and the fake backend needs
+    // none of it: its failure turns nothing off.
+    assert_eq!(report["screenBackend"], "none", "{report}");
+    assert_eq!(report["session"], "no display · screens: none", "{report}");
+    let display = checks
         .iter()
-        .find(|c| c["id"] == "portal.screencast")
-        .expect("the portal's check");
+        .find(|c| c["id"] == "display")
+        .expect("the display's check");
     assert_eq!(
-        (&portal["ok"], &portal["neededFor"]),
+        (&display["ok"], &display["neededFor"]),
         (&json!(false), &json!([]))
     );
-    // Its hint is the fix for this machine, whole in `fix` (no display
-    // here: xdg-desktop-portal and the desktop's backend); a check that
-    // passed has none.
-    assert_eq!(portal["hint"], portal["fix"]["note"], "{portal}");
-    assert!(
-        portal["fix"]["note"]
-            .as_str()
-            .is_some_and(|note| note.contains("ScreenCast backend")),
-        "{portal}"
-    );
+    for check in checks {
+        let id = check["id"].as_str().expect("an id");
+        assert!(
+            !id.starts_with("portal.") && id != "gst.pipewiresrc" && id != "wl-copy",
+            "{check}"
+        );
+    }
+    // A check that passed has no fix.
     for check in checks.iter().filter(|c| c["ok"] == true) {
         assert!(check.get("fix").is_none(), "{check}");
     }
 }
 
-/// No ScreenCast portal (here no session bus at all, as on many X11
-/// desktops) and no sound server: screen and audio capture are off, a line
-/// each, and nothing else is; exit 0 (issue #9: Qrec still opens projects,
-/// edits and exports). The real backend, with a configured VA device that
-/// is no render node, so no GPU probe runs.
+/// The features `qrec --json doctor`'s report turns off.
+fn features_off(reply: &Value) -> Vec<String> {
+    reply["data"]["featuresOff"]
+        .as_array()
+        .expect("featuresOff")
+        .iter()
+        .map(|f| f["feature"].as_str().expect("a feature").to_owned())
+        .collect()
+}
+
+/// No display at all, then a Wayland session without a ScreenCast portal
+/// (no session bus) or a PipeWire daemon, each with no sound server:
+/// screen and audio capture are off, a line each, and nothing else is;
+/// exit 0 (issue #9: Qrec still opens projects, edits and exports). The
+/// real backend, with a configured VA device that is no render node, so
+/// no GPU probe runs. (An X11 session needs no portal: `tests/x11.rs`.)
 #[test]
-fn doctor_without_a_portal_turns_screens_off() {
+fn doctor_without_a_display_or_a_portal_turns_screens_off() {
     let env = TestEnv::new();
     let dir = env.empty_dir("anywhere");
     let config_dir = env.config_home().join("qrec");
@@ -1551,7 +1564,13 @@ fn doctor_without_a_portal_turns_screens_off() {
     assert_eq!(human.code, Some(0), "{}{}", human.stdout, human.stderr);
     let out = &human.stdout;
     assert!(
-        out.contains("\nScreen capture is off: no ScreenCast portal: "),
+        out.starts_with("Session: no display · screens: none\n\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "\nScreen capture is off: no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display\n"
+        ),
         "{out}"
     );
     assert!(out.contains("\nAudio capture is off: "), "{out}");
@@ -1563,18 +1582,49 @@ fn doctor_without_a_portal_turns_screens_off() {
     let json = qrec_with(&env, &dir, &["--json", "doctor"], &vars);
     assert_eq!(json.code, Some(0));
     let reply = json.only_reply();
-    let off: Vec<&str> = reply["data"]["featuresOff"]
-        .as_array()
-        .expect("featuresOff")
-        .iter()
-        .map(|f| f["feature"].as_str().expect("a feature"))
-        .collect();
-    assert_eq!(off, ["screens", "audio"], "{reply}");
+    assert_eq!(features_off(&reply), ["screens", "audio"], "{reply}");
     let va = &reply["data"]["va"];
     assert_eq!(
         (&va["ffmpegH264"], &va["gstFactory"]),
         (&Value::Null, &Value::Null),
         "no GPU probe: {va}"
+    );
+
+    // A Wayland session (a display name nothing serves in the env's own
+    // runtime dir: the doctor connects to no compositor) without the
+    // portal or PipeWire's socket (an empty folder of the env's).
+    let pipewire = env.empty_dir("no-pipewire");
+    let wayland = [
+        ("WAYLAND_DISPLAY", OsStr::new("qrec-test-no-compositor")),
+        ("PIPEWIRE_RUNTIME_DIR", pipewire.as_os_str()),
+    ];
+    let vars: Vec<(&str, &OsStr)> = vars.iter().chain(&wayland).copied().collect();
+    let json = qrec_with(&env, &dir, &["--json", "doctor"], &vars);
+    assert_eq!(json.code, Some(0));
+    let reply = json.only_reply();
+    let report = &reply["data"];
+    assert_eq!(report["session"], "Wayland · screens: portal", "{report}");
+    assert_eq!(features_off(&reply), ["screens", "audio"], "{reply}");
+    let screens = &report["featuresOff"][0];
+    assert_eq!(
+        screens["checks"],
+        json!(["pipewire.daemon", "portal.screencast"]),
+        "{screens}"
+    );
+    // A failed check's hint is the fix for this machine, whole in `fix`
+    // (an unknown desktop: xdg-desktop-portal and the desktop's backend).
+    let portal = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "portal.screencast")
+        .expect("the portal's check");
+    assert_eq!(portal["hint"], portal["fix"]["note"], "{portal}");
+    assert!(
+        portal["fix"]["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("ScreenCast backend")),
+        "{portal}"
     );
 }
 
