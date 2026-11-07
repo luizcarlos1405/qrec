@@ -76,6 +76,7 @@ use qrec_core::view::canvas::{
 use qrec_core::view::notices::{Notice, error_notice};
 use qrec_core::view::{self, DragKind, FocusRegion, Rect};
 use qrec_core::{Command, Frame, LayerId, State};
+use qrec_shell::doctor::Feature;
 
 use crate::Ctx;
 use crate::keys::router::NUDGE_BINDINGS;
@@ -609,7 +610,17 @@ impl Inner {
                 .as_ref(),
         );
         self.live_plate.set_visible(live_after_take);
-        self.first_run.set_inventory(local.sources.as_ref());
+        // The doctor's word when screen capture is off: why there are no
+        // screens, when discovery didn't say (W10).
+        let capture_off = local.doctor.as_deref().and_then(|report| {
+            report
+                .features_off
+                .iter()
+                .find(|off| off.feature == Feature::Screens)
+                .map(|off| off.message.as_str())
+        });
+        self.first_run
+            .set_inventory(local.sources.as_ref(), capture_off);
         self.first_run.show(first_run);
         self.first_run.take_focus(local.focus);
         let slow = local.startup == StartupPhase::Opening { slow: true };

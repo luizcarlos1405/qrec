@@ -77,6 +77,11 @@ pub struct Facts {
     pub audio_devices: Vec<AudioDeviceInfo>,
     /// `LayerAdd` screen (label, size; unknown output ⇒ `NotFound`).
     pub screens: Vec<ScreenInfo>,
+    /// `LayerAdd` screen: why discovery found no screens, when it said (`no
+    /// Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display`, `X11
+    /// (DISPLAY=:1): …`). The not-found hint gives it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screens_unavailable: Option<String>,
     /// `LayerAdd` camera, camera modes for the capture plan.
     pub cameras: Vec<CameraInfo>,
     /// `Export`/`FrameSave` with `--out`.
@@ -110,18 +115,40 @@ pub struct AudioDeviceInfo {
     pub is_monitor: bool,
 }
 
-/// A monitor (Wayland `wl_output`).
+/// A monitor (a Wayland `wl_output`, an X11 RandR monitor).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScreenInfo {
     /// Bare output name (`DP-4`).
     pub output: String,
+    /// For people (`GIGA-BYTE GS27QA`); the output name again when nothing
+    /// else names it (an X11 monitor without an EDID).
     pub description: String,
     pub x: i32,
     pub y: i32,
     pub width: u32,
     pub height: u32,
     pub scale: f64,
+}
+
+/// How screens are listed and recorded where Qrec runs: the kind of the
+/// shell's screen backend (`capture::ScreenBackend`, picked from the
+/// session at startup). It decides how a screen is consented to, which the
+/// first run says (`view::canvas::first_run_caption`). JSON: `portal`,
+/// `x11` or `none`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScreenBackendKind {
+    /// The ScreenCast portal (Wayland): the desktop asks once for each
+    /// screen, with a picker. The fake backend's screens go this way too.
+    #[default]
+    Portal,
+    /// An X server's monitors: no picker, so adding a screen layer is the
+    /// consent (issue #9).
+    X11,
+    /// No display: no screens to discover (a project's screen layers still
+    /// go to the portal).
+    None,
 }
 
 /// A V4L2 camera and the modes it offers.

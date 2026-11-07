@@ -82,7 +82,8 @@ pub trait Sources: Send {
 /// The fake backend's devices (A§8.11, `capture::fake::fake_inventory_of`):
 /// screens `FAKE-1`, `FAKE-2` (1280×720, side by side), camera
 /// `/dev/fake0`, mic `alsa_input.fake`, monitor `alsa_output.fake.monitor`;
-/// the kind says which names and sizes they carry (`QREC_FAKE_INVENTORY`,
+/// the kind says which names and sizes they carry, or that there are no
+/// screens and why (`QREC_FAKE_INVENTORY`,
 /// which only [`SessionEnv::from_process`](crate::session::SessionEnv::from_process)
 /// reads: an in-process test gets the plain inventory unless it asks).
 #[derive(Debug, Clone, Copy, Default)]
@@ -94,7 +95,11 @@ impl Sources for FakeSources {
     }
 
     fn screens(&mut self) -> Result<Vec<ScreenInfo>, String> {
-        Ok(fake_inventory_of(self.0).screens)
+        let inventory = SourceInventory::fake_of(self.0);
+        match failure(&inventory, "screens", inventory.screens.is_empty()) {
+            Some(why) => Err(why),
+            None => Ok(inventory.screens),
+        }
     }
 
     fn cameras(&mut self) -> Result<Vec<CameraInfo>, String> {
@@ -266,11 +271,22 @@ impl SharedSources {
         }
     }
 
-    /// Discovers and caches (the caller holds `discovering`).
+    /// Discovers and caches (the caller holds `discovering`). What it
+    /// couldn't discover goes to the log as a warning, once while it lasts:
+    /// a refresh that says it again (each Add menu that opens) logs it at
+    /// debug.
     fn discover_now(&self) -> Arc<SourceInventory> {
         let inventory = Arc::new((self.shared.discover)());
+        let before = self.cached();
         for warning in &inventory.warnings {
-            tracing::debug!("sources: {warning}");
+            if before
+                .as_ref()
+                .is_some_and(|b| b.warnings.contains(warning))
+            {
+                tracing::debug!("sources: {warning}");
+            } else {
+                tracing::warn!("sources: {warning}");
+            }
         }
         *self
             .shared
@@ -279,27 +295,21 @@ impl SharedSources {
             .unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&inventory));
         inventory
     }
+}
 
-    /// Why `kind` (`screens`, `cameras`, `audio`) came back empty, when the
-    /// discovery said so (`SourceInventory::warnings` are `"<kind>: why"`).
-    fn failure(inventory: &SourceInventory, kind: &str, empty: bool) -> Option<String> {
-        let prefix = format!("{kind}: ");
-        empty
-            .then(|| {
-                inventory
-                    .warnings
-                    .iter()
-                    .find_map(|w| w.strip_prefix(&prefix).map(str::to_owned))
-            })
-            .flatten()
-    }
+/// Why `kind` (`screens`, `cameras`, `audio`) came back empty, when the
+/// discovery said so ([`SourceInventory::warning`]).
+fn failure(inventory: &SourceInventory, kind: &str, empty: bool) -> Option<String> {
+    empty
+        .then(|| inventory.warning(kind).map(str::to_owned))
+        .flatten()
 }
 
 impl Sources for SharedSources {
     fn audio(&mut self) -> Result<AudioInventory, String> {
         let inventory = self.inventory();
         let empty = inventory.audio_devices().is_empty();
-        if let Some(why) = Self::failure(&inventory, "audio", empty) {
+        if let Some(why) = failure(&inventory, "audio", empty) {
             return Err(why);
         }
         Ok(AudioInventory::from(&*inventory))
@@ -307,7 +317,7 @@ impl Sources for SharedSources {
 
     fn screens(&mut self) -> Result<Vec<ScreenInfo>, String> {
         let inventory = self.inventory();
-        match Self::failure(&inventory, "screens", inventory.screens.is_empty()) {
+        match failure(&inventory, "screens", inventory.screens.is_empty()) {
             Some(why) => Err(why),
             None => Ok(inventory.screens.clone()),
         }
@@ -315,7 +325,7 @@ impl Sources for SharedSources {
 
     fn cameras(&mut self) -> Result<Vec<CameraInfo>, String> {
         let inventory = self.inventory();
-        match Self::failure(&inventory, "cameras", inventory.cameras.is_empty()) {
+        match failure(&inventory, "cameras", inventory.cameras.is_empty()) {
             Some(why) => Err(why),
             None => Ok(inventory.cameras.clone()),
         }
@@ -564,7 +574,11 @@ impl FactsGatherer {
         if need.video_sources || need.screens {
             match self.sources.screens() {
                 Ok(screens) => facts.screens = screens,
-                Err(e) => warnings.push(format!("screens: {e}")),
+                Err(e) => {
+                    warnings.push(format!("screens: {e}"));
+                    // The not-found hint says why there are none.
+                    facts.screens_unavailable = Some(e);
+                }
             }
         }
         if need.video_sources {
@@ -1503,6 +1517,48 @@ mod tests {
         };
         assert_eq!(gatherer.gather(&other).facts.player_ns, None);
         assert_eq!(reads.load(Ordering::SeqCst), 1, "read only when asked");
+    }
+
+    /// W10: a discovery that found no screens and said why hands the
+    /// reason to the core (`Facts::screens_unavailable`, the not-found
+    /// hint's), from the fake `noscreens` inventory and from the GUI's
+    /// cache alike; found screens leave it unset.
+    #[test]
+    fn why_no_screens_were_found_is_a_fact() {
+        let (_tmp, paths) = project_dir();
+        let config = ConfigFile::new("/nonexistent/config.toml".into());
+        let need = FactsNeeded {
+            video_sources: true,
+            ..FactsNeeded::default()
+        };
+        let gather = |sources: Box<dyn Sources>| {
+            FactsGatherer::new(paths.clone(), config.clone(), sources).gather(&need)
+        };
+        let none = gather(Box::new(FakeSources(FakeInventoryKind::NoScreens)));
+        assert!(none.facts.screens.is_empty());
+        assert_eq!(
+            none.facts.screens_unavailable.as_deref(),
+            Some(sources::NO_DISPLAY)
+        );
+        assert_eq!(none.facts.cameras.len(), 1, "the cameras are still there");
+        assert_eq!(none.warnings, [format!("screens: {}", sources::NO_DISPLAY)]);
+
+        let shared = SharedSources::with_discovery(|| {
+            let mut inventory = SourceInventory::fake_of(FakeInventoryKind::NoScreens);
+            inventory.warnings =
+                vec!["screens: X11 (DISPLAY=:1): the X server didn't answer".into()];
+            inventory
+        });
+        let cached = gather(Box::new(shared));
+        assert_eq!(
+            cached.facts.screens_unavailable.as_deref(),
+            Some("X11 (DISPLAY=:1): the X server didn't answer")
+        );
+
+        let found = gather(Box::new(FakeSources(FakeInventoryKind::Plain)));
+        assert_eq!(found.facts.screens.len(), 2);
+        assert_eq!(found.facts.screens_unavailable, None);
+        assert!(found.warnings.is_empty(), "{:?}", found.warnings);
     }
 
     #[test]

@@ -5027,3 +5027,54 @@ fn the_design_inventory_labels_the_fake_sources() {
         "Built-in Audio Analog Stereo"
     );
 }
+
+/// W10: `QREC_FAKE_INVENTORY=noscreens` stands in for a machine whose
+/// discovery found no screens and said why (no display): `sources list`
+/// says it under Screens (and in its JSON's `warnings`), and adding a
+/// screen layer is `not_found` with the reason as its hint.
+#[test]
+fn a_machine_without_screens_says_why() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("no-screens");
+    let noscreens = [("QREC_FAKE_INVENTORY", OsStr::new("noscreens"))];
+    let why = "no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display";
+
+    let human = qrec_with(&env, &dir, &["sources", "list"], &noscreens);
+    human.ok();
+    let lines: Vec<&str> = human.stdout.lines().collect();
+    assert_eq!(
+        lines[..3],
+        ["Screens", &format!("  none found: {why}"), "Cameras"],
+        "{}",
+        human.stdout
+    );
+    assert!(human.stdout.contains("/dev/fake0"), "{}", human.stdout);
+    let listed = qrec_with(&env, &dir, &["sources", "list", "--json"], &noscreens);
+    listed.ok();
+    let data = &listed.only_reply()["data"];
+    assert_eq!(data["screens"], json!([]));
+    assert_eq!(data["warnings"], json!([format!("screens: {why}")]));
+    // The fake screens go through a (fake) portal: its caption.
+    assert_eq!(data["screenBackend"], "portal");
+    assert_eq!(data["mics"][0]["name"], "alsa_input.fake");
+
+    let args = ["scene", "layer", "add", "screen", "--output", "FAKE-1"];
+    let add = qrec_with(&env, &dir, &[&["--json"], &args[..]].concat(), &noscreens);
+    assert_eq!(add.code, Some(7), "{add:?}");
+    let error = add.only_reply()["error"].clone();
+    assert_eq!(error["code"], "not_found", "{error}");
+    assert_eq!(error["message"], "no screen named \"FAKE-1\"");
+    assert_eq!(error["hint"], format!("no screens were detected: {why}"));
+    // People read it on stderr.
+    let human_add = qrec_with(&env, &dir, &args, &noscreens);
+    assert_eq!(human_add.code, Some(7), "{human_add:?}");
+    assert!(
+        human_add
+            .stderr
+            .contains(&format!("hint: no screens were detected: {why}")),
+        "{}",
+        human_add.stderr
+    );
+    // With the screens there, the same command adds the layer.
+    qrec(&env, &dir, &args).ok();
+}

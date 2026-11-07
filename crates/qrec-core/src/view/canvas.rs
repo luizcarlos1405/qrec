@@ -21,7 +21,8 @@
 //! - **First run** (S01a, D-16): [`first_run`] (when: Live, an empty
 //!   scene), [`first_run_rows`], [`with_choices`] (the person's picks
 //!   across a refreshed inventory), [`first_run_commands`],
-//!   [`add_sources_label`].
+//!   [`add_sources_label`], [`first_run_screens_note`] (why there are no
+//!   screens) and [`first_run_caption`] (how screens are consented to).
 //!
 //! Geometry is in logical px at 100 % UI scale (D-46); canvas edits are in
 //! canvas px.
@@ -30,7 +31,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ctx::{AudioDeviceInfo, CameraInfo, ScreenInfo};
+use crate::ctx::{AudioDeviceInfo, CameraInfo, ScreenBackendKind, ScreenInfo};
 use crate::ids::{Frame, LayerId, TakeId};
 use crate::keymap::{Action, action_for};
 use crate::layout::place;
@@ -1127,7 +1128,8 @@ pub fn first_run(state: &State) -> bool {
 
 /// The first-run rows: screens, cameras, mics, monitors; the first screen
 /// and camera and the default mic and monitor checked (D-16; the first one
-/// when the system names no default).
+/// when the system names no default). A screen's label leaves out a
+/// description that is only its name.
 pub fn first_run_rows(
     screens: &[ScreenInfo],
     cameras: &[CameraInfo],
@@ -1138,10 +1140,16 @@ pub fn first_run_rows(
 ) -> Vec<SourceRow> {
     let mut rows = Vec::new();
     for (i, screen) in screens.iter().enumerate() {
+        // An X11 monitor without an EDID is described by its name alone:
+        // "Screen · VIRT-L", not "Screen · VIRT-L · VIRT-L".
+        let description = match screen.description.trim() {
+            same if same == screen.output => "",
+            description => description,
+        };
         rows.push(SourceRow {
             kind: SourceKind::Screen,
             source: screen.output.clone(),
-            label: row_label("Screen", &[&screen.output, &screen.description]),
+            label: row_label("Screen", &[&screen.output, description]),
             meta: Some(format!("{}\u{00d7}{}", screen.width, screen.height)),
             checked: i == 0,
         });
@@ -1266,10 +1274,51 @@ pub fn add_sources_label(checked: usize) -> String {
     }
 }
 
-/// The first-run list's heading and caption (S01a).
+/// The first-run list's heading (S01a).
 pub const FIRST_RUN_HEADING: &str = "What should Qrec record?";
+/// The first-run caption where the ScreenCast portal records screens
+/// (S01a's): each screen's picker.
 pub const FIRST_RUN_CAPTION: &str =
     "Screens ask for permission once. Your desktop shows a picker for each one.";
+/// The first-run caption on X11, which has no picker: adding a screen is
+/// the consent (issue #9).
+pub const FIRST_RUN_CAPTION_X11: &str =
+    "Screens don't ask for permission on X11: adding one lets Qrec record it.";
+
+/// The first-run caption for the screen backend (the one discovery used,
+/// the session's while it runs): X11's when an X server records the
+/// screens, else the portal's (without a display too: a project's screens
+/// still go to the portal).
+pub fn first_run_caption(backend: ScreenBackendKind) -> &'static str {
+    match backend {
+        ScreenBackendKind::X11 => FIRST_RUN_CAPTION_X11,
+        ScreenBackendKind::Portal | ScreenBackendKind::None => FIRST_RUN_CAPTION,
+    }
+}
+
+/// The muted line under the first-run list that says why it has no
+/// screens: "Screens: <why>" when discovery said why it found none (`no
+/// Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display`, `X11 (DISPLAY=:1):
+/// …`), else the doctor's word that screen capture is off when it said so
+/// (its `featuresOff` line, "Screen capture is off: …"). Nothing when
+/// screens were found, or when nobody said why there are none.
+pub fn first_run_screens_note(
+    screens: &[ScreenInfo],
+    why_none: Option<&str>,
+    capture_off: Option<&str>,
+) -> Option<String> {
+    fn said(text: Option<&str>) -> Option<&str> {
+        text.map(str::trim).filter(|t| !t.is_empty())
+    }
+    if !screens.is_empty() {
+        return None;
+    }
+    match (said(why_none), said(capture_off)) {
+        (Some(why), _) => Some(format!("Screens: {why}")),
+        (None, Some(off)) => Some(off.to_owned()),
+        (None, None) => None,
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -2019,6 +2068,82 @@ mod tests {
             ]
         );
         insta::assert_json_snapshot!("first_run", json!({"rows": rows, "commands": cmds}));
+        // Screens were found: no line says anything about them, whatever
+        // the doctor said; the portal's caption.
+        assert_eq!(
+            first_run_screens_note(&screens, None, Some("Screen capture is off: x")),
+            None
+        );
+        assert_eq!(
+            first_run_caption(ScreenBackendKind::Portal),
+            FIRST_RUN_CAPTION
+        );
+    }
+
+    /// W10: without screens the first run says why (discovery's reason,
+    /// else the doctor's line), and on X11 its caption says there is no
+    /// picker. An X11 monitor without an EDID, described by its name, is
+    /// named once.
+    #[test]
+    fn the_first_run_says_why_it_has_no_screens() {
+        let Inventory {
+            cameras,
+            mics,
+            monitors,
+            ..
+        } = design_inventory();
+        let no_display = "no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display";
+        let off = "Screen capture is off: no ScreenCast portal: no session bus";
+        let rows = first_run_rows(&[], &cameras, &mics, &monitors, None, None);
+        let note = first_run_screens_note(&[], Some(no_display), Some(off));
+        let cmds = first_run_commands(&rows);
+        insta::assert_json_snapshot!(
+            "first_run_without_screens",
+            json!({
+                "rows": rows,
+                "screensNote": note,
+                "caption": {
+                    "portal": first_run_caption(ScreenBackendKind::Portal),
+                    "x11": first_run_caption(ScreenBackendKind::X11),
+                    "none": first_run_caption(ScreenBackendKind::None),
+                },
+                "commands": cmds,
+            })
+        );
+        assert_eq!(
+            add_sources_label(rows.iter().filter(|r| r.checked).count()),
+            "Add 3 sources"
+        );
+        // The doctor's line when discovery didn't say why; nothing when
+        // nobody did (or said only blanks).
+        assert_eq!(
+            first_run_screens_note(&[], None, Some(off)).as_deref(),
+            Some(off)
+        );
+        assert_eq!(first_run_screens_note(&[], Some(" "), None), None);
+        assert_eq!(first_run_screens_note(&[], None, None), None);
+
+        let virt = |output: &str, description: &str, x| ScreenInfo {
+            output: output.into(),
+            description: description.into(),
+            x,
+            y: 0,
+            width: 960,
+            height: 1080,
+            scale: 1.0,
+        };
+        let x11 = [
+            virt("VIRT-L", "VIRT-L", 0),
+            virt("VIRT-R", "DELL U2720Q - VIRT-R", 960),
+        ];
+        let labels: Vec<String> = first_run_rows(&x11, &[], &[], &[], None, None)
+            .into_iter()
+            .map(|r| r.label)
+            .collect();
+        assert_eq!(
+            labels,
+            ["Screen · VIRT-L", "Screen · VIRT-R · DELL U2720Q - VIRT-R"]
+        );
     }
 
     /// D-27, R80: the first run is Live mode's with an empty scene; in

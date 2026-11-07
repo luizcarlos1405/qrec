@@ -477,7 +477,6 @@ pub(crate) fn take_finalized(view: &TakeFinalizedView) -> Vec<String> {
     vec![format!("Clips: {}", ids.join(", "))]
 }
 
-/// `qrec sources list` from the `SourceInventory` JSON, read leniently.
 /// A camera's modes in one short line: per format its largest mode and its
 /// fastest one, largest first, at most four, then how many more there are
 /// (`--json` lists them all). A Brio reports over 300.
@@ -563,6 +562,11 @@ fn scale(value: f64) -> String {
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
+/// `qrec sources list` from the `SourceInventory` JSON, read leniently: a
+/// table per kind, and for a kind with none what discovery said about it
+/// (its `warnings`, `"<kind>: why"`: screens, cameras, audio for the mics
+/// and system audio), "none found: no Wayland (WAYLAND_DISPLAY) or X11
+/// (DISPLAY) display".
 pub(crate) fn sources(inv: &Value) -> Vec<String> {
     let s = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).unwrap_or("").to_owned();
     let n = |v: &Value, key: &str| v.get(key).and_then(Value::as_u64);
@@ -572,19 +576,34 @@ pub(crate) fn sources(inv: &Value) -> Vec<String> {
             .cloned()
             .unwrap_or_default()
     };
-    let mut lines = Vec::new();
-    let mut section = |title: &str, headers: &[&str], rows: Vec<Vec<String>>| {
-        lines.push(title.to_owned());
-        if rows.is_empty() {
-            lines.push("  none found".to_owned());
-        } else {
-            lines.extend(
-                layout(headers, &rows, &[])
-                    .into_iter()
-                    .map(|l| format!("  {l}")),
-            );
-        }
+    let warnings = list("warnings");
+    let said = |kind: &str| {
+        let prefix = format!("{kind}: ");
+        warnings
+            .iter()
+            .filter_map(Value::as_str)
+            .find_map(|w| w.strip_prefix(prefix.as_str()))
+            .map(str::trim)
+            .filter(|why| !why.is_empty())
+            .map(str::to_owned)
     };
+    let mut lines = Vec::new();
+    let mut section =
+        |title: &str, why: Option<String>, headers: &[&str], rows: Vec<Vec<String>>| {
+            lines.push(title.to_owned());
+            if rows.is_empty() {
+                lines.push(match why {
+                    Some(why) => format!("  none found: {why}"),
+                    None => "  none found".to_owned(),
+                });
+            } else {
+                lines.extend(
+                    layout(headers, &rows, &[])
+                        .into_iter()
+                        .map(|l| format!("  {l}")),
+                );
+            }
+        };
     let screens = list("screens")
         .iter()
         .map(|sc| {
@@ -607,6 +626,7 @@ pub(crate) fn sources(inv: &Value) -> Vec<String> {
         .collect();
     section(
         "Screens",
+        said("screens"),
         &["OUTPUT", "SIZE", "POSITION", "SCALE", "DESCRIPTION"],
         screens,
     );
@@ -621,7 +641,12 @@ pub(crate) fn sources(inv: &Value) -> Vec<String> {
             vec![s(cam, "device"), s(cam, "label"), modes]
         })
         .collect();
-    section("Cameras", &["DEVICE", "LABEL", "MODES"], cameras);
+    section(
+        "Cameras",
+        said("cameras"),
+        &["DEVICE", "LABEL", "MODES"],
+        cameras,
+    );
     let audio = |key: &str, default_key: &str| -> Vec<Vec<String>> {
         let default = inv
             .get(default_key)
@@ -642,11 +667,13 @@ pub(crate) fn sources(inv: &Value) -> Vec<String> {
     };
     section(
         "Mics",
+        said("audio"),
         &["NAME", "DESCRIPTION", "DEFAULT"],
         audio("mics", "defaultMic"),
     );
     section(
         "System audio",
+        said("audio"),
         &["NAME", "DESCRIPTION", "DEFAULT"],
         audio("monitors", "defaultMonitor"),
     );
@@ -1161,6 +1188,41 @@ mod tests {
                 "  none found",
             ]
         );
+
+        // W10: an empty kind says why when discovery did; a kind with
+        // something listed keeps its table (a camera listed without modes
+        // isn't missing).
+        let inv = json!({
+            "screens": [],
+            "cameras": [{"device": "/dev/video0", "label": "Integrated Webcam", "modes": []}],
+            "mics": [],
+            "monitors": [],
+            "defaultMic": null,
+            "defaultMonitor": null,
+            "screenBackend": "none",
+            "warnings": [
+                "screens: no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display",
+                "cameras: GStreamer's device monitor didn't answer in time; listed without modes",
+                "audio: pactl wasn't found"
+            ]
+        });
+        assert_eq!(
+            sources(&inv),
+            [
+                "Screens",
+                "  none found: no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display",
+                "Cameras",
+                "  DEVICE       LABEL              MODES",
+                "  /dev/video0  Integrated Webcam",
+                "Mics",
+                "  none found: pactl wasn't found",
+                "System audio",
+                "  none found: pactl wasn't found",
+            ]
+        );
+        // What says nothing about a kind, or nothing at all, isn't a reason.
+        let inv = json!({"warnings": ["screens:  ", "elsewhere: something"]});
+        assert_eq!(sources(&inv)[..2], ["Screens", "  none found"]);
 
         let report = json!({
             "checks": [

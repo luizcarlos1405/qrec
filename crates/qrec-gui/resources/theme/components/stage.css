@@ -201,7 +201,10 @@ checkbutton.first-run-row image {
   -gtk-icon-size: 16px;
 }
 
-.first-run-looking {
+/* The "Looking for…" line, and the line that says why there are no
+   screens (W10) in its place under the list. */
+.first-run-looking,
+.first-run-note {
   min-height: 40px;
   padding: 0 12px;
 }

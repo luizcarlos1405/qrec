@@ -143,6 +143,8 @@ fn x11_screens_are_the_randr_monitors() {
         ],
         "{stderr}"
     );
+    // X11's: no picker, which the first run's caption says (W10).
+    assert_eq!(data["screenBackend"], "x11", "{data}");
     let warnings = data["warnings"].as_array().cloned().unwrap_or_default();
     assert!(
         !warnings
@@ -178,6 +180,7 @@ fn the_screen_backend_override_wins_over_the_session() {
         &[("QREC_SCREEN_BACKEND", "portal")],
     );
     assert_eq!(screens(&list["data"]), [], "{stderr}");
+    assert_eq!(list["data"]["screenBackend"], "portal", "{list}");
     assert_eq!(x.niri_calls(), "msg --json outputs\n");
 }
 

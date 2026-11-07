@@ -70,8 +70,9 @@ pub fn layer_add(
         VideoSourceArg::Screen { output } => {
             let Some(screen) = facts.screens.iter().find(|s| s.output == output) else {
                 let known: Vec<&str> = facts.screens.iter().map(|s| s.output.as_str()).collect();
+                let why = facts.screens_unavailable.as_deref();
                 return Err(CoreError::not_found(format!("no screen named {output:?}"))
-                    .with_hint(known_sources("screens", &known)));
+                    .with_hint(known_sources("screens", &known, why)));
             };
             let label = non_empty(&screen.description).unwrap_or(&output).to_owned();
             let name = format!("Screen {output}");
@@ -87,7 +88,7 @@ pub fn layer_add(
             let Some(camera) = facts.cameras.iter().find(|c| c.device == device) else {
                 let known: Vec<&str> = facts.cameras.iter().map(|c| c.device.as_str()).collect();
                 return Err(CoreError::not_found(format!("no camera at {device:?}"))
-                    .with_hint(known_sources("cameras", &known)));
+                    .with_hint(known_sources("cameras", &known, None)));
             };
             let label = non_empty(&camera.label).unwrap_or(&device).to_owned();
             let source = VideoSource::Camera { device, label };
@@ -1030,11 +1031,17 @@ fn in_scene(target: &SceneTarget) -> String {
     }
 }
 
-fn known_sources(kind: &str, known: &[&str]) -> String {
-    if known.is_empty() {
-        format!("no {kind} were detected (see `qrec sources list` and `qrec doctor`)")
-    } else {
-        format!("{kind}: {} (see `qrec sources list`)", known.join(", "))
+/// A source's not-found hint: the `known` ones of its `kind`, else why
+/// discovery found none when it said (`Facts::screens_unavailable`), else
+/// where to look.
+fn known_sources(kind: &str, known: &[&str], why_none: Option<&str>) -> String {
+    let why_none = why_none.map(str::trim).filter(|why| !why.is_empty());
+    match why_none {
+        _ if !known.is_empty() => {
+            format!("{kind}: {} (see `qrec sources list`)", known.join(", "))
+        }
+        Some(why) => format!("no {kind} were detected: {why}"),
+        None => format!("no {kind} were detected (see `qrec sources list` and `qrec doctor`)"),
     }
 }
 
@@ -1400,6 +1407,56 @@ mod tests {
         assert_eq!(
             err.hint.as_deref(),
             Some("no screens were detected (see `qrec sources list` and `qrec doctor`)")
+        );
+    }
+
+    /// W10: when discovery said why it found no screens (no display, an X
+    /// server that doesn't answer), the not-found hint says it; with
+    /// screens found it lists them whatever was said.
+    #[test]
+    fn a_missing_screen_says_why_none_were_found() {
+        let state = studio();
+        let add = |ctx: &Ctx| {
+            layer_add(
+                &state,
+                ctx,
+                SceneTarget::Project,
+                screen("DP-4"),
+                None,
+                None,
+            )
+            .unwrap_err()
+        };
+        let mut none = ctx();
+        none.facts.screens.clear();
+        none.facts.screens_unavailable =
+            Some("no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display".into());
+        let err = add(&none);
+        assert_eq!(err.code, ErrorCode::NotFound);
+        assert_eq!(err.message, "no screen named \"DP-4\"");
+        assert_eq!(
+            err.hint.as_deref(),
+            Some("no screens were detected: no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display")
+        );
+        none.facts.screens_unavailable =
+            Some("X11 (DISPLAY=:1): the X server didn't answer".into());
+        assert_eq!(
+            add(&none).hint.as_deref(),
+            Some("no screens were detected: X11 (DISPLAY=:1): the X server didn't answer")
+        );
+        // A blank reason is no reason.
+        none.facts.screens_unavailable = Some("  ".into());
+        assert_eq!(
+            add(&none).hint.as_deref(),
+            Some("no screens were detected (see `qrec sources list` and `qrec doctor`)")
+        );
+        // Found screens are the hint, whatever else was said.
+        let mut found = ctx();
+        found.facts.screens.retain(|s| s.output != "DP-4");
+        found.facts.screens_unavailable = Some("stale".into());
+        assert_eq!(
+            add(&found).hint.as_deref(),
+            Some("screens: HDMI-A-1 (see `qrec sources list`)")
         );
     }
 

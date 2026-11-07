@@ -28,6 +28,9 @@
 //! - `QREC_FAKE_INVENTORY=design`: the fake devices carry the design
 //!   brief's names and sizes (BRIEF §3); their output names, device paths
 //!   and test patterns stay the same.
+//! - `QREC_FAKE_INVENTORY=noscreens`: discovery finds no screens and says
+//!   why, as without a display (`sources::NO_DISPLAY`); the camera, mic
+//!   and system audio are the plain ones (W10's "why none" texts).
 
 use std::time::Duration;
 
@@ -80,6 +83,9 @@ pub enum FakeInventoryKind {
     Plain,
     /// `design`: the brief's monitors, camera, mic and system audio (BRIEF §3).
     Design,
+    /// `noscreens`: the plain camera, mic and system audio, and no screens,
+    /// with discovery's word why (as without a display).
+    NoScreens,
 }
 
 impl FakeHooks {
@@ -155,8 +161,9 @@ impl FakeInventoryKind {
         match value.map(str::trim) {
             None | Some("") => FakeInventoryKind::Plain,
             Some("design") => FakeInventoryKind::Design,
+            Some("noscreens") => FakeInventoryKind::NoScreens,
             Some(other) => {
-                tracing::warn!("{FAKE_INVENTORY_ENV}={other:?} isn't design; ignored");
+                tracing::warn!("{FAKE_INVENTORY_ENV}={other:?} isn't design or noscreens; ignored");
                 FakeInventoryKind::Plain
             }
         }
@@ -245,6 +252,9 @@ pub struct FakeInventory {
     pub monitors: Vec<AudioDeviceInfo>,
     pub default_mic: Option<String>,
     pub default_monitor: Option<String>,
+    /// What discovery says it couldn't find, as `"<kind>: why"` (the
+    /// `noscreens` kind's screens).
+    pub warnings: Vec<String>,
 }
 
 /// The design brief's devices (BRIEF §3.1): the monitors' names and sizes,
@@ -264,11 +274,15 @@ const DESIGN_MONITOR: &str = "Built-in Audio Analog Stereo";
 /// sizes. The design kind only renames and
 /// resizes what discovery reports: output names, device paths, camera
 /// modes and the engine's test patterns (1280×720, the same 16:9) stay.
+/// The `noscreens` kind lists no screens and says why, as discovery does
+/// without a display (the engine still has its fake screens).
 pub fn fake_inventory_of(kind: FakeInventoryKind) -> FakeInventory {
     let design = kind == FakeInventoryKind::Design;
+    let no_screens = kind == FakeInventoryKind::NoScreens;
     let mut x = 0;
     let screens = FAKE_SCREENS
         .iter()
+        .filter(|_| !no_screens)
         .enumerate()
         .map(|(i, output)| {
             let (description, (width, height)) = if design {
@@ -309,6 +323,11 @@ pub fn fake_inventory_of(kind: FakeInventoryKind) -> FakeInventory {
         }],
         default_mic: Some(FAKE_MIC.to_owned()),
         default_monitor: Some(FAKE_MONITOR.to_owned()),
+        warnings: if no_screens {
+            vec![format!("screens: {}", crate::sources::NO_DISPLAY)]
+        } else {
+            Vec::new()
+        },
     }
 }
 
@@ -414,6 +433,29 @@ mod tests {
         );
         assert_eq!(inv.default_mic.as_deref(), Some(FAKE_MIC));
         assert_eq!(inv.default_monitor.as_deref(), Some(FAKE_MONITOR));
+    }
+
+    /// `QREC_FAKE_INVENTORY=noscreens` (W10): no screens, and why, as
+    /// without a display; the plain camera, mic and system audio.
+    #[test]
+    fn the_noscreens_inventory_has_no_screens_and_says_why() {
+        assert_eq!(
+            FakeInventoryKind::parse(Some(" noscreens ")),
+            FakeInventoryKind::NoScreens
+        );
+        let inv = fake_inventory_of(FakeInventoryKind::NoScreens);
+        assert!(inv.screens.is_empty());
+        assert_eq!(
+            inv.warnings,
+            [format!("screens: {}", crate::sources::NO_DISPLAY)]
+        );
+        let plain = fake_inventory_of(FakeInventoryKind::Plain);
+        assert!(plain.warnings.is_empty());
+        assert_eq!(
+            (&inv.cameras, &inv.mics, &inv.monitors),
+            (&plain.cameras, &plain.mics, &plain.monitors)
+        );
+        assert_eq!(inv.default_mic, plain.default_mic);
     }
 
     #[test]

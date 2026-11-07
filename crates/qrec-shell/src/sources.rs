@@ -27,12 +27,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use qrec_core::ctx::{AudioDeviceInfo, CameraInfo, CameraMode, ScreenInfo};
+use qrec_core::ctx::{AudioDeviceInfo, CameraInfo, CameraMode, ScreenBackendKind, ScreenInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::capture::ScreenBackend;
 use crate::media::{ChildSpec, ChildStderr, ChildStdout, run_child};
+use crate::platform::Desktop;
 
 pub(crate) mod x11;
 
@@ -69,7 +70,15 @@ pub struct SourceInventory {
     pub default_mic: Option<String>,
     /// The source name of the default sink's monitor.
     pub default_monitor: Option<String>,
-    /// What couldn't be discovered and why (e.g. "pactl wasn't found").
+    /// How the screens are listed and recorded: the session's
+    /// [`ScreenBackend`] (`portal`, `x11` or `none`); the portal's under
+    /// the fake backend, whose screens go through a fake portal. The first
+    /// run's caption follows it.
+    #[serde(default)]
+    pub screen_backend: ScreenBackendKind,
+    /// What couldn't be discovered and why, as `"<kind>: why"` with the
+    /// kind `screens`, `cameras` or `audio` (`"audio: pactl wasn't
+    /// found"`; [`warning`](Self::warning)).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     /// Inputs that are neither mics nor monitors (`bluez_input.*`,
@@ -123,9 +132,13 @@ impl SourceInventory {
         if fake_backend() {
             return Self::fake_of(crate::capture::FakeInventoryKind::from_env()).only(what);
         }
-        let mut inventory = SourceInventory::default();
+        let backend = ScreenBackend::from_env();
+        let mut inventory = SourceInventory {
+            screen_backend: backend_kind(&backend),
+            ..SourceInventory::default()
+        };
         if what.screens {
-            match session_screens() {
+            match discover_screens(&backend) {
                 Ok(screens) => inventory.screens = screens,
                 Err(e) => inventory.warnings.push(format!("screens: {e}")),
             }
@@ -175,12 +188,14 @@ impl SourceInventory {
             monitors: fake.monitors,
             default_mic: fake.default_mic,
             default_monitor: fake.default_monitor,
-            warnings: Vec::new(),
+            // The fake screens go through the (fake) portal's path.
+            screen_backend: ScreenBackendKind::Portal,
+            warnings: fake.warnings,
             other_inputs: Vec::new(),
         }
     }
 
-    /// Keeps only the kinds `what` asks for.
+    /// Keeps only the kinds `what` asks for, and what was said about them.
     fn only(mut self, what: Discover) -> Self {
         if !what.screens {
             self.screens.clear();
@@ -195,7 +210,27 @@ impl SourceInventory {
             self.default_mic = None;
             self.default_monitor = None;
         }
+        let asked = [
+            ("screens", what.screens),
+            ("cameras", what.cameras),
+            ("audio", what.audio),
+        ];
+        self.warnings.retain(|warning| {
+            asked
+                .iter()
+                .any(|(kind, wanted)| *wanted && warning.starts_with(&format!("{kind}: ")))
+        });
         self
+    }
+
+    /// What discovery said about `kind` (`screens`, `cameras` or `audio`):
+    /// its warning without the `"<kind>: "` prefix, e.g. why it found no
+    /// screens (`no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display`).
+    pub fn warning(&self, kind: &str) -> Option<&str> {
+        let prefix = format!("{kind}: ");
+        self.warnings
+            .iter()
+            .find_map(|warning| warning.strip_prefix(prefix.as_str()))
     }
 
     /// The inventory as JSON (camelCase), e.g. for `qrec sources list --json`.
@@ -343,12 +378,35 @@ pub fn session_screens() -> Result<Vec<ScreenInfo>, String> {
     discover_screens(&ScreenBackend::from_env())
 }
 
+/// What the core knows of a [`ScreenBackend`]: its kind, without the
+/// display.
+fn backend_kind(backend: &ScreenBackend) -> ScreenBackendKind {
+    match backend {
+        ScreenBackend::Portal => ScreenBackendKind::Portal,
+        ScreenBackend::X11 { .. } => ScreenBackendKind::X11,
+        ScreenBackend::None => ScreenBackendKind::None,
+    }
+}
+
+/// The session's [`ScreenBackendKind`], known from the environment without
+/// discovering anything: what [`SourceInventory::discover`] says in
+/// `screen_backend` (the portal's under the fake backend). The first run's
+/// caption follows it while discovery runs.
+pub fn session_screen_backend() -> ScreenBackendKind {
+    if fake_backend() {
+        ScreenBackendKind::Portal
+    } else {
+        backend_kind(&ScreenBackend::from_env())
+    }
+}
+
 /// Left to right, then top to bottom, then by name.
 fn sort_screens(screens: &mut [ScreenInfo]) {
     screens.sort_by(|a, b| (a.x, a.y, &a.output).cmp(&(b.x, b.y, &b.output)));
 }
 
-/// `wl_output` v4, else `niri msg --json outputs`.
+/// `wl_output` v4, else `niri msg --json outputs`. When both fail, the
+/// error is the compositor's, and niri's only on niri ([`wayland_error`]).
 fn wayland_screens() -> Result<Vec<ScreenInfo>, String> {
     let wayland = wayland::outputs(WAYLAND_TIMEOUT);
     match wayland {
@@ -357,9 +415,26 @@ fn wayland_screens() -> Result<Vec<ScreenInfo>, String> {
             Ok(screens) => Ok(screens),
             Err(niri) => match other {
                 Ok(empty) => Ok(empty),
-                Err(wayland) => Err(format!("{wayland}; {niri}")),
+                Err(wayland) => Err(wayland_error(
+                    wayland,
+                    &niri,
+                    &crate::platform::current().desktop,
+                )),
             },
         },
+    }
+}
+
+/// Why the Wayland screens couldn't be listed: the compositor's error, then
+/// the `niri` fallback's when niri is the `desktop`. On another desktop
+/// niri's ("niri wasn't found (is it installed and on PATH?)") would point
+/// at a compositor the person doesn't run, wherever the reason shows
+/// (`sources list`, the first run, a screen layer's not-found hint).
+fn wayland_error(wayland: String, niri: &str, desktop: &Desktop) -> String {
+    if *desktop == Desktop::Niri {
+        format!("{wayland}; {niri}")
+    } else {
+        wayland
     }
 }
 
@@ -986,7 +1061,24 @@ pub fn discover_cameras() -> Result<Vec<CameraInfo>, String> {
 fn cameras_and_warning() -> (Vec<CameraInfo>, Option<String>) {
     match gst_cameras(CAMERA_TIMEOUT) {
         Ok(cameras) => (cameras, None),
-        Err(e) => (sysfs_cameras(), Some(format!("{e}; listed without modes"))),
+        Err(e) => {
+            let cameras = sysfs_cameras();
+            let warning = without_gstreamer(&e, &cameras);
+            (cameras, Some(warning))
+        }
+    }
+}
+
+/// What a camera discovery whose GStreamer part failed (`error`) says: that
+/// the `cameras` sysfs lists have no modes, or, when it lists none, that
+/// sysfs had none either (`sources list` gives that as why there are no
+/// cameras).
+#[cfg(feature = "gst")]
+fn without_gstreamer(error: &str, cameras: &[CameraInfo]) -> String {
+    if cameras.is_empty() {
+        format!("{error}; no V4L2 cameras in {VIDEO4LINUX}")
+    } else {
+        format!("{error}; listed without modes")
     }
 }
 
@@ -996,8 +1088,11 @@ fn cameras_and_warning() -> (Vec<CameraInfo>, Option<String>) {
     (sysfs_cameras(), None)
 }
 
+/// Where the kernel lists the V4L2 devices.
+const VIDEO4LINUX: &str = "/sys/class/video4linux";
+
 fn sysfs_cameras() -> Vec<CameraInfo> {
-    scan_video4linux(Path::new("/sys/class/video4linux"), Path::new("/dev"))
+    scan_video4linux(Path::new(VIDEO4LINUX), Path::new("/dev"))
 }
 
 /// Capture nodes in a `video4linux` sysfs dir: `videoN` entries whose
@@ -1381,7 +1476,87 @@ mod tests {
         let json = fake.to_json();
         assert_eq!(json["screens"][0]["output"], "FAKE-1");
         assert_eq!(json["defaultMic"], "alsa_input.fake");
+        assert_eq!(json["screenBackend"], "portal");
         assert!(json.get("warnings").is_none(), "no warnings key when empty");
+        // One written before the backend was said reads as the portal's.
+        let mut older = json.clone();
+        older.as_object_mut().unwrap().remove("screenBackend");
+        let read: SourceInventory = serde_json::from_value(older).unwrap();
+        assert_eq!(read.screen_backend, ScreenBackendKind::Portal);
+        let x11 = SourceInventory {
+            screen_backend: backend_kind(&ScreenBackend::X11 {
+                display: ":1".into(),
+            }),
+            ..SourceInventory::default()
+        };
+        assert_eq!(x11.to_json()["screenBackend"], "x11");
+        assert_eq!(backend_kind(&ScreenBackend::None), ScreenBackendKind::None);
+    }
+
+    /// W10: `QREC_FAKE_INVENTORY=noscreens` is a machine whose discovery
+    /// found no screens and said why (as without a display); a discovery
+    /// that didn't ask for screens doesn't say it.
+    #[test]
+    fn the_noscreens_inventory_says_why() {
+        let inv = SourceInventory::fake_of(crate::capture::FakeInventoryKind::NoScreens);
+        assert!(inv.screens.is_empty());
+        assert_eq!(
+            (inv.cameras.len(), inv.mics.len(), inv.monitors.len()),
+            (1, 1, 1)
+        );
+        assert_eq!(inv.warning("screens"), Some(NO_DISPLAY));
+        assert_eq!(inv.warning("cameras"), None);
+        assert_eq!(
+            inv.to_json()["warnings"],
+            serde_json::json!([format!("screens: {NO_DISPLAY}")])
+        );
+        let video = inv.clone().only(Discover::VIDEO);
+        assert_eq!(video.warning("screens"), Some(NO_DISPLAY));
+        assert!(inv.only(Discover::AUDIO).warnings.is_empty());
+    }
+
+    /// W10: a Wayland screens error ends with the niri fallback's only on
+    /// niri. On GNOME, KDE or an unknown desktop it would send people to a
+    /// compositor they don't run.
+    #[test]
+    fn a_wayland_error_names_niri_only_on_niri() {
+        let wayland = "the Wayland compositor didn't answer within 2 s";
+        let niri = "niri wasn't found (is it installed and on PATH?)";
+        assert_eq!(
+            wayland_error(wayland.to_owned(), niri, &Desktop::Niri),
+            format!("{wayland}; {niri}")
+        );
+        for desktop in [Desktop::Gnome, Desktop::Kde, Desktop::Unknown] {
+            assert_eq!(
+                wayland_error(wayland.to_owned(), niri, &desktop),
+                wayland,
+                "{desktop:?}"
+            );
+        }
+    }
+
+    /// W10: when GStreamer's device monitor fails, the cameras' warning
+    /// says the sysfs ones have no modes, or that sysfs had none either:
+    /// never "listed without modes" with nothing listed (`sources list`
+    /// gives it as why there are no cameras).
+    #[cfg(feature = "gst")]
+    #[test]
+    fn a_failed_device_monitor_says_what_sysfs_found() {
+        let error = "GStreamer's device monitor didn't answer in time";
+        assert_eq!(
+            without_gstreamer(error, &[]),
+            "GStreamer's device monitor didn't answer in time; \
+             no V4L2 cameras in /sys/class/video4linux"
+        );
+        let webcam = CameraInfo {
+            device: "/dev/video0".into(),
+            label: "Integrated Webcam".into(),
+            modes: Vec::new(),
+        };
+        assert_eq!(
+            without_gstreamer(error, &[webcam]),
+            "GStreamer's device monitor didn't answer in time; listed without modes"
+        );
     }
 
     #[test]

@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use gui_support::pointer::BUTTON_LEFT;
 use gui_support::{Launch, Nested, Options, assert_regions, reap_within, wait_for_gui_host};
 use qrec_core::state::CanvasMode;
+use qrec_core::view::canvas::{FIRST_RUN_CAPTION, FIRST_RUN_CAPTION_X11};
 use qrec_core::{ClipId, UiState};
 use qrec_shell::testkit::design::{DesignVariant, design_fixture, write_ui};
 use qrec_shell::testkit::run_tool;
@@ -378,6 +379,85 @@ fn the_first_run_keeps_its_picks_across_a_new_inventory() {
     assert_eq!(scene["audio"][1]["role"], "system", "{scene}");
     nested.window(0).wait_idle();
     assert_clean(&mut nested);
+}
+
+/// W10: a first run without screens says why under the list
+/// (`QREC_FAKE_INVENTORY=noscreens`, as without a display), in the
+/// "Looking for…" line's muted style, between the list and the button: the
+/// camera, mic and system audio rows, "Add 3 sources", and the portal's
+/// caption (the fake screens' way). Then discovery answers from an X
+/// server (the test channel's `sources` op stands in for it): its monitor
+/// without an EDID is named once, the line goes, and the caption says X11
+/// has no picker.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_first_run_says_why_it_has_no_screens() {
+    let mut nested = Nested::start(AREA, "first-run-no-screens", Options::default());
+    let project = nested.env.empty_dir("rust-traits-talk");
+    open(
+        &mut nested,
+        &project,
+        Launch::a11y().with_env("QREC_FAKE_INVENTORY", "noscreens"),
+    );
+    let why = "Screens: no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display";
+    let labels = stage_labels(&mut nested);
+    assert_shows(
+        &labels,
+        &[
+            why,
+            "Camera · Fake camera",
+            "Mic · Fake mic",
+            "System audio · Fake system audio",
+            "Add 3 sources",
+            FIRST_RUN_CAPTION,
+        ],
+    );
+    assert!(
+        !labels.iter().any(|l| l.starts_with("Screen ·")),
+        "no screen rows: {labels:?}"
+    );
+    let at = nested
+        .window(0)
+        .regions(&["first-run-row-2", "first-run-note", "first-run-add"]);
+    let (last_row, note, add) = (
+        at["first-run-row-2"],
+        at["first-run-note"],
+        at["first-run-add"],
+    );
+    assert!(
+        note[1] >= last_row[1] + last_row[3] && note[1] + note[3] <= add[1],
+        "the line is between the list and the button: {at:?}"
+    );
+    assert!(note[3] >= 40.0, "the looking line's 40 px: {note:?}");
+    assert_clean(&mut nested);
+    nested.screenshot("first-run-no-screens");
+
+    let reply = nested.window(0).ctl(json!({"op": "sources"}));
+    assert_eq!(reply["ok"], true, "{reply}");
+    let mut inventory = reply["inventory"].clone();
+    assert_eq!(inventory["screenBackend"], "portal", "{inventory}");
+    inventory["screens"] = json!([{
+        "output": "VIRT-L", "description": "VIRT-L",
+        "x": 0, "y": 0, "width": 960, "height": 1080, "scale": 1.0,
+    }]);
+    inventory["warnings"] = json!([]);
+    inventory["screenBackend"] = json!("x11");
+    let pushed = nested
+        .window(0)
+        .ctl(json!({"op": "sources", "inventory": inventory}));
+    assert_eq!(pushed["ok"], true, "{pushed}");
+    let labels = gui_support::poll(Duration::from_secs(10), "the X server's screen", || {
+        let labels = stage_labels(&mut nested);
+        labels
+            .iter()
+            .any(|l| l == "Screen · VIRT-L")
+            .then_some(labels)
+    });
+    assert_shows(&labels, &["Add 4 sources", FIRST_RUN_CAPTION_X11]);
+    assert_hides(&labels, &[why, FIRST_RUN_CAPTION]);
+    nested.window(0).wait_idle();
+    assert_clean(&mut nested);
+    nested.screenshot("first-run-x11");
 }
 
 /// S01b: `Enter` on S01a adds the four sources (D-16: the screen, the
