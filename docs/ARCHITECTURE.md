@@ -2667,7 +2667,15 @@ get a "config.toml is invalid" warning once per change of the file
 applies `theme`, `ui.scale` and `ui.reduced_motion` as soon as the file
 changes (A§8.9's settings watcher; GUI G§3.14).
 
-### A§9.10 New projects (`new_project.rs`)
+### A§9.9 Naming (`naming.rs`)
+
+`file_stem(name)`: replace `/`, NUL, control characters and `%` with `_`,
+`.qrec-part` with `_qrec-part` (no export or frame name contains the temp
+marker `.qrec-part-`, A§8.7, even when the cut stem is followed by `-`),
+strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
+`qrec`. Used for exports, frames and capture file names.
+
+### A§9.10 New and recent projects (`new_project.rs`, `recents.rs`)
 
 `new_project::resolve(target, cwd, projects_folder)` is the one rule behind
 `qrec create` and the project picker's New project field (SPEC §4.4): it turns
@@ -2679,13 +2687,21 @@ in `..` have no folder name to make (`Usage`). Non-UTF-8 names are kept as
 they are. The shell's `projects::make_folder` makes the last part only and
 returns a folder already there untouched, for the folder rule to judge.
 
-### A§9.9 Naming (`naming.rs`)
+`recents::RecentProjects` is the list behind the picker and
+`projects.open_last`: `{ projects: [{ dir, openedAt }] }`, most recent first,
+one entry a folder, at most 50. It lives in
+`$XDG_STATE_HOME/qrec/recent-projects.json`, not in `config.toml`: it is a
+history the app writes, and the settings file is meant for hand editing and
+followed live. `projects::note_opened` adds a project once the window opened
+it (G§3.3 step 8), so a failed open is never remembered and the CLI never
+writes it. A file that can't be read counts as empty; a failed write is
+logged; a write is atomic, so two windows at once can lose one's entry, never
+the file. A folder whose path isn't UTF-8 isn't listed.
 
-`file_stem(name)`: replace `/`, NUL, control characters and `%` with `_`,
-`.qrec-part` with `_qrec-part` (no export or frame name contains the temp
-marker `.qrec-part-`, A§8.7, even when the cut stem is followed by `-`),
-strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
-`qrec`. Used for exports, frames and capture file names.
+`projects::bare_launch(cwd, config, recents)` is what `qrec` opens without
+`--project`: the project in the cwd (one that lost its `qrec.json` too); else
+the last project, with `projects.open_last` on and only if it still holds
+`qrec.json`; else the picker (GUI G§4.12).
 
 ---
 

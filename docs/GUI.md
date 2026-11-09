@@ -194,7 +194,7 @@ requirement review's numbering; H-n are host and engine calls.
 | D-11 | Key precedence is the algorithm in G§3.8. Chrome buttons are `focus-on-click = false`, so a click never makes `Space` or `Enter` activate a button. The bin list's `↑` `↓` `Enter` `Space` (Q6) and the keys inside overlays (`Tab`, `Enter`, `↑` `↓` in a list) are widget keys, not bindings, like typing in a field. | WP0b |
 | D-12 | Window close and `app.quit`. Countdown: `RecordCancel`. Starting or Recording: `RecordStop`; the window stays (finalizing) and closes once Idle. Export running: modal "Quit while exporting?" with Keep exporting (focused) and Cancel export and quit. Autocut analysis: dropped (the closing host doesn't wait for it and dropping its Session cancels it: nothing is cut, also for the "autocut after every take" analysis of the take just stopped). Recovery probe: wait (≤ 60 s; then the host stops waiting and the next open recovers the take). | WP0b, WP6 |
 | D-13 | A second GUI on a project a GUI holds gets the page "This project is open in another Qrec window" (pid) and Quit (exit 6). GUI hosts refuse the wire `shutdown` with `busy` "the Qrec window holds this project; close it there". | WP0a, WP0b |
-| D-14 | The GUI never adopts another folder's project: no live-host fallback and no ancestor project. A folder inside a project gets X2 with the extra line "It's inside the project <dir>; run qrec there." | WP0b |
+| D-14 | The GUI never adopts another folder's project: no live-host fallback and no ancestor project. A folder inside a project gets X2 with the extra line "It's inside the project <dir>; run qrec there." With no `--project` such a folder gets the project picker instead (G§4.12); X2 stays for `--project`. | WP0b |
 | D-15 | Autocut page (S12). The sliders are a draft: tuning writes no history. At most one dry run is in flight: a change made while one runs is kept and sent when its reply arrives (newest wins, 250 ms debounce). While a dry run runs, the summary title shows a 16 px spinner and "Analyzing…"; clip plates show the analyzing spinner only for `Autocut` jobs with `dry_run: false`. Apply = `AutocutSettings{patch}` with the changed fields (only if any changed), then `Autocut{scope, dry_run: false}`: two entries, the cut undoes first. Cancel and `Esc` dispatch nothing. "Run autocut after every take" dispatches `AutocutSettings{auto_run_after_take}` at once. "Detect silence on" is part of the draft (`track`). | WP5 |
 | D-16 | First run "Add N sources": N commands in one FIFO, screens first, then cameras, then the mic, then system audio (so the camera lands on top); N history entries. Checked by default: the first screen, the first camera, the default mic, the default monitor. | WP4 |
 | D-17 | **PO** Bin Preview plays the whole take (`plan_ges_take`) in the Program picture with the badge `TAKE 4` (C06 pill, film icon). In Live mode it first dispatches `SetCanvasMode{Program}`, and stays in Program afterwards. `Space` toggles it while `LocalUi.focus == Bin`; `Esc`, closing the bin or any timeline action ends it. GUI-local, no command. | WP4, WP7 |
@@ -265,6 +265,10 @@ qrec (bin) ──► qrec-cli ────────────────�
 
 ### G§3.2 `qrec` with no command
 
+Without `--project` the steps below run only once
+`projects::bare_launch` picked a project; otherwise the project picker runs
+instead (G§4.12).
+
 1. `main()` keeps its order (A§8.10): GPU probe child → `is_gui` (no
    command) → `gpu::prepare_gpu_env(for_gui)` → `qrec_cli::run_process`.
 2. `exec::execute`: `Plan::Gui` → `project_dir(cli, cwd)` →
@@ -285,7 +289,8 @@ qrec (bin) ──► qrec-cli ────────────────�
      includes `qrec_gui`;
    - `host_log` (`cli_host.rs`, the CLI's "host disconnected" hint) names
      this file for GUI hosts;
-   - then `qrec_gui::run(GuiArgs { project, explicit, verbose })`.
+   - then `qrec_gui::run(GuiArgs { project, explicit, verbose })`, where
+     `explicit` is "it came from `--project`".
 4. `qrec_gui::run`: `host::signals::install(&HOST_SIGNALS)`; G§3.3 step
    1; `adw::Application` with id `com.rsensato.qrec` and
    `ApplicationFlags::NON_UNIQUE`; `app.run_with_args::<&str>(&[])`;
@@ -2060,6 +2065,8 @@ a module list.
 | `src/guard.rs` | the callback guard: `guarded!`, guarded sources, the panic report (G§3.12 R10) | WP0b |
 | `src/testctl.rs` | test control channel (G§3.18) | WP0b |
 | `src/follow.rs` | the settings follower: `config.toml` and `keys.toml` live (G§3.14) | WP10 |
+| `src/picker.rs` | the project picker: its own window and `run`, `exec` into a project, `spawn` from a window (G§4.12) | projects |
+| `src/settings/projects.rs` | Settings › Project's "All projects" group (G§4.12) | projects |
 | `src/probe.rs` | the main-loop probe (G§8.6): stalls, the dispatch that held the loop, where the main thread's time went | WP10, perf lane |
 | `src/gpu_warmup.rs` | the GL renderer's programs compiled after the first frame, offscreen (G§8.6) | perf lane |
 | `src/theme/{mod,fonts,motion,css,art}.rs` | providers, fonts, MotionPolicy, scale preprocessing, art templates through `gtk::Svg` | WP0b |
@@ -3338,6 +3345,28 @@ info toast titled with the reason. (`palette.open` and `keys.help` toasted
   including the conflict banner "1 conflict in ~/.config/qrec/keys.toml",
   "X is bound to both Autocut and Remove clips. Neither runs until one is
   changed.").
+
+### G§4.12 The project picker (`view::picker`, `src/picker.rs`)
+
+What `qrec` shows with nothing to open (SPEC §4.4). `Shell::gui` decides: `--project` opens that folder; otherwise `qrec_shell::projects::bare_launch` looks at the cwd, `projects.open_last` and the recent list, and says open that project or show the picker. `qrec --pick` (`Plan::Picker`) always shows it. It logs to `state/picker.log`.
+
+**Not drawn.** There is no frame for it in `design/qrec.pen`: it is built from X2's shell (the minimal header `Xba2H`, the storybook title) and S21's rows, like Settings › Recording and Autocut. Swamp Night's tokens carry to the other themes. It still needs a frame and the owner's approval.
+
+**One startup path.** The picker is a small window of its own: no lock, host or GStreamer. Picking a project `exec`s `qrec --project <dir>` over the process, so the project goes through G§3.3 unchanged, logs to its own log and the shell still gets the window's exit code; the pid stays the same. The `xdg_activation` token goes along in `XDG_ACTIVATION_TOKEN`, as GTK already consumed the one this process got. An `exec` that fails comes back as an error line in the picker.
+
+**From a running window.** The palette's keyless "Open or create a project…" (`projects.open`) runs `qrec --pick` as a child (`picker::spawn`, GLib reaps it), so the window and what it is doing carry on, and a project it opens gets its own window: GUIs on two projects were already fine (G§3.2's per-project log, the per-project lock). Whether two windows may record at once is not settled.
+
+**Off the GTK thread (R1).** The folders are looked at, and new ones made, on `qrec-picker-io`. Rows start as `Checking` and can be pressed; opening looks at the folder again.
+
+**Keys.** The search has the focus: typing filters, `↑` `↓` move the selection, `Enter` opens it. `Ctrl+N` New project, `Ctrl+O` Open folder, `Ctrl+Q` quits, `Esc` clears the search or leaves New project. They are fixed, not `keys.toml` bindings: no project is open to run them.
+
+**New project.** One field, a name or a path (`new_project::resolve`, A§9.10). Under it `view::picker::new_project_hint` says where it would go, from the text alone; Create follows. A link chooses `projects.folder`, which the picker is the only place to set before any project exists.
+
+**Never a dead end.** A last project that is gone is the picker. One that can't be read is X3 with one more button, "Open another project…" (`BlockingAction::ChooseProject`): only when the window wasn't asked for with `--project` (`picker::offered`), so X3 under `--project` stays the approved frame.
+
+**Settings.** Settings › Project ends with an "All projects" group (`view::settings::all_projects`, not drawn: S18b's rows): "Open the last project on start" and "Projects folder" (Choose…, Clear), both in `config.toml`.
+
+`gui_picker` covers each launch in a nested compositor.
 
 ---
 
