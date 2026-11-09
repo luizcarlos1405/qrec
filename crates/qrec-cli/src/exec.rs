@@ -56,9 +56,10 @@ pub(crate) fn execute(
     let result = match planned {
         Err(e) => Err(e),
         // The window prints nothing on stdout: `--json` has nothing to say.
-        Ok(Plan::Gui) if g.json => Err(CoreError::usage(GUI_NO_JSON)),
+        Ok(Plan::Gui | Plan::Picker) if g.json => Err(CoreError::usage(GUI_NO_JSON)),
         Ok(Plan::Gui) => project_dir(cli, env.cwd.as_deref())
             .and_then(|(dir, explicit)| backend.gui(&dir, explicit)),
+        Ok(Plan::Picker) => backend.picker(env.cwd.as_deref()),
         Ok(Plan::Local(local)) => run_local(&local, cli, backend, env, &mut ui),
         Ok(Plan::Project(plan)) => project_dir(cli, env.cwd.as_deref())
             .map(|(dir, explicit)| run_project(&plan, &dir, explicit, backend, &mut ui)),

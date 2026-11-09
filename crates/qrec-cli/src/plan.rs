@@ -26,6 +26,8 @@ use crate::backend::{Fallback, ProjectRequest, RECORD_DEADLINE, RouteOpts};
 pub enum Plan {
     /// `qrec` without a command: the GUI.
     Gui,
+    /// `qrec --pick`: the project picker.
+    Picker,
     /// A command that needs no project (A§10).
     Local(Local),
     /// A request for the project's host (boxed: it is much bigger than
@@ -140,8 +142,12 @@ const GUI_ONLY_HINT: &str =
 /// `None` (the current directory can't be read) refuses only a relative one.
 pub fn plan(cli: &Cli, cwd: Option<&Path>) -> Result<Plan, CoreError> {
     let Some(command) = &cli.command else {
-        return Ok(Plan::Gui);
+        return Ok(if cli.pick { Plan::Picker } else { Plan::Gui });
     };
+    if cli.pick {
+        return Err(CoreError::usage("--pick only goes with `qrec` alone")
+            .with_hint("run `qrec --pick` without a command"));
+    }
     let local = |local| Ok(Plan::Local(local));
     let builder = Builder {
         confirmed: cli.global.yes,

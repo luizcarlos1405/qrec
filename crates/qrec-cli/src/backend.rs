@@ -206,6 +206,14 @@ pub trait Backend {
         Err(CoreError::unavailable(crate::GUI_NOT_BUILT))
     }
 
+    /// `qrec --pick` (docs/GUI.md G§3.2): the project picker, until it
+    /// closes or a project opens; `cwd` is where a relative new-project
+    /// path starts. Default: this build has no GUI.
+    fn picker(&mut self, cwd: Option<&Path>) -> Result<u8, CoreError> {
+        let _ = cwd;
+        Err(CoreError::unavailable(crate::GUI_NOT_BUILT))
+    }
+
     /// Makes the folder of a new project (`qrec create`, A§8.4): the last
     /// part of `path` only. Returns the folder, canonical. Default: this
     /// build has no shell.

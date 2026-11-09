@@ -36,6 +36,12 @@ PROJECT FOLDER
   Commands that need no project work anywhere: --help, version, doctor,
   sources list, schema, keys, agent-guide, config, completions.
 
+THE WINDOW
+  `qrec` with no command opens the project in the current folder. Anywhere
+  else it shows the project picker, or opens the last project when
+  projects.open_last is on. `qrec --project DIR` opens that folder and
+  `qrec --pick` always shows the picker.
+
 TIMES
   412f (frames), 13.7s, 00:00:13:21 (HH:MM:SS:FF), 00:00:13.700. Relative
   values (+1f, -2s) only where a help text says so. Clip times count from
@@ -73,7 +79,11 @@ EXIT CODES
 pub struct Cli {
     #[command(flatten)]
     pub global: Global,
-    // No command opens the GUI in the current folder.
+    /// Show the project picker, whatever the current folder holds.
+    #[arg(long, conflicts_with = "project")]
+    pub pick: bool,
+    // No command opens the GUI: the current folder's project, else the last
+    // project or the picker (SPEC §4.4).
     #[command(subcommand)]
     pub command: Option<Cmd>,
 }

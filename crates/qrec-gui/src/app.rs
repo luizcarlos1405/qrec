@@ -140,6 +140,7 @@ pub fn fundamentals_first() -> Option<bool> {
 /// `qrec_gui::run`.
 pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
     log_panics();
+    crate::picker::set_offered(!args.explicit);
     let interrupts = signals::install(&HOST_SIGNALS).unwrap_or_else(|e| {
         tracing::warn!("signals won't be handled gracefully: {e}");
         Interrupts::new()
@@ -167,24 +168,11 @@ pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
     register_fundamentals();
     // Steps 3 and 4 now, while GTK starts: the lock and the socket come
     // first. Not without a Wayland display: nothing is touched then.
-    let gdk_backend = std::env::var_os("GDK_BACKEND");
     let early = wanted && display_reachable(&DisplayEnv::from_process());
     if early {
         start_workers(&startup);
     }
-    // A Wayland app: GDK never falls back to X11 (an X server of the
-    // session, say), unless GDK_BACKEND asks for another backend.
-    if gdk_backend.is_none() {
-        gtk::gdk::set_allowed_backends("wayland");
-    }
-    if let Err(e) = gtk::init() {
-        return Err(CoreError::unavailable(format!(
-            "can't open the window: {e} (is there a Wayland display?)"
-        )));
-    }
-    if let Err(e) = adw::init() {
-        return Err(CoreError::unavailable(format!("libadwaita: {e}")));
-    }
+    init_toolkit()?;
     if wanted && !early {
         start_workers(&startup);
     }
@@ -210,12 +198,56 @@ pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
     Ok(EXIT_CODE.with(Cell::get))
 }
 
+/// GTK and libadwaita on this thread. A Wayland app: GDK never falls back to
+/// X11 (an X server of the session, say), unless GDK_BACKEND asks for
+/// another backend.
+pub(crate) fn init_toolkit() -> Result<(), CoreError> {
+    if std::env::var_os("GDK_BACKEND").is_none() {
+        gtk::gdk::set_allowed_backends("wayland");
+    }
+    if let Err(e) = gtk::init() {
+        return Err(CoreError::unavailable(format!(
+            "can't open the window: {e} (is there a Wayland display?)"
+        )));
+    }
+    if let Err(e) = adw::init() {
+        return Err(CoreError::unavailable(format!("libadwaita: {e}")));
+    }
+    Ok(())
+}
+
+/// What every window needs before its first widget: the resources, the
+/// fonts, then the theme's providers and the icons (G§3.3 step 2, G§3.14).
+pub(crate) fn install_look(theme: &Theme) {
+    register_resources();
+    if let Some(dir) = crate::theme::fonts::font_dir() {
+        for warning in crate::theme::fonts::register(&dir) {
+            tracing::warn!("{warning}");
+        }
+    }
+    let resolved = crate::theme::fonts::resolve();
+    if crate::theme::fonts::all_resolved(&resolved) {
+        tracing::info!("fonts: the three bundled families resolve");
+    } else {
+        tracing::warn!("fonts: not every bundled family resolves: {resolved:?}");
+    }
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::IconTheme::for_display(&display).add_resource_path(ICONS);
+        theme.install(&display);
+        tracing::info!(
+            "theme {} at scale {} before the first frame",
+            crate::theme::css_name(theme.id()),
+            theme.scale()
+        );
+    }
+}
+
 /// GTK `startup`: GTK's settings. Font rendering is GTK's manual mode
 /// (`theme::fonts::configure_rendering`); test mode turns animations (but
 /// with its `animations` flag) and the cursor blink off (G§8.4). The fonts,
 /// the theme providers and the icon theme come with the window
 /// (`activate`).
-fn on_startup() {
+pub(crate) fn on_startup() {
     let Some(settings) = gtk::Settings::default() else {
         return;
     };
@@ -275,29 +307,7 @@ fn activate(app: &adw::Application, startup: Startup) {
         ui.scale,
         MotionPolicy::from_settings(ui.reduced_motion),
     );
-    register_resources();
-    // The fonts first (before any widget the window shows), then the
-    // theme's providers and the icons (G§3.3 step 2, G§3.14).
-    if let Some(dir) = crate::theme::fonts::font_dir() {
-        for warning in crate::theme::fonts::register(&dir) {
-            tracing::warn!("{warning}");
-        }
-    }
-    let resolved = crate::theme::fonts::resolve();
-    if crate::theme::fonts::all_resolved(&resolved) {
-        tracing::info!("fonts: the three bundled families resolve");
-    } else {
-        tracing::warn!("fonts: not every bundled family resolves: {resolved:?}");
-    }
-    if let Some(display) = gtk::gdk::Display::default() {
-        gtk::IconTheme::for_display(&display).add_resource_path(ICONS);
-        theme.install(&display);
-        tracing::info!(
-            "theme {} at scale {} before the first frame",
-            crate::theme::css_name(theme.id()),
-            theme.scale()
-        );
-    }
+    install_look(&theme);
     let window = MainWindow::new(app, &name);
     // `.reduced-motion` follows the motion policy, also when it changes
     // live (WP10's switch, G§3.14).
@@ -517,6 +527,7 @@ impl App {
             qrec_core::view::blocking::BlockingAction::StopAndOpen,
             qrec_core::view::blocking::BlockingAction::Wait,
             qrec_core::view::blocking::BlockingAction::Quit,
+            qrec_core::view::blocking::BlockingAction::ChooseProject,
         ] {
             let weak = Rc::downgrade(self);
             actions.register(
@@ -530,6 +541,15 @@ impl App {
         }
         let weak = Rc::downgrade(self);
         actions.register(
+            crate::picker::OPEN_ACTION,
+            Rc::new(move || {
+                if let Some(app) = weak.upgrade() {
+                    app.open_picker();
+                }
+            }),
+        );
+        let weak = Rc::downgrade(self);
+        actions.register(
             "app.cancel-export-and-quit",
             Rc::new(move || {
                 if let Some(app) = weak.upgrade() {
@@ -540,6 +560,18 @@ impl App {
         );
     }
 
+    /// "Open or create a project…": the picker in a process of its own, so
+    /// this window and what it is doing carry on; a project it opens gets
+    /// its own window.
+    pub fn open_picker(&self) {
+        if let Err(message) = crate::picker::spawn() {
+            self.ctx.store.notify(
+                Notice::new(ToastLevel::Error, "Couldn't open the project picker")
+                    .with_body(message),
+            );
+        }
+    }
+
     /// The window's scale factor (the preview's size cap, step 5).
     pub fn scale_factor(&self) -> i32 {
         self.window.window.scale_factor()
@@ -548,9 +580,23 @@ impl App {
     /// The Session opened (step 8 is the media hub's).
     pub fn on_opened(self: &Rc<Self>) {
         tracing::info!("the project is open");
+        self.remember_project();
         if testctl::mode().on {
             log_regions_when_mapped(self);
         }
+    }
+
+    /// The project goes first in the recent list, now that it really opened
+    /// (on `qrec-gui-io`: no file I/O on the GTK thread, R1).
+    fn remember_project(&self) {
+        let prepared = self.startup.prepared();
+        let Some(dirs) = prepared.dirs.clone() else {
+            return;
+        };
+        let dir = prepared.dir.clone();
+        self.ctx.media.run_io(move || {
+            qrec_shell::projects::note_opened(&dirs, &dir, Utc::now());
+        });
     }
 
     /// After every snapshot: the close sequence waits for Idle.

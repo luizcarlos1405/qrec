@@ -72,6 +72,7 @@ struct Fake {
     hosted: Vec<(PathBuf, HostArgs)>,
     /// The windows asked for: the folder and whether `--project` named it.
     guis: Vec<(PathBuf, bool)>,
+    pickers: Vec<Option<PathBuf>>,
     /// What the window's process exits with.
     gui_exit: u8,
     logging: Option<(u8, bool)>,
@@ -89,6 +90,7 @@ impl Fake {
             sources: Err(CoreError::unavailable("no sources")),
             hosted: vec![],
             guis: vec![],
+            pickers: vec![],
             gui_exit: 0,
             logging: None,
         }
@@ -174,6 +176,11 @@ impl Backend for Fake {
 
     fn gui(&mut self, project: &Path, explicit: bool) -> Result<u8, CoreError> {
         self.guis.push((project.to_path_buf(), explicit));
+        Ok(self.gui_exit)
+    }
+
+    fn picker(&mut self, cwd: Option<&Path>) -> Result<u8, CoreError> {
+        self.pickers.push(cwd.map(Path::to_path_buf));
         Ok(self.gui_exit)
     }
 }
@@ -1743,6 +1750,29 @@ fn the_host_command_gets_an_absolute_project() {
         (fake.hosted[0].1.lock_fd, fake.hosted[0].1.ready_fd),
         (Some(3), Some(4))
     );
+}
+
+/// `qrec --pick` is the picker whatever the folder holds, and alone: not
+/// with a folder, a command or `--json`. It works without a current folder.
+#[test]
+fn pick_shows_the_picker() {
+    let tmp = Tmp::new();
+    let project = tmp.project("p");
+    let mut fake = Fake::new(&tmp.dir("cfg"));
+    assert_eq!(run(&mut fake, &project, "qrec --pick").code, 0);
+    assert_eq!(fake.pickers, [Some(project.clone())]);
+    assert!(fake.guis.is_empty(), "not the project's window");
+    assert_eq!(run_in(&mut fake, None, "qrec --pick").code, 0);
+    assert_eq!(fake.pickers.last().unwrap(), &None);
+    let opened = fake.pickers.len();
+    for line in [
+        "qrec --pick --project p",
+        "qrec --pick status",
+        "qrec --pick --json",
+    ] {
+        assert_eq!(run(&mut fake, &project, line).code, 2, "{line}");
+    }
+    assert_eq!(fake.pickers.len(), opened);
 }
 
 /// `qrec` without a command opens the window on the current folder or on

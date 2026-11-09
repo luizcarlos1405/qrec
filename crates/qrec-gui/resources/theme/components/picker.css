@@ -1,0 +1,110 @@
+/*
+ * The project picker (G§4.12): the window `qrec` shows when it has no
+ * project to open. Built in the patterns of X2 (the minimal header, the
+ * storybook title) and S21 (the rows, the 16 px rhythm); it has no frame in
+ * design/qrec.pen yet.
+ */
+
+.qrec-picker {
+  background-color: var(--qrec-bg);
+  color: var(--qrec-text);
+}
+
+.qrec-picker .picker-page {
+  padding: 24px 32px 16px 32px;
+  border-spacing: 16px;
+}
+
+.qrec-picker .picker-head {
+  border-spacing: 8px;
+}
+
+.qrec-picker .picker-here {
+  padding: 12px 16px;
+  border-radius: var(--qrec-radius-md);
+  background-color: var(--qrec-surface);
+  box-shadow: inset 0 0 0 1px var(--qrec-border);
+  border-spacing: 12px;
+}
+
+.qrec-picker .picker-error {
+  color: var(--qrec-record-text);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.qrec-picker button.qrec-link {
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: none;
+  box-shadow: none;
+  color: var(--qrec-accent-text);
+}
+
+.qrec-picker button.qrec-link label {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 18px;
+}
+
+.qrec-picker .picker-placeholder {
+  margin: 48px 0;
+}
+
+.qrec-picker list.picker-list {
+  background-color: transparent;
+}
+
+.qrec-picker list.picker-list > row {
+  padding: 0;
+  border-radius: var(--qrec-radius-md);
+}
+
+.qrec-picker list.picker-list > row:hover {
+  background-color: var(--qrec-hover);
+}
+
+.qrec-picker list.picker-list > row:selected {
+  background-color: var(--qrec-selected);
+}
+
+.qrec-picker list.picker-list > row:focus:focus-visible {
+  outline: 2px solid var(--qrec-focus-ring);
+  outline-offset: -2px;
+}
+
+.qrec-picker .picker-row {
+  padding: 8px 8px 8px 12px;
+  border-spacing: 12px;
+}
+
+.qrec-picker .picker-name {
+  font-weight: 600;
+}
+
+.qrec-picker .picker-row.gone .picker-name {
+  color: var(--qrec-disabled-text);
+  font-weight: 400;
+}
+
+/* As the hint bar: `surface` with a hairline above it, 32 px tall. */
+.qrec-picker .picker-hints {
+  min-height: 32px;
+  padding: 0 12px;
+  background-color: var(--qrec-surface);
+  box-shadow: inset 0 1px var(--qrec-border);
+  border-spacing: 16px;
+}
+
+.qrec-picker .picker-hint {
+  border-spacing: 4px;
+}
+
+.qrec-picker .picker-hint-label {
+  color: var(--qrec-muted);
+  font-size: 13px;
+  line-height: 18px;
+}

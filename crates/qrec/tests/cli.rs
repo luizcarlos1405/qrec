@@ -4595,8 +4595,9 @@ fn qrec_without_a_command() {
     let log_of = |dir: &Path| dirs.gui_log(&fs::canonicalize(dir).unwrap());
     assert!(!log_of(&a).exists(), "--json opened no window");
 
+    let on = |dir: &Path| dir.to_str().unwrap().to_owned();
     for _ in 0..2 {
-        let gui = qrec(&env, &a, &[]);
+        let gui = qrec(&env, &a, &["--project", &on(&a)]);
         assert_eq!(gui.code, Some(1), "{}", gui.stderr);
         assert!(
             gui.stderr.contains("can't open the window"),
@@ -4606,7 +4607,7 @@ fn qrec_without_a_command() {
     }
     let left: Vec<_> = fs::read_dir(&a).unwrap().flatten().collect();
     assert!(left.is_empty(), "the folder stays empty: {left:?}");
-    qrec(&env, &b, &["-v"]);
+    qrec(&env, &b, &["-v", "--project", &on(&b)]);
     let headers = |dir: &Path| {
         fs::read_to_string(log_of(dir))
             .unwrap()
@@ -4621,6 +4622,29 @@ fn qrec_without_a_command() {
         text.contains(&format!("{} ===", fs::canonicalize(&a).unwrap().display())),
         "{text}"
     );
+
+    // No `--project`, and nothing to open here: the picker, with its own
+    // log, and the empty folder isn't made a project.
+    assert!(!dirs.picker_log().exists());
+    let picker = qrec(&env, &a, &[]);
+    assert_eq!(picker.code, Some(1), "{}", picker.stderr);
+    assert!(
+        picker.stderr.contains("can't open the window"),
+        "{}",
+        picker.stderr
+    );
+    assert!(dirs.picker_log().exists(), "the picker logs to its own");
+    assert_eq!(headers(&a), 2, "not the project's log");
+    assert!(fs::read_dir(&a).unwrap().next().is_none());
+
+    // A project here opens instead (its log), and `--pick` still asks.
+    qrec(&env, &b, &["init"]).ok();
+    qrec(&env, &b, &[]);
+    assert_eq!(headers(&b), 2);
+    let size = fs::metadata(dirs.picker_log()).unwrap().len();
+    qrec(&env, &b, &["--pick"]);
+    assert_eq!(headers(&b), 2);
+    assert!(fs::metadata(dirs.picker_log()).unwrap().len() > size);
 }
 
 /// X1 "Stop & open" against a real headless recorder (the fake backend):
