@@ -32,6 +32,7 @@ pub struct UserConfig {
     pub autocut: AutocutDefaults,
     pub encoder: EncoderDefaults,
     pub ui: UiDefaults,
+    pub projects: ProjectsDefaults,
 }
 
 impl UserConfig {
@@ -158,6 +159,19 @@ impl Default for UiDefaults {
     }
 }
 
+/// `[projects]`: where new projects go and what `qrec` opens by itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProjectsDefaults {
+    /// The folder a new project given by name goes in (an absolute path).
+    /// Unset by default: a bare name is refused, a path still works
+    /// ([`crate::new_project`]).
+    pub folder: Option<String>,
+    /// `qrec` outside a project opens the last project instead of the
+    /// project picker. Off by default.
+    pub open_last: bool,
+}
+
 // ------------------------------------------------------------------ keys
 
 /// What a setting holds.
@@ -179,6 +193,8 @@ enum Kind {
     Encoder,
     /// A render node path; `auto` unsets it.
     Device,
+    /// An absolute folder; `none` unsets it.
+    Folder,
 }
 
 /// One setting of `config.toml`.
@@ -231,6 +247,8 @@ pub const KEYS: &[ConfigKey] = &[
     key("ui.scale", Kind::Float { min: 0.5, max: 3.0 }, "a number from 0.5 to 3", "Interface scale."),
     key("ui.reduced_motion", Kind::Bool, "true or false", "Reduce animations."),
     key("ui.sounds", Kind::Bool, "true or false", "A squelch on record start and stop."),
+    key("projects.folder", Kind::Folder, "an absolute folder path, or none", "Where a new project given by name goes (`qrec create NAME`); none = give a path instead."),
+    key("projects.open_last", Kind::Bool, "true or false", "`qrec` outside a project opens the last project instead of the project picker."),
 ];
 
 fn find_key(key: &str) -> Option<&'static ConfigKey> {
@@ -264,7 +282,7 @@ impl ConfigKey {
                 let text = value.as_str().ok_or_else(bad)?;
                 text.parse::<Fps>().map_err(|_| bad())?;
             }
-            Kind::Device => {
+            Kind::Device | Kind::Folder => {
                 if value.as_str().is_some_and(|path| !path.starts_with('/')) {
                     return Err(bad());
                 }
@@ -310,6 +328,13 @@ impl ConfigKey {
             }
             Kind::Device => match t {
                 "auto" | "" => return Ok(None),
+                path => {
+                    checked(Json::from(path))?;
+                    path.into()
+                }
+            },
+            Kind::Folder => match t {
+                "none" | "" => return Ok(None),
                 path => {
                     checked(Json::from(path))?;
                     path.into()
@@ -363,8 +388,13 @@ pub fn get(cfg: &UserConfig, key: &str) -> Result<toml::Value, CoreError> {
             Some(value) => current = value,
             None if find_key(key).is_some() => {
                 return Err(CoreError::not_found(format!("{key} is not set")).with_hint(
-                    "Qrec uses the first Intel or AMD render node (never NVIDIA); set one with \
-                     `qrec config set encoder.vaapi_device /dev/dri/renderD129`",
+                    if key == "projects.folder" {
+                        "new projects need a path until one is set: \
+                         `qrec config set projects.folder /path/to/projects`"
+                    } else {
+                        "Qrec uses the first Intel or AMD render node (never NVIDIA); set one with \
+                         `qrec config set encoder.vaapi_device /dev/dri/renderD129`"
+                    },
                 ));
             }
             None => return Err(unknown_key(key)),
@@ -610,6 +640,7 @@ mod tests {
         // Every leaf of a fully set config is in KEYS, in order, and vice versa.
         let mut cfg = UserConfig::default();
         cfg.encoder.vaapi_device = Some("/dev/dri/renderD129".into());
+        cfg.projects.folder = Some("/srv/qrec".into());
         let table = toml::Table::try_from(&cfg).unwrap();
         let mut leaves = Vec::new();
         for (section, value) in &table {
@@ -623,6 +654,39 @@ mod tests {
         known.sort();
         assert_eq!(leaves, known);
         assert!(problems(&UserConfig::default()).is_empty());
+    }
+
+    #[test]
+    fn the_projects_folder_is_absolute_and_can_be_unset() {
+        let set = |text: &str, value: &str| set_text(text, "projects.folder", value);
+        let text = set("", "/srv/qrec").unwrap();
+        assert_eq!(
+            parse(&text).unwrap().projects.folder.as_deref(),
+            Some("/srv/qrec")
+        );
+        for value in ["none", ""] {
+            let unset = set(&text, value).unwrap();
+            assert_eq!(parse(&unset).unwrap().projects.folder, None, "{value:?}");
+        }
+        for bad in ["videos", "./videos", "~/videos"] {
+            let error = set("", bad).unwrap_err();
+            assert_eq!(error.code, crate::ErrorCode::Usage, "{bad}");
+            assert!(error.message.contains("absolute"), "{error:?}");
+        }
+        // By hand too: the file is checked when it is read.
+        assert!(parse("[projects]\nfolder = \"videos\"\n").is_err());
+        let unset = get(&UserConfig::default(), "projects.folder").unwrap_err();
+        assert_eq!(unset.code, crate::ErrorCode::NotFound);
+        assert!(unset.hint.unwrap().contains("projects.folder"));
+    }
+
+    #[test]
+    fn opening_the_last_project_is_off_by_default() {
+        let cfg = UserConfig::default();
+        assert!(!cfg.projects.open_last);
+        assert_eq!(cfg.projects.folder, None);
+        let on = set_text("", "projects.open_last", "true").unwrap();
+        assert!(parse(&on).unwrap().projects.open_last);
     }
 
     #[test]

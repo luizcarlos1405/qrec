@@ -486,6 +486,177 @@ fn a_config_that_cant_be_used_is_reported_once_per_run() {
 
 // ------------------------------------------------------------ project commands
 
+/// `qrec create` with a path (SPEC §4.4): only the last folder is made, the
+/// project is named after it, and `--json` says where it went.
+#[test]
+fn create_with_a_path() {
+    let env = TestEnv::new();
+    let here = env.empty_dir("here");
+    let made = qrec(&env, &here, &["create", "./demo", "--json"]);
+    made.ok();
+    let dir = fs::canonicalize(&here).unwrap().join("demo");
+    assert_eq!(
+        made.only_reply(),
+        json!({"ok": true, "data": {
+            "projectDir": dir.display().to_string(),
+            "name": "demo",
+            "canvas": "1920x1080@30",
+        }})
+    );
+    for entry in ["qrec.json", "takes", ".qrec"] {
+        assert!(dir.join(entry).exists(), "{entry} is missing");
+    }
+
+    // An absolute path, the canvas and the name passed on; people get a line.
+    let elsewhere = env.empty_dir("elsewhere");
+    let target = elsewhere.join("talk");
+    let human = qrec(
+        &env,
+        &here,
+        &[
+            "create",
+            target.to_str().unwrap(),
+            "--canvas",
+            "1280x720@25",
+            "--name",
+            "The talk",
+        ],
+    );
+    human.ok();
+    let target = fs::canonicalize(&target).unwrap();
+    assert_eq!(
+        human.stdout.trim(),
+        format!(
+            "Created project \"The talk\" (1280x720 @ 25 fps) in {}",
+            target.display()
+        )
+    );
+    let status = qrec(&env, &target, &["status", "--json"]);
+    assert_eq!(status.only_reply()["data"]["project"]["name"], "The talk");
+
+    // The folder it goes in has to be there: nothing is made.
+    let missing = qrec(&env, &here, &["create", "./no/such/demo", "--json"]);
+    assert_eq!(missing.code, Some(1));
+    assert_eq!(missing.only_reply()["error"]["code"], "io");
+    assert!(!here.join("no").exists());
+}
+
+/// A name goes in `projects.folder`; with none set it is refused and nothing
+/// is made anywhere.
+#[test]
+fn create_with_a_name_needs_the_projects_folder() {
+    let env = TestEnv::new();
+    let here = env.empty_dir("here");
+    let refused = qrec(&env, &here, &["create", "demo", "--json"]);
+    assert_eq!(refused.code, Some(2));
+    let error = &refused.only_reply()["error"];
+    assert_eq!(error["code"], "usage");
+    assert!(
+        error["hint"].as_str().unwrap().contains("./demo"),
+        "{error}"
+    );
+    assert!(!here.join("demo").exists());
+
+    let projects = fs::canonicalize(env.empty_dir("projects")).unwrap();
+    qrec(
+        &env,
+        &here,
+        &[
+            "config",
+            "set",
+            "projects.folder",
+            projects.to_str().unwrap(),
+        ],
+    )
+    .ok();
+    qrec(&env, &here, &["create", "demo"]).ok();
+    assert!(projects.join("demo/qrec.json").is_file());
+    assert!(!here.join("demo").exists(), "a name ignores the cwd");
+
+    // A path doesn't use the setting.
+    qrec(&env, &here, &["create", "./local"]).ok();
+    assert!(here.join("local/qrec.json").is_file());
+    assert!(!projects.join("local").exists());
+
+    // Unset again, a name is refused again.
+    qrec(&env, &here, &["config", "set", "projects.folder", "none"]).ok();
+    let get = qrec(&env, &here, &["config", "get", "projects.folder", "--json"]);
+    assert_eq!(get.only_reply()["data"]["value"], Value::Null);
+    assert_eq!(qrec(&env, &here, &["create", "again"]).code, Some(2));
+
+    // A broken config.toml only gets in the way of a name.
+    fs::write(env.config_home().join("qrec/config.toml"), "ui = 3\n").unwrap();
+    assert_eq!(qrec(&env, &here, &["create", "again"]).code, Some(1));
+    qrec(&env, &here, &["create", "./despite"]).ok();
+}
+
+/// What `qrec create` finds at the target (#11): the folder rule decides,
+/// and nothing that was there changes.
+#[test]
+fn create_on_what_is_already_there() {
+    let env = TestEnv::new();
+    let here = env.empty_dir("here");
+
+    // An empty folder is used in place.
+    fs::create_dir(here.join("empty")).unwrap();
+    qrec(&env, &here, &["create", "./empty"]).ok();
+    assert!(here.join("empty/qrec.json").is_file());
+
+    // A project stays as it was.
+    let before = fs::read(here.join("empty/qrec.json")).unwrap();
+    let again = qrec(&env, &here, &["create", "./empty", "--json"]);
+    assert_eq!(again.code, Some(1));
+    assert_eq!(again.only_reply()["error"]["code"], "invalid");
+    assert_eq!(fs::read(here.join("empty/qrec.json")).unwrap(), before);
+
+    // Someone else's folder is not my swamp.
+    fs::create_dir(here.join("notes")).unwrap();
+    fs::write(here.join("notes/todo.txt"), "onions").unwrap();
+    let swamp = qrec(&env, &here, &["create", "./notes", "--json"]);
+    assert_eq!(swamp.code, Some(3));
+    assert_eq!(swamp.only_reply()["error"]["code"], "not_project");
+    assert_eq!(
+        fs::read_dir(here.join("notes")).unwrap().count(),
+        1,
+        "nothing was added"
+    );
+
+    // A file in the way is an error.
+    fs::write(here.join("file"), "x").unwrap();
+    let file = qrec(&env, &here, &["create", "./file", "--json"]);
+    assert_eq!(file.code, Some(1));
+    assert_eq!(file.only_reply()["error"]["code"], "io");
+
+    // A new project can go inside another one.
+    qrec(&env, &here.join("empty"), &["create", "./nested"]).ok();
+    assert!(here.join("empty/nested/qrec.json").is_file());
+}
+
+/// `--project` doesn't go with `create`, and a bad canvas makes no folder.
+#[test]
+fn create_refuses_what_makes_no_sense() {
+    let env = TestEnv::new();
+    let here = env.empty_dir("here");
+    let flag = qrec(
+        &env,
+        &here,
+        &["create", "./demo", "--project", ".", "--json"],
+    );
+    assert_eq!(flag.code, Some(2));
+    assert_eq!(flag.only_reply()["error"]["code"], "usage");
+    let canvas = qrec(
+        &env,
+        &here,
+        &["create", "./demo", "--canvas", "1920x1080@abc", "--json"],
+    );
+    assert_eq!(canvas.code, Some(2));
+    assert!(!here.join("demo").exists());
+    for target in [".", "..", "/", "./.."] {
+        let out = qrec(&env, &here, &["create", target, "--json"]);
+        assert_eq!(out.code, Some(2), "{target}: {}", out.stdout);
+    }
+}
+
 #[test]
 fn init_and_status_shapes() {
     let env = TestEnv::new();

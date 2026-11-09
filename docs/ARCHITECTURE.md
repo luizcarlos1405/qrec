@@ -513,7 +513,7 @@ need confirmation, `G` = GUI host only, `R` = allowed while recording (A§5.3).
 
 | Command | Fields | Flags | CLI |
 | --- | --- | --- | --- |
-| `Init` | `canvas: Option<CanvasSpec>`, `name: Option<String>` | | `qrec init [--canvas 1920x1080@30] [--name N]` |
+| `Init` | `canvas: Option<CanvasSpec>`, `name: Option<String>` | | `qrec init [--canvas 1920x1080@30] [--name N]`; `qrec create <name\|path>` after making the folder (A§8.4) |
 | `ProjectSet` | `name`, `canvas: Option<CanvasSpec>`, `background: Option<Color>`, `countdownSecs`, `encoder`, `vaapiDevice: Nullable<String>` | U, `!` when fps changes with takes | `qrec project set …` |
 | `LayerAdd` | `target`, `source: VideoSourceArg`, `name: Option`, `rect: Option<Rect>` | U | `qrec scene layer add screen --output DP-4 [--rect X,Y,W,H] [--name ..]` / `camera --device /dev/video0` |
 | `LayerSet` | `target`, `layer`, `patch: LayerPatch` | U | `qrec scene layer set <id> [--rect] [--crop T,R,B,L] [--opacity] [--visible] [--fit] [--name] [--locked]` |
@@ -1665,6 +1665,16 @@ like `qrec host`; no `--project` is `io` "can't read the current directory
 absolute --project DIR", and a relative `--project` or `--out` is `io`
 naming the flag.
 
+`qrec create <name|path>` (SPEC §4.4) is `qrec init` in a folder it makes
+first. Where it goes is `new_project::resolve` (A§9.10), pure; the mkdir is
+`qrec_shell::projects::make_folder`, through `Backend::make_project_folder`.
+No new command or `Effect`: the folder holds no project state when it is
+made, and every state change is still `Command::Init` through the Session
+with the folder as an explicit target (no host step). The folder rule
+applies to it as to `--project`, so a folder that was already there keeps
+what it holds. `--project` with `create` is `Usage`. `--canvas` is parsed
+before anything is made. An `Init` that then fails leaves the empty folder.
+
 ### A§8.5 In-process commands
 
 With no host, a command runs in-process and its process **is** the host
@@ -2624,10 +2634,12 @@ G§3.14).
 ```rust
 #[serde(default, deny_unknown_fields)]   // snake_case keys
 pub struct UserConfig { pub theme: Theme, pub canvas: CanvasDefaults, pub recording: RecordingDefaults,
-                        pub autocut: AutocutDefaults, pub encoder: EncoderDefaults, pub ui: UiDefaults }
+                        pub autocut: AutocutDefaults, pub encoder: EncoderDefaults, pub ui: UiDefaults,
+                        pub projects: ProjectsDefaults }
 // canvas: width, height, fps ("30" or "30000/1001"), background
 // recording: countdown_secs        autocut: auto_run_after_take, threshold_db, min_silence_ms, padding_ms, min_keep_ms
 // encoder: preference, vaapi_device    ui: scale, reduced_motion, sounds
+// projects: folder (absolute; `none` unsets it), open_last
 // theme: "swamp-night" | "swamp-day" | "dragons-keep" | "ogre-mode"
 pub fn parse(text: &str) -> Result<UserConfig, CoreError>;        // missing keys default; unknown keys, wrong types, out of range ⇒ Invalid
 pub fn problems(cfg: &UserConfig) -> Vec<String>;                 // what is wrong with the values (empty when valid)
@@ -2654,6 +2666,18 @@ get a "config.toml is invalid" warning once per change of the file
 (A§4.2), so a typo never drops the settings silently. An open window
 applies `theme`, `ui.scale` and `ui.reduced_motion` as soon as the file
 changes (A§8.9's settings watcher; GUI G§3.14).
+
+### A§9.10 New projects (`new_project.rs`)
+
+`new_project::resolve(target, cwd, projects_folder)` is the one rule behind
+`qrec create` and the project picker's New project field (SPEC §4.4): it turns
+what was typed into a `NewProjectPath { parent, name }` from the text alone. A
+target with a slash is a path, made absolute against `cwd` (`None`: only a
+relative one is refused, `io`). One without is a name that goes in
+`projects_folder`, `Usage` when there is none. `.`, `..`, `/` and a path ending
+in `..` have no folder name to make (`Usage`). Non-UTF-8 names are kept as
+they are. The shell's `projects::make_folder` makes the last part only and
+returns a folder already there untouched, for the folder rule to judge.
 
 ### A§9.9 Naming (`naming.rs`)
 

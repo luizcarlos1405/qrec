@@ -495,6 +495,11 @@ fn arb_setting() -> impl Strategy<Value = (&'static str, String, Value)> {
         )),
         any::<bool>().prop_map(|b| ("ui.reduced_motion", b.to_string(), json!(b))),
         any::<bool>().prop_map(|b| ("ui.sounds", b.to_string(), json!(b))),
+        any::<bool>().prop_map(|b| ("projects.open_last", b.to_string(), json!(b))),
+        "[a-z]{1,8}".prop_map(|name| {
+            let path = format!("/srv/{name}");
+            ("projects.folder", path.clone(), json!(path))
+        }),
     ]
 }
 

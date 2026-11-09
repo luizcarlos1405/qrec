@@ -6,6 +6,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use clap::CommandFactory;
+use qrec_core::model::Project;
+use qrec_core::new_project;
 use qrec_core::protocol::{
     AutocutPlanView, ClipRow, CmdResult, Command, ExportDone, FrameSavedView, HelloInfo,
     HistoryRow, Progress, Query, RecordStartedView, StatusView, TakeFinalizedView, TakeRow, Toast,
@@ -60,6 +62,9 @@ pub(crate) fn execute(
         Ok(Plan::Local(local)) => run_local(&local, cli, backend, env, &mut ui),
         Ok(Plan::Project(plan)) => project_dir(cli, env.cwd.as_deref())
             .map(|(dir, explicit)| run_project(&plan, &dir, explicit, backend, &mut ui)),
+        Ok(Plan::Create { target, plan }) => {
+            run_create(&target, &plan, backend, env.cwd.as_deref(), &mut ui)
+        }
     };
     let code = match result {
         Ok(code) => code,
@@ -293,6 +298,46 @@ impl Events for Live<'_, '_, '_> {
     }
 }
 
+/// `qrec create` (A§8.4): where the name or path goes, its folder made,
+/// then `Init` there like `qrec init` in that folder, so the folder rule
+/// says what becomes of a folder that was already there.
+fn run_create(
+    target: &Path,
+    plan: &ProjectPlan,
+    backend: &mut dyn Backend,
+    cwd: Option<&Path>,
+    ui: &mut Ui<'_>,
+) -> Result<u8, CoreError> {
+    // Only a name needs the settings: a broken config.toml can't stop a path.
+    let folder = if new_project::is_path(target.as_os_str()) {
+        None
+    } else {
+        let path = config::file(&backend.config_dir()?);
+        let text = backend.settings_text(&path)?.unwrap_or_default();
+        config::load(&text, &path)?.projects.folder
+    };
+    let path = new_project::resolve(target.as_os_str(), cwd, folder.as_deref())?;
+    let dir = backend.make_project_folder(&path)?;
+    Ok(run_project(plan, &dir, true, backend, ui))
+}
+
+/// What `qrec create --json` answers: where the project is, its name and
+/// its canvas (a reply this CLI can't read is passed on as it is).
+fn create_json(data: Value, dir: &Path) -> Value {
+    let project = parse::<CmdResult>(&data).and_then(|r| parse::<Project>(&r.result));
+    match project {
+        Some(project) => json!({
+            "projectDir": dir.display().to_string(),
+            "name": project.name,
+            "canvas": format!(
+                "{}x{}@{}",
+                project.canvas.width, project.canvas.height, project.canvas.fps
+            ),
+        }),
+        None => data,
+    }
+}
+
 /// Runs a project command from `dir` ([`project_dir`]; `explicit` when it
 /// came from `--project`).
 fn run_project(
@@ -513,7 +558,12 @@ fn answer_empty(plan: &ProjectPlan, dir: &Path, ui: &mut Ui<'_>) -> u8 {
                     .with_hint("this folder isn't a project yet: it has no takes"),
             );
         }
-        View::Command | View::Autocut { .. } | View::Export | View::FrameSave | View::Record => {
+        View::Command
+        | View::Autocut { .. }
+        | View::Export
+        | View::FrameSave
+        | View::Record
+        | View::Create => {
             return ui.fail(&CoreError::internal(format!(
                 "{} has no answer for a folder without a project",
                 plan.name
@@ -548,6 +598,7 @@ fn render(
     if ui.json {
         let data = match plan.view {
             View::StatusJson => status_json(data, dir, host),
+            View::Create => create_json(data, dir),
             _ => data,
         };
         ui.print_ok(&data);
@@ -562,6 +613,8 @@ fn render(
         View::TakeShow => Some(human::take_show(&data)),
         View::ClipList => parse::<Vec<ClipRow>>(&data).map(|rows| human::clip_list(&rows)),
         View::History => parse::<Vec<HistoryRow>>(&data).map(|rows| human::history(&rows)),
+        View::Create => parse::<CmdResult>(&data)
+            .map(|result| vec![format!("{} in {dir_text}", result.message.trim())]),
         View::Command | View::Autocut { .. } | View::Export | View::FrameSave | View::Record => {
             match parse::<CmdResult>(&data) {
                 Some(result) => {

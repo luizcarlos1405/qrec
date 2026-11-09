@@ -37,6 +37,7 @@ use std::sync::mpsc;
 
 use qrec_cli::{Backend, Events, Fallback, Finish, HostArgs, ProjectRequest, RouteOpts};
 use qrec_core::CoreError;
+use qrec_core::new_project::NewProjectPath;
 use qrec_core::protocol::{HelloInfo, Progress, Toast, ToastLevel};
 use qrec_core::state::HostKind;
 use qrec_shell::capture::{self, EngineOptions};
@@ -283,6 +284,10 @@ impl Backend for Shell {
     /// symlink to it written through).
     fn write_settings(&mut self, path: &Path, text: &str) -> Result<(), CoreError> {
         qrec_shell::config_file::write_text(path, text).map_err(CoreError::io)
+    }
+
+    fn make_project_folder(&mut self, path: &NewProjectPath) -> Result<PathBuf, CoreError> {
+        qrec_shell::projects::make_folder(path)
     }
 
     fn live_hosts(&mut self) -> Result<Vec<HelloInfo>, CoreError> {

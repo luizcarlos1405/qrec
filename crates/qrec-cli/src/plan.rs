@@ -31,6 +31,12 @@ pub enum Plan {
     /// A request for the project's host (boxed: it is much bigger than
     /// the other variants).
     Project(Box<ProjectPlan>),
+    /// `qrec create`: make the folder, then the request in it.
+    Create {
+        /// The name or path as typed (`qrec_core::new_project`).
+        target: PathBuf,
+        plan: Box<ProjectPlan>,
+    },
 }
 
 /// Project-less commands: they work in any folder.
@@ -121,6 +127,8 @@ pub enum View {
     FrameSave,
     /// `RecordStartedView` or `TakeFinalizedView` in `result`.
     Record,
+    /// `qrec create`: the new `Project` in `result`, and where it is.
+    Create,
 }
 
 /// What to do about a GUI-only command (`seek`, `play`, `pause`) when no
@@ -140,6 +148,18 @@ pub fn plan(cli: &Cli, cwd: Option<&Path>) -> Result<Plan, CoreError> {
         json: cli.global.json,
     };
     match command {
+        Cmd::Create(args) => {
+            if cli.global.project.is_some() {
+                return Err(CoreError::usage(
+                    "--project doesn't go with `qrec create`, which names its own folder",
+                )
+                .with_hint("give the folder as the argument: qrec create /path/to/project"));
+            }
+            Ok(Plan::Create {
+                target: args.target.clone(),
+                plan: Box::new(builder.create(args)?),
+            })
+        }
         Cmd::Version => local(Local::Version),
         Cmd::Completions(args) => local(Local::Completions(args.shell)),
         Cmd::Doctor => local(Local::Doctor),
@@ -210,6 +230,23 @@ impl Builder {
         }
     }
 
+    /// `qrec create`'s request: `Init` in the folder it makes, like
+    /// `qrec init` there.
+    fn create(&self, args: &CreateArgs) -> Result<ProjectPlan, CoreError> {
+        Ok(ProjectPlan {
+            on_empty: OnEmpty::Send,
+            host_fallback: false,
+            ..self.command(
+                "create",
+                Command::Init {
+                    canvas: canvas(args.canvas.as_deref())?,
+                    name: args.name.clone(),
+                },
+                View::Create,
+            )
+        })
+    }
+
     fn project(&self, command: &Cmd, cwd: Option<&Path>) -> Result<ProjectPlan, CoreError> {
         use View::Command as Msg;
         let plan = match command {
@@ -270,6 +307,7 @@ impl Builder {
             | Cmd::AgentGuide
             | Cmd::Keys
             | Cmd::Config(_)
+            | Cmd::Create(_)
             | Cmd::Host(_) => {
                 return Err(CoreError::internal(
                     "a project-less command reached the project planner",
