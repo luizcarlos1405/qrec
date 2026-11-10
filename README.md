@@ -345,3 +345,8 @@ two monitors would confirm.
 A still screen used to stop the screen stream for good (PipeWire 1.6's
 `pipewiresrc` keepalive) and broke long takes; see A§8.11 "Still screens".
 A camera that hangs mid-take is now lost after 3 s instead (SPEC §16).
+
+## License
+
+Qrec is under the MIT license (`LICENSE`), © 2026 RSensato. The icons and
+fonts it ships are under their own licenses: see `THIRD-PARTY.md`.

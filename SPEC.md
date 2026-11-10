@@ -10,7 +10,7 @@
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | Status         | Draft v1, written 2026-10-14 from an interview with the product owner                                                          |
 | Target         | Linux: Wayland (desktop portal) and X11 (`ximagesrc`), developed on NixOS + niri                                               |
-| App ID         | `com.rsensato.qrec` (GApplication id, `.desktop` file, icon name, D-Bus name)                                                  |
+| App ID         | `com.rsensato.qrec` (GApplication id, `.desktop` file, AppStream metainfo, icon name, D-Bus name)                              |
 | Related docs   | `docs/RECORDING.md` covers wf-recorder lessons from `qrec-tui`                                                                 |
 | Prior attempts | `qrec-tui` (Rust, FCIS, solid), `qrec-electron` (fragile browser playback), `qrec-sky` (never compiled), `qrec-glm` (scaffold) |
 

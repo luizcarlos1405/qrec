@@ -1,10 +1,13 @@
 #!/bin/sh
-# Installs Qrec's desktop entry and icons under a prefix (docs/GUI.md G§6.4):
+# Installs Qrec's desktop entry, AppStream metadata, icons and licenses under
+# a prefix (docs/GUI.md G§6.4):
 #
 #   share/applications/com.rsensato.qrec.desktop
+#   share/metainfo/com.rsensato.qrec.metainfo.xml
 #   share/icons/hicolor/scalable/apps/com.rsensato.qrec.svg
 #   share/icons/hicolor/{16x16,32x32,48x48,64x64,128x128,256x256,512x512}/apps/com.rsensato.qrec.png
 #   share/icons/hicolor/symbolic/apps/com.rsensato.qrec-symbolic.svg
+#   share/licenses/qrec/LICENSE (Qrec's, MIT)
 #   share/licenses/qrec/LICENSE-lucide.txt
 #
 # The file and icon names are the app id (SPEC's App ID row; the window's
@@ -30,10 +33,11 @@ id=com.rsensato.qrec
 art=$here/icons/hicolor
 glyph=$root/crates/qrec-gui/resources/icons/scalable/actions/qrec-record-symbolic.svg
 license=$root/crates/qrec-gui/resources/icons/LICENSE-lucide.txt
+metainfo=$here/$id.metainfo.xml
 sizes="16 32 48 64 128 256 512"
 icons=$prefix/share/icons/hicolor
 
-for file in "$here/$id.desktop" "$art/scalable/apps/$id.svg" "$glyph" "$license"; do
+for file in "$here/$id.desktop" "$metainfo" "$art/scalable/apps/$id.svg" "$glyph" "$license" "$root/LICENSE"; do
   [ -f "$file" ] || { echo "install.sh: missing $file" >&2; exit 1; }
 done
 for size in $sizes; do
@@ -42,9 +46,11 @@ for size in $sizes; do
 done
 
 install -D -m 644 "$here/$id.desktop" "$prefix/share/applications/$id.desktop"
+install -D -m 644 "$metainfo" "$prefix/share/metainfo/$id.metainfo.xml"
 install -D -m 644 "$art/scalable/apps/$id.svg" "$icons/scalable/apps/$id.svg"
 for size in $sizes; do
   install -D -m 644 "$art/${size}x${size}/apps/$id.png" "$icons/${size}x${size}/apps/$id.png"
 done
 install -D -m 644 "$glyph" "$icons/symbolic/apps/$id-symbolic.svg"
+install -D -m 644 "$root/LICENSE" "$prefix/share/licenses/qrec/LICENSE"
 install -D -m 644 "$license" "$prefix/share/licenses/qrec/LICENSE-lucide.txt"

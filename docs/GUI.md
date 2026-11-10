@@ -3620,6 +3620,12 @@ devShells.default = pkgs.mkShell {
   icons in `share/icons/hicolor/{scalable,16x16,32x32,48x48,64x64,128x128,256x256,512x512}/apps/com.rsensato.qrec.*`
   and `share/icons/hicolor/symbolic/apps/com.rsensato.qrec-symbolic.svg`;
   Lucide's license in `share/licenses/qrec/LICENSE-lucide.txt`.
+- `postInstall` (issue #9): the AppStream metainfo,
+  `share/metainfo/com.rsensato.qrec.metainfo.xml` (`data/`: the app id,
+  the desktop entry as its launchable, the design frames as screenshots,
+  MIT), checked with `appstreamcli validate --no-net` (`appstream` in
+  `nativeBuildInputs`), and Qrec's own license in
+  `share/licenses/qrec/LICENSE`.
 - `cargoTestFlags` unchanged (core tests only in the sandbox).
 
 As built (WP10): the entry is `data/com.rsensato.qrec.desktop` (Name
