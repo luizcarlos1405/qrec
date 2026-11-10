@@ -1,10 +1,10 @@
 /* Qrec on htmlboard: the Swamp Night tokens and the chrome the GTK views use
    (DESIGN.md, Components). The tokens file is generated from design/qrec.pen. */
-@import url("../tokens/swamp-night.css");
+@import url("themes.css");
 @import url("https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;600;700;800&family=Fraunces:opsz,wght,SOFT,WONK@9..144,600..700,50..100,1&family=JetBrains+Mono:wght@500;600&display=swap");
 
 :root {
-  color-scheme: dark;
+
   --e1: 0 2px 6px var(--qrec-shadow-e1);
   --e2: 0 8px 24px var(--qrec-shadow-e2), 0 1px 2px var(--qrec-shadow-e2-contact);
   --e3: 0 20px 48px var(--qrec-shadow-e3);

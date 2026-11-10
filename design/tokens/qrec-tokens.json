@@ -1,8 +1,8 @@
 {
   "name": "Qrec design tokens",
-  "source": "design/qrec.pen (pen.dev variables, read with GetVariables)",
+  "source": "design/qrec.pen (pen.dev variables) until 2026-11-10; edited here since the designs moved to design/boards",
   "generated": "2026-10-15",
-  "note": "Generated file. Change the variable in design/qrec.pen, then regenerate. Colors are #RRGGBB or #RRGGBBAA. Numbers are logical px. Roles, derivations and contrast results: DESIGN.md, Colors.",
+  "note": "The source of the theme tokens: change a value here, then run QREC_UPDATE_TOKENS=1 cargo test -p qrec-gui --test tokens to regenerate the GTK CSS, palette.rs and design/boards/themes.css. Colors are #RRGGBB or #RRGGBBAA. Numbers are logical px. Roles, derivations and contrast results: DESIGN.md, Colors.",
   "themes": [
     "swamp-night",
     "swamp-day",

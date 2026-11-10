@@ -5,6 +5,8 @@
 //!   with every color, every number in px and the three font names.
 //! - `src/theme/palette.rs`: one `Palette` per theme for custom-drawn
 //!   widgets (GTK can't look a CSS custom property up from code).
+//! - `design/boards/themes.css`: the four themes for the htmlboard designs,
+//!   Swamp Night on `:root` and each theme under `[data-theme="<theme>"]`.
 //!
 //! This test is the generator: it renders both in memory and fails when the
 //! committed files differ (`QREC_UPDATE_TOKENS=1` writes them instead). It
@@ -97,7 +99,7 @@ const TAKES: [&str; 8] = [
 
 const HEADER: &str = "Generated from design/tokens/qrec-tokens.json by \
 crates/qrec-gui/tests/tokens.rs (QREC_UPDATE_TOKENS=1 cargo test -p qrec-gui --test tokens). \
-Do not edit: change the variable in design/qrec.pen and regenerate.";
+Do not edit: change the token in design/tokens/qrec-tokens.json and regenerate.";
 
 fn token_css(tokens: &Tokens, theme: &str) -> String {
     let mut out = String::new();
@@ -114,6 +116,39 @@ fn token_css(tokens: &Tokens, theme: &str) -> String {
         writeln!(out, "  --qrec-{name}: \"{value}\";").unwrap();
     }
     out.push_str("}\n");
+    out
+}
+
+/// The tokens for the htmlboard designs (`design/boards/`): Swamp Night is
+/// the default on `:root`, and the canvas's theme switch sets `data-theme`.
+fn boards_css(tokens: &Tokens) -> String {
+    let mut out = String::new();
+    writeln!(out, "/* {HEADER} */").unwrap();
+    for (i, theme) in tokens.themes.iter().enumerate() {
+        if i == 0 {
+            writeln!(out, ":root, [data-theme=\"{theme}\"] {{").unwrap();
+        } else {
+            writeln!(out, "\n[data-theme=\"{theme}\"] {{").unwrap();
+        }
+        let scheme = if theme == "swamp-day" {
+            "light"
+        } else {
+            "dark"
+        };
+        writeln!(out, "  color-scheme: {scheme};").unwrap();
+        for (name, values) in &tokens.colors {
+            writeln!(out, "  --qrec-{name}: {};", values[theme]).unwrap();
+        }
+        if i == 0 {
+            for (name, value) in &tokens.numbers {
+                writeln!(out, "  --qrec-{name}: {}px;", trim_number(*value)).unwrap();
+            }
+            for (name, value) in &tokens.strings {
+                writeln!(out, "  --qrec-{name}: \"{value}\";").unwrap();
+            }
+        }
+        out.push_str("}\n");
+    }
     out
 }
 
@@ -313,6 +348,11 @@ fn the_generated_files_match_the_tokens() {
             &mut stale,
         );
     }
+    check_or_write(
+        &crate_dir().join("../../design/boards/themes.css"),
+        &boards_css(&tokens),
+        &mut stale,
+    );
     check_or_write(
         &crate_dir().join("src/theme/palette.rs"),
         &palette_rs(&tokens),
