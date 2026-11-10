@@ -268,6 +268,15 @@ fn list_with_check(dropdown: &gtk::DropDown) {
 /// cache, so the Session's `LayerAdd` sees the same facts. The result comes
 /// back through the queue, in its order (`run_io_then`).
 pub fn refresh_sources(ctx: &Ctx) {
+    refresh_sources_then(ctx, |_| {});
+}
+
+/// [`refresh_sources`], then `then` with what was found (on the main
+/// thread, once `LocalUi.sources` holds it).
+pub fn refresh_sources_then(
+    ctx: &Ctx,
+    then: impl FnOnce(&qrec_shell::sources::SourceInventory) + 'static,
+) {
     let Some(app) = crate::app::App::current() else {
         return;
     };
@@ -275,7 +284,11 @@ pub fn refresh_sources(ctx: &Ctx) {
     let store = ctx.store.clone();
     ctx.media.run_io_then(
         move || sources.refresh(),
-        move |found| store.update_local(move |l| l.sources = Some(found)),
+        move |found| {
+            let shown = std::sync::Arc::clone(&found);
+            store.update_local(move |l| l.sources = Some(found));
+            then(&shown);
+        },
     );
 }
 

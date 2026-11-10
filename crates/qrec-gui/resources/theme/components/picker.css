@@ -99,7 +99,7 @@
 
 .qrec-picker list.picker-list > row:hover .picker-forget,
 .qrec-picker list.picker-list > row:selected .picker-forget,
-.qrec-picker .picker-forget:focus-visible,
+.qrec-picker .picker-forget:focus:focus-visible,
 .qrec-picker .picker-row.gone .picker-forget {
   opacity: 1;
 }

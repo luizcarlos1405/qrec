@@ -217,6 +217,9 @@ impl Inner {
     fn settled(&self, settings: Settings) {
         // The token goes once the change is applied (and with a panic too).
         let busy = self.busy.borrow_mut().take();
+        // `scenes.json` lives in the same folder (SPEC §5.6): the Session
+        // reads it again for the scene bar, whichever file changed.
+        self.ctx.store.dispatch(qrec_core::Command::ScenesReload);
         self.deadline.stop();
         let theme = &self.ctx.theme;
         let store = &self.ctx.store;

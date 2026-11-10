@@ -227,6 +227,108 @@ fn clip_count(nested: &Nested, project: &Path) -> usize {
     list["data"].as_array().map_or(0, Vec::len)
 }
 
+// --------------------------------------------------------- saved scenes
+
+/// Saved scenes in the panel (SPEC §5.6, the boards in
+/// design/boards/07-named-scenes/): No saved scene → saved from the CLI
+/// while the window is open → Edited after a change, with Save → the menu
+/// lists both scenes with their Alt keys → Alt+2 switches in one undo
+/// step → the scene's actions and the Save as popover.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn saved_scenes_in_the_panel() {
+    let mut nested = Nested::start(AREA, "scenes", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &ui(|_| {}));
+    let gui = open(&mut nested, &project, levels(DESIGN_LEVELS));
+    assert_has(&panel_labels(gui), &["No saved scene", "Save as\u{2026}"]);
+
+    cli_ok(&nested, &project, &["scene", "save", "Screen + camera"]);
+    let gui = nested.window(0);
+    wait_for_label(gui, "Screen + camera");
+    cli_ok(
+        &nested,
+        &project,
+        &["scene", "layer", "set", "L2", "--rect", "1180,700,384,288"],
+    );
+    let labels = wait_for_label(nested.window(0), "Edited");
+    assert_has(&labels, &["Screen + camera", "Save"]);
+    let shot = nested.screenshot("edited");
+    crop(&nested, &shot, PANEL, "panel");
+
+    // A second scene, then the menu: both, the one in use checked.
+    cli_ok(&nested, &project, &["scene", "layer", "remove", "L1"]);
+    cli_ok(&nested, &project, &["scene", "save", "Camera only"]);
+    wait_for_label(nested.window(0), "Camera only");
+    cli_ok(&nested, &project, &["scene", "use", "Screen + camera"]);
+    wait_for_label(nested.window(0), "Main screen");
+    let (x, y) = center(region(nested.window(0), "scene-bar"));
+    nested.pointer().click(x, y);
+    nested.window(0).wait_idle();
+    let shot = nested.screenshot("menu");
+    crop(&nested, &shot, [1216.0, 48.0, 384.0, 460.0], "panel");
+    nested.keys(&["-k", "Escape"]);
+    nested.window(0).wait_idle();
+
+    // Alt+2: Camera only, one history entry.
+    let before = history_cursor(&nested, &project);
+    nested.keys(&["-M", "alt", "-k", "2", "-m", "alt"]);
+    let gui = nested.window(0);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while panel_labels(gui).iter().any(|l| l == "Main screen") {
+        assert!(Instant::now() < deadline, "Alt+2 didn't switch");
+        thread::sleep(Duration::from_millis(100));
+        gui.wait_idle();
+    }
+    assert_eq!(history_cursor(&nested, &project), before + 1);
+    let shot = nested.screenshot("camera-only");
+    crop(&nested, &shot, PANEL, "panel");
+
+    // Save as… (the palette's action): the popover, its name a free one.
+    let ran = nested
+        .window(0)
+        .ctl(json!({"op": "action", "id": "scene.save-as"}));
+    assert_eq!(ran["ok"], true, "{ran}");
+    nested.window(0).wait_idle();
+    let shot = nested.screenshot("save-as");
+    crop(&nested, &shot, [1216.0, 48.0, 384.0, 460.0], "panel");
+    nested.keys(&["-k", "Escape"]);
+    nested.window(0).wait_idle();
+
+    // A scene naming a screen this machine doesn't have (DP-2): its layer
+    // says so with Replace…, and a toast says it with Undo.
+    let file = nested.env.config_home().join("qrec").join("scenes.json");
+    let mut library: Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let mut two = library["scenes"][0].clone();
+    two["name"] = json!("Two screens");
+    two["scene"]["layers"][1]["source"] =
+        json!({"kind": "screen", "output": "DP-2", "label": "Dell"});
+    two["scene"]["layers"][1]["name"] = json!("Right screen");
+    library["scenes"].as_array_mut().unwrap().push(two);
+    std::fs::write(&file, serde_json::to_string_pretty(&library).unwrap()).unwrap();
+    cli_ok(&nested, &project, &["scene", "use", "Two screens"]);
+    let labels = wait_for_label(nested.window(0), "DP-2 isn't connected");
+    assert_has(&labels, &["Right screen", "Replace\u{2026}"]);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !nested
+        .window(0)
+        .labels("toast-host")
+        .iter()
+        .any(|l| l == "Switched to Two screens. DP-2 isn't connected.")
+    {
+        assert!(
+            Instant::now() < deadline,
+            "no toast: {:?}",
+            nested.window(0).labels("toast-host")
+        );
+        thread::sleep(Duration::from_millis(100));
+        nested.window(0).wait_idle();
+    }
+    let shot = nested.screenshot("not-connected");
+    crop(&nested, &shot, PANEL, "panel");
+    assert_clean(nested.window(0));
+}
+
 // ------------------------------------------------------------------ S02
 
 /// S02's panel: Live, the project scene, the meters live, the inspector's
@@ -260,10 +362,12 @@ fn s02_the_panel_in_live_mode() {
     assert_regions(
         &rows,
         &[
-            ("layer-row-L2", [1232.0, 128.0, 352.0, 44.0]),
-            ("layer-row-L1", [1232.0, 172.0, 352.0, 44.0]),
-            ("audio-row-A1", [1232.0, 300.0, 352.0, 92.0]),
-            ("audio-row-A2", [1232.0, 392.0, 352.0, 92.0]),
+            // Under the scene bar (SPEC §5.6, board 07-named-scenes/01):
+            // S02's rows 46 px lower.
+            ("layer-row-L2", [1232.0, 174.0, 352.0, 44.0]),
+            ("layer-row-L1", [1232.0, 218.0, 352.0, 44.0]),
+            ("audio-row-A1", [1232.0, 346.0, 352.0, 92.0]),
+            ("audio-row-A2", [1232.0, 438.0, 352.0, 92.0]),
         ],
         &[
             "layer-row-L2",
@@ -1648,11 +1752,22 @@ fn s13b_row_states() {
         nested.window(0).wait_idle();
     }
     assert_eq!(nested.window(0).local()["focus"], "panel");
-    // Down reaches the first row, Down again the list's next row (the
-    // list's own arrow keys), which wears the inset ring while the
-    // keyboard is attached.
-    nested.keys(&["-k", "Down"]);
-    nested.window(0).wait_idle();
+    // Down reaches the first row (past the scene bar, SPEC §5.6), Down
+    // again the list's next row (the list's own arrow keys), which wears
+    // the inset ring while the keyboard is attached.
+    for _ in 0..4 {
+        nested.keys(&["-k", "Down"]);
+        nested.window(0).wait_idle();
+        if nested.window(0).local()["focusPath"][0] == "layer-row-L2" {
+            break;
+        }
+    }
+    assert_eq!(
+        nested.window(0).local()["focusPath"][0],
+        "layer-row-L2",
+        "{}",
+        nested.window(0).local()
+    );
     let held = nested.keys_held(&["-k", "Down"], 3000);
     poll(Duration::from_secs(10), "the focus on L1's row", || {
         (nested.window(0).local()["focusPath"][0] == "layer-row-L1").then_some(())
