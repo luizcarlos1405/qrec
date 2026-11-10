@@ -1,6 +1,6 @@
 # Qrec — Specification
 
-> **Qrec** (_Quick Recording_, rhymes with Shrek). A Wayland screen and camera
+> **Qrec** (_Quick Recording_, rhymes with Shrek). A Linux screen and camera
 > recorder built for one loop: **press R, talk, press R, repeat**. When you stop
 > recording, the video is already mostly edited.
 >
@@ -9,7 +9,7 @@
 |                |                                                                                                                                |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | Status         | Draft v1, written 2026-10-14 from an interview with the product owner                                                          |
-| Target         | Linux, Wayland (developed on NixOS + niri)                                                                                     |
+| Target         | Linux: Wayland (desktop portal) and X11 (`ximagesrc`), developed on NixOS + niri                                               |
 | App ID         | `com.rsensato.qrec` (GApplication id, `.desktop` file, icon name, D-Bus name)                                                  |
 | Related docs   | `docs/RECORDING.md` covers wf-recorder lessons from `qrec-tui`                                                                 |
 | Prior attempts | `qrec-tui` (Rust, FCIS, solid), `qrec-electron` (fragile browser playback), `qrec-sky` (never compiled), `qrec-glm` (scaffold) |
@@ -39,16 +39,26 @@
 
 ### 1.2 Non-goals for v1
 
-- X11. The design keeps it possible later: GStreamer `ximagesrc` would be a
-  new source kind, not a rewrite.
 - Managing projects beyond opening and creating them (§4.4): no renaming,
   moving or deleting them from the app.
 - Multi-track editing, B-roll, transitions, titles, effects, color grading.
 - Capturing a single window, and drawing a screen region. A layer's `crop`
   can still trim a monitor numerically (§12), but there is no "draw a region"
   gesture.
-- Windows and macOS. GNOME and KDE should work through the portal but aren't
-  tested.
+- Windows and macOS.
+
+**Where it runs.** Linux, under Wayland or X11. The window opens on the
+session's Wayland display when one answers, else on the X11 display that
+`DISPLAY` names. On Wayland, screens are recorded through the desktop portal
+(ScreenCast), whose picker asks once per monitor. On X11, GStreamer's
+`ximagesrc` records them and there is no picker: adding a screen layer is the
+consent, as with OBS and ffmpeg, and the window still shows its REC badge
+while a take records (§5.1, §5.3). Qrec needs GTK 4.22 and libadwaita 1.9 or
+newer, and keeps that floor.
+
+Only niri has been tested on a real session. GNOME, KDE Plasma, wlroots
+compositors (sway, river, labwc) and Hyprland are expected to work through
+the portal, but they are untested. X11 is tested on a private Xvfb only.
 
 ---
 
@@ -101,19 +111,39 @@
 
 ### 3.3 Runtime dependencies (checked by `qrec doctor`)
 
-- GStreamer elements: `pipewiresrc`, `v4l2src`, `pulsesrc`, `compositor`,
-  `videorate`, `x264enc`, `vah264enc` (optional), `matroskamux`, `flacenc`,
-  `gtk4paintablesink` (gst-plugins-rs), GES.
-- `ffmpeg` and `ffprobe` with libx264, libvpx-vp9, libopus and libsvtav1
-  (optional).
-- xdg-desktop-portal with a ScreenCast backend. On niri that is
-  `xdg-desktop-portal-gnome`, which is present on the dev machine.
-- PipeWire with `pipewire-pulse`.
-- Optional: `wl-copy` (copy a saved frame to the clipboard).
+Each feature has its own requirements. A missing app requirement blocks the
+window; anything else that is missing turns its one feature off, and Qrec
+still opens projects, edits and exports with what it has.
 
-When something is missing, `doctor` lists it and prints a hint for each item.
-Startup runs the same check and shows a blocking "The swamp is missing
-something" screen with that list.
+| Feature                                         | Needs                                                                                                                                                                                                                                                                                                                                                     |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **The app** (projects, the editor, its preview) | GStreamer 1.24 or newer with GES, `compositor`, `videorate`, `gtk4paintablesink` (gst-plugins-rs), `matroskademux`, `flacdec` and a software H.264 decoder; `ffmpeg` and `ffprobe`, with ffmpeg's `h264` and `flac` decoders and its matroska demuxer                                                                                                     |
+| **Screens**                                     | Wayland: `pipewiresrc`, the PipeWire daemon and xdg-desktop-portal with a ScreenCast backend, v3 or newer (v4 remembers the screen choice; on niri the backend is `xdg-desktop-portal-gnome`). X11: `ximagesrc` and the X server (RandR 1.3 or newer lists its monitors; without it, its whole screen is one). Without a display, nothing records screens |
+| **Cameras**                                     | `v4l2src`                                                                                                                                                                                                                                                                                                                                                 |
+| **Audio** (mics, system audio)                  | `pulsesrc`, and `pactl` 16 or newer reaching a sound server: PipeWire with `pipewire-pulse`, or PulseAudio                                                                                                                                                                                                                                                |
+| **Recording**                                   | `h264parse`, `matroskamux`, `flacenc` and one H.264 encoder: VA-API's on the render node, else `x264enc`, else `openh264enc` (§5.2)                                                                                                                                                                                                                       |
+| **MP4 export**                                  | ffmpeg's `aac`, `pcm_s16le` and one H.264 encoder: `h264_vaapi` on the render node, else `libx264`, else `libopenh264` (§13.1)                                                                                                                                                                                                                            |
+| **WebM export**                                 | ffmpeg's `libvpx-vp9`, `libopus` and `pcm_s16le`                                                                                                                                                                                                                                                                                                          |
+| **AV1 export**                                  | ffmpeg's `libsvtav1`, `libopus` and `pcm_s16le`                                                                                                                                                                                                                                                                                                           |
+
+Optional: `wl-copy` (wl-clipboard), which keeps a frame copied with Copy
+image on the clipboard after Qrec quits, on Wayland (§13.2).
+
+Each check says what needs it (`neededFor` in `qrec --json doctor`). A few
+only inform: the VA-API report, the portal's app registry, an X server
+without RandR. The screen checks follow the session's screen backend (§5.1),
+which the report names first:
+`Session: X11 (xfce) · screens: x11 (DISPLAY=:0)`.
+
+When an app dependency is missing, `doctor` exits 5 (`missing_dependency`),
+and startup shows the blocking "The swamp is missing something" screen with
+those checks alone. Any other failure turns its feature off: `doctor` prints
+a line for it ("Screen capture is off: no ScreenCast portal: …") and exits 0,
+and the window opens the project. Each failure comes with a hint for the
+machine it runs on: the distribution's packages and install command (`apt`,
+`dnf`, `pacman` or `zypper`), the desktop's ScreenCast backend and its setup,
+or `nix develop` in the dev shell. The blocking screen shows that command
+with a Copy button.
 
 ---
 
@@ -251,10 +281,31 @@ its own, so a project it opens gets its own window beside this one.
 
 | Kind             | Capture                                                               | Notes                                                                                                                                                                                       |
 | ---------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Screen (monitor) | Portal ScreenCast → `pipewiresrc`                                     | The picker is shown once per monitor. Restore tokens are saved in `~/.local/state/qrec/portal-tokens.json`, keyed by output name, so later sessions (including headless ones) don't prompt. |
+| Screen (Wayland) | Portal ScreenCast → `pipewiresrc`                                     | The picker is shown once per monitor. Restore tokens are saved in `~/.local/state/qrec/portal-tokens.json`, keyed by output name, so later sessions (including headless ones) don't prompt. |
+| Screen (X11)     | `ximagesrc` on the monitor's part of the X server's root window       | No picker and no restore token: adding the layer is the consent, as with OBS and ffmpeg. The monitors are the X server's RandR monitors.                                                    |
 | Camera           | `v4l2src` (or `pipewiresrc` through the camera portal when available) | Caps are negotiated at the closest mode ≥ canvas fps.                                                                                                                                       |
 | Mic              | `pulsesrc device=<alsa_input…>`                                       | Only real inputs (`alsa_input.*`) are offered as mics. Fixes a qrec-tui data bug where a `.monitor` source got picked as the mic.                                                           |
 | System audio     | `pulsesrc device=<sink>.monitor`                                      | The default sink monitor unless one is chosen.                                                                                                                                              |
+
+**Screens** come from the session. A Wayland session records them through
+the portal, even when XWayland sets `DISPLAY` (XWayland only shows X
+clients); a session with only `DISPLAY` records them with `ximagesrc`; with
+neither, a project's screens still go to the portal, which a headless
+session may reach. `QREC_SCREEN_BACKEND=portal|x11` overrides the choice.
+
+- **Wayland.** The compositor lists its outputs (`wl_output`, with
+  `xdg-output`'s logical position and fractional scale). The stream the
+  portal shares is matched to its monitor by the portal's mapping id, else by
+  its position and size. When another monitor was picked, the take fails and
+  asks for the right one next time; when nothing can tell which monitor it
+  is, the take records it but keeps no token, so the picker asks again next
+  time.
+- **X11.** The monitors are RandR 1.5's, else the lit CRTCs, else the whole
+  screen as `screen`. `ximagesrc` grabs each one's part of the root window at
+  the canvas rate, with the pointer, and makes its pixels square. A monitor
+  that goes away, moves or changes size mid-take loses its layer, as a cast
+  that ends does (§16). Nothing asks for permission, so the window's REC
+  badge is what shows that a take records (§5.3).
 
 A scene may contain **any number** of screen and camera layers and **zero or
 more** audio tracks. The `mic` and `system` roles are labels. Multiple mics
@@ -276,10 +327,23 @@ per audio source:  src → audioconvert → level → tee ─┬─ meter (UI)
   delay**. Pressing R only attaches record bins.
 - **Record bin for video:** `queue → videorate (CFR = canvas fps) →
 videoconvert → encoder → h264parse → matroskamux → filesink`.
-  - Encoder: `vah264enc` on the configured render node, falling back to
-    `x264enc speed-preset=veryfast tune=zerolatency`.
+  - Encoder, the first one this machine has:
+    1. VA-API's `va*h264enc` (`vah264enc`, …) on the render node: the
+       configured one, else the first Intel or AMD node, never NVIDIA's,
+       which has no VA-API encoder;
+    2. that node's low-power `va*h264lpenc` (Intel Arc, Meteor Lake and
+       newer have only that one; untested on such a GPU);
+    3. `x264enc speed-preset=veryfast tune=zerolatency`;
+    4. `openh264enc` (stock Fedora and openSUSE ship no `x264enc`).
+
+    An `x264` preference records with `x264enc` whatever else is there.
+    OpenH264 encodes at most 9,437,184 pixels (4096×2304) a frame, so a take
+    that would give it a larger screen or camera is refused before it starts
+    (`missing_dependency`).
   - Keyframe every 1 s, so preview seeks and exports stay fast.
-  - Quality is roughly CRF 18.
+  - Quality is roughly CRF 18: a constant quantizer of 18. OpenH264's is 22,
+    measured: the screen's text stays sharp, and 18 would cost a noisy camera
+    about twice the CPU and three times the bits.
   - Video is recorded at the source's **native resolution**. Scaling to the
     canvas happens at preview and export time, so layouts can change later.
 - **Record bin for audio:** `queue → audioresample (48 kHz) → flacenc →
@@ -772,8 +836,23 @@ silencedetect=noise=<thresholdDb>dB:d=<minSilence> -vn -f null -` on
 |              | `Ctrl+K` or `:`                           | Command palette                                                                                    | —                                       |
 |              | `Ctrl+,`                                  | Settings                                                                                           | `qrec config`                           |
 
-**Global binding** (requirement 25: record while another app has focus). The
-docs and `qrec doctor` print a ready-to-paste niri snippet:
+**Global shortcuts** (requirement 25: record while another app has focus).
+Qrec grabs no keys itself: the desktop binds `Mod+Shift+R`, `Mod+Shift+O` and
+`Mod+Shift+D` to `qrec record toggle`, `qrec record start --over-selection`
+and `qrec take discard-last` (Mod is the compositor's own modifier on niri,
+sway and i3, Meta on KDE Plasma and Super elsewhere). `qrec doctor` prints
+how for the desktop Qrec runs on, and the cheat sheet's Global shortcuts
+group shows it with a Copy snippet button:
+
+- niri (below), sway and i3 (`bindsym`), Hyprland (`bind`) and river
+  (`riverctl map`): lines for their config file;
+- GNOME and KDE Plasma: the steps in their settings (GNOME Settings ›
+  Keyboard's custom shortcuts, System Settings › Keyboard › Shortcuts), with
+  each shortcut's name, command and keys;
+- any other desktop: the three commands and their keys, to bind in its
+  keyboard settings.
+
+niri's snippet:
 
 ```kdl
 binds {
@@ -784,7 +863,7 @@ binds {
 ```
 
 `--over-selection` resolves the selection held by the host. `qrec record
-toggle` needs the project folder. Compositor binds run in `$HOME`, so the CLI
+toggle` needs the project folder. Global shortcuts run in `$HOME`, so the CLI
 looks for the target project in this order:
 
 1. `--project <dir>`.
@@ -863,8 +942,12 @@ and through the ffmpeg export plan, and requires SSIM ≥ 0.98 for each frame.
 ### 13.1 Export
 
 - **Formats in v1:**
-  - **MP4:** H.264 + AAC 192 kbps. `h264_vaapi` when available, otherwise
-    `libx264 -crf 20 -preset medium`.
+  - **MP4:** H.264 + AAC 192 kbps. `h264_vaapi` on the render node once it has
+    been checked to encode there, otherwise `libx264 -crf 20 -preset medium`,
+    otherwise `libopenh264` at a constant QP of 22 (Fedora's ffmpeg-free has
+    it and no libx264). OpenH264 encodes at most a 4096×2304 canvas (9,437,184
+    pixels), so a larger one is refused up front (`missing_dependency`); WebM
+    still exports it. An `x264` preference exports with libx264 alone.
   - **WebM:** VP9 + Opus 128 kbps (`libvpx-vp9 -crf 32 -b:v 0 -row-mt 1`),
     with AV1 (`libsvtav1`) as an option.
 - **Quality presets:** Draft, Standard (the default) and High.
@@ -916,7 +999,13 @@ and through the ffmpeg export plan, and requires SSIM ≥ 0.98 for each frame.
 - It is rendered through the same ffmpeg plan as export (one frame), so it
   matches the export exactly. The output is a canvas-size PNG at
   `frames/<name>-<take>-<HHMMSSFF>.png`.
-- A toast shows the path, with _Copy image_ (`wl-copy`) and _Open folder_.
+- A toast shows the path, with _Copy image_ and _Open folder_. Copy image
+  puts the frame on the clipboard through GDK, the same on Wayland, XWayland
+  and X11: the PNG's bytes (`image/png`), the picture itself (GTK converts it
+  for the other image types a paste asks for) and its `file://` URI
+  (`text/uri-list`). At quit, a frame still on the clipboard is handed on so
+  that it outlives Qrec: to `wl-copy` on Wayland (when it is installed), to
+  the clipboard manager on X11 (when there is one).
 - Option: `--layer L2` saves the raw source frame of one layer at native
   resolution.
 
@@ -946,7 +1035,7 @@ qrec --pick                  # the project picker, whatever the cwd holds
 qrec init [--canvas 1920x1080@30]
 qrec create <name|path> [--canvas 1920x1080@30] [--name NAME]   # new folder + project (§4.4)
 qrec status                  # summary; --json = full state + host/recording status
-qrec doctor                  # dependency + portal + device check, niri bind snippet
+qrec doctor                  # dependencies, session and devices (§3.3); this desktop's global shortcuts (§10.2)
 qrec sources list            # screens, cameras, mics, system-audio monitors
 
 qrec scene layer add screen --output DP-4 [--rect X,Y,W,H] [--name ..]
@@ -1145,6 +1234,7 @@ verbs ("Record", "Export"), so the app stays usable.
 | Fake capture    | With `QREC_CAPTURE_BACKEND=fake`, the capture engine uses `videotestsrc`/`audiotestsrc`. The whole recording loop runs headless in CI and in LLM sessions.                                                                                             |
 | Parity          | SSIM check between the GES preview and the ffmpeg export (§12).                                                                                                                                                                                        |
 | GUI             | A thin smoke test (launch, dispatch a scripted command list over IPC, screenshot). Behavior is covered by the tests above because the GUI only sends Commands.                                                                                         |
+| X11             | A private Xvfb, never the user's display: `tests/x11.rs` runs the binary on the real backend (RandR screens, `doctor`, takes through `ximagesrc`, a monitor lost mid-take), and `gui_x11` the window (GDK's X11 backend, a held key, Copy image).      |
 | Manual          | A checklist on niri: two monitors + camera + mic + system audio, a 10-minute take, the A/V sync clap test, a portal restore after reboot.                                                                                                              |
 
 ---
@@ -1166,7 +1256,7 @@ verbs ("Record", "Export"), so the app stays usable.
 
 | #           | Requirement                                              | Section         |
 | ----------- | -------------------------------------------------------- | --------------- |
-| 1           | Wayland first, X11 only if simple                        | §1.2, §3        |
+| 1           | Wayland first, X11 only if simple (X11 done too)         | §1.2, §3, §5.1  |
 | 2           | Best stack, nice and smooth                              | §3              |
 | 3           | Name Qrec                                                | header          |
 | 4           | Shrek theme and color schemes                            | §15             |
@@ -1210,6 +1300,20 @@ verbs ("Record", "Export"), so the app stays usable.
 3. **GES vs ffmpeg parity** in scaling filters and color range. wf-recorder's
    output was full-range `yuvj420p`. All recording and export is normalized
    to limited-range BT.709, and the parity test from §12 guards it.
+4. **Output names differ between desktops.** Screen layers and restore
+   tokens are keyed by the output's name, and desktops name the same
+   connector differently: mutter says `HDMI-1` where niri and wlroots say
+   `HDMI-A-1`, and an X server's names come from its driver. So a project's
+   screen layers and tokens don't carry over to another desktop. Matching a
+   layer's monitor by its EDID instead isn't planned.
+5. **Two monitors of the same size.** The portal's stream is matched to its
+   monitor by its mapping id, else by its position and size (§5.1).
+   xdg-desktop-portal-wlr 0.7.0 and older send no mapping id and a
+   placeholder position, so two monitors of one size can be taken for each
+   other there, and a take of one can record the other.
+   xdg-desktop-portal-hyprland names the monitor it shares only from 1.4.0:
+   with an older one Qrec can't tell such monitors apart, so it records the
+   one picked without keeping its token, and the picker shows on every take.
 
 ### Resolved
 
