@@ -98,6 +98,9 @@ pub struct Facts {
     /// then, so the seek goes from the player's frame (GUI G§3.10).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub player_ns: Option<u64>,
+    /// The `Scene*` commands: `scenes.json` as read now (A§9.11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_scenes: Option<crate::scenes::ScenesFile>,
 }
 
 /// A PulseAudio/PipeWire source.
@@ -203,6 +206,8 @@ pub struct FactsNeeded {
     pub files: Vec<String>,
     /// The GUI's Program player position (`Facts::player_ns`).
     pub player: bool,
+    /// `scenes.json` (`Facts::saved_scenes`).
+    pub saved_scenes: bool,
 }
 
 impl FactsNeeded {

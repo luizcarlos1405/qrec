@@ -160,6 +160,30 @@ fn all_commands() -> Vec<Command> {
             from: SceneTarget::Take(take(3)),
             to: SceneDest::Project,
         },
+        Command::SceneSave {
+            name: Some("Screen + camera".into()),
+        },
+        Command::SceneSave { name: None },
+        Command::SceneUse {
+            name: Some("Camera only".into()),
+        },
+        Command::SceneUse { name: None },
+        Command::SceneRename {
+            name: "Talk".into(),
+            to: "Talking head".into(),
+        },
+        Command::SceneDuplicate {
+            name: "Talk".into(),
+            to: None,
+        },
+        Command::SceneDelete {
+            name: "Two screens".into(),
+        },
+        Command::SceneApplySaved {
+            name: "Interview".into(),
+            take: take(5),
+        },
+        Command::ScenesReload,
         Command::AutocutSettings {
             patch: AutocutPatch {
                 auto_run_after_take: Some(true),
@@ -420,9 +444,16 @@ fn variant(cmd: &Command) -> usize {
         Command::Shuttle { .. } => 34,
         Command::SetCanvasMode { .. } => 35,
         Command::SetUi { .. } => 36,
+        Command::SceneSave { .. } => 37,
+        Command::SceneUse { .. } => 38,
+        Command::SceneRename { .. } => 39,
+        Command::SceneDuplicate { .. } => 40,
+        Command::SceneDelete { .. } => 41,
+        Command::SceneApplySaved { .. } => 42,
+        Command::ScenesReload => 43,
     }
 }
-const VARIANTS: usize = 37;
+const VARIANTS: usize = 44;
 
 #[test]
 fn every_variant_is_covered() {

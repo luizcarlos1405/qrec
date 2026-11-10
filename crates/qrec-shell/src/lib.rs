@@ -36,6 +36,7 @@ pub mod paths;
 pub mod player;
 pub mod proc;
 pub mod projects;
+pub mod scenes_file;
 pub mod session;
 pub mod sources;
 pub(crate) mod spawn;

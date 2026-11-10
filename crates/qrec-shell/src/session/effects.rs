@@ -399,6 +399,15 @@ impl Session {
             Effect::StartTimer { timer, after_ms } => self.timers.start(timer, after_ms),
             Effect::CancelTimer { timer } => self.timers.cancel(timer),
             Effect::Notify(toast) => self.notify(&toast),
+            // The library isn't the project: it is written even when the
+            // project's commit failed (a save changes nothing else).
+            Effect::WriteScenes(scenes) => {
+                let path = self.facts.scenes_path();
+                if let Err(e) = crate::scenes_file::write(&path, &scenes) {
+                    tracing::warn!("{e}");
+                    self.notify(&scenes_write_toast(&e));
+                }
+            }
             Effect::Progress { req, progress } => match self.pending.get_mut(&req) {
                 Some(to) => with_current(&req, || to.progress(&progress)),
                 None => tracing::debug!("progress for {req}, which nobody waits for"),
@@ -432,4 +441,13 @@ impl Session {
         let local = now + Duration::seconds(i64::from(offset));
         local.format("%Y%m%d-%H%M%S").to_string()
     }
+}
+
+/// The scene was saved in memory but `scenes.json` couldn't be written.
+fn scenes_write_toast(why: &str) -> qrec_core::protocol::toast::Toast {
+    qrec_core::protocol::toast::Toast::new(
+        qrec_core::protocol::toast::ToastLevel::Error,
+        "The scene wasn't saved",
+    )
+    .with_body(why.to_owned())
 }

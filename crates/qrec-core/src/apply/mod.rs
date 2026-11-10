@@ -24,6 +24,7 @@ pub mod history;
 pub mod output;
 pub mod project;
 pub mod record;
+pub mod saved_scenes;
 pub mod scene;
 pub mod ui;
 
@@ -143,6 +144,15 @@ pub fn apply(state: &State, ctx: &Ctx, cmd: Command) -> Result<Outcome, CoreErro
         } => scene::audio_set(state, ctx, target, track, patch),
         Command::AudioRemove { target, track } => scene::audio_remove(state, ctx, target, track),
         Command::SceneApply { from, to } => scene::scene_apply(state, ctx, from, to),
+        Command::SceneSave { name } => saved_scenes::scene_save(state, ctx, name),
+        Command::SceneUse { name } => saved_scenes::scene_use(state, ctx, name),
+        Command::SceneRename { name, to } => saved_scenes::scene_rename(state, ctx, name, to),
+        Command::SceneDuplicate { name, to } => saved_scenes::scene_duplicate(state, ctx, name, to),
+        Command::SceneDelete { name } => saved_scenes::scene_delete(state, ctx, name),
+        Command::SceneApplySaved { name, take } => {
+            saved_scenes::scene_apply_saved(state, ctx, name, take)
+        }
+        Command::ScenesReload => saved_scenes::scenes_reload(state, ctx),
         Command::AutocutSettings { patch } => project::autocut_settings(state, ctx, patch),
         Command::RecordStart {
             mode,
@@ -260,6 +270,13 @@ pub fn facts_needed(state: &State, cmd: &Command) -> FactsNeeded {
     match cmd {
         Command::Init { .. } => need.folder_name = true,
         Command::LayerAdd { .. } => need.video_sources = true,
+        Command::SceneSave { .. }
+        | Command::SceneUse { .. }
+        | Command::SceneRename { .. }
+        | Command::SceneDuplicate { .. }
+        | Command::SceneDelete { .. }
+        | Command::SceneApplySaved { .. }
+        | Command::ScenesReload => need.saved_scenes = true,
         Command::AudioAdd { .. } => need.audio_devices = true,
         Command::AudioSet { patch, .. } => need.audio_devices = patch.source.is_some(),
         // Without a countdown the take begins right away; otherwise the

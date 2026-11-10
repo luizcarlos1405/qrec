@@ -182,6 +182,38 @@ fn camera(id: &str) -> VideoRecord {
     }
 }
 
+/// A saved scene can name a camera this machine doesn't have (SPEC §5.6):
+/// the take starts without it and reports its layer lost at once, so the
+/// core marks it missing; the rest records.
+#[test]
+fn a_source_that_isnt_connected_is_left_out_of_the_take() {
+    let _serial = serial();
+    let mut h = Hooked::new(FakeHooks::default());
+    let mut take = h.plan(1, &["FAKE-1"], 10_000);
+    let mut gone = camera("L2");
+    gone.source = VideoSource::Camera {
+        device: "/dev/qrec-no-such-camera".into(),
+        label: "Logitech C920".into(),
+    };
+    take.video.push(gone);
+    h.engine.start(take.clone(), h.inbox.clone());
+    h.started();
+    let lost = h.wait_for("StreamLost", |e| {
+        matches!(e, Event::StreamLost { .. } | Event::CaptureFailed { .. })
+    });
+    let Event::StreamLost {
+        stream, message, ..
+    } = lost
+    else {
+        panic!("{lost:?}");
+    };
+    assert_eq!(stream, "L2");
+    assert!(message.contains("isn't connected"), "{message}");
+    let (_, timed_out) = h.stop(&take.take);
+    assert!(!timed_out);
+    assert!(!h.project.join("takes/take-0001/L2-camera-0.mkv").exists());
+}
+
 /// `QREC_FAKE_CAMERA_STALL_MS`: that long into the recording, the take's
 /// fake camera stops sending frames (no error, no EOS), so `STALL_LIMIT`
 /// later the take loses it (S25 #8: "Camera disconnected") and records on

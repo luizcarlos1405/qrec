@@ -205,6 +205,10 @@ pub(super) fn open(
     };
     let facts =
         FactsGatherer::new(paths.clone(), env.config.clone(), sources).with_player(cfg.player);
+    // The saved scenes the views list (A§9.11); scene commands read the
+    // file again, and a window reloads it when it changes.
+    let mut state = state;
+    state.runtime.saved_scenes = facts.saved_scenes();
     let timers = Timers::new(inbox.clone());
     let mut session = Session {
         dir,

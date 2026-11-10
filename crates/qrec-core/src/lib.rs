@@ -36,6 +36,7 @@ pub mod protocol;
 pub mod query;
 pub mod recents;
 pub mod requantize;
+pub mod scenes;
 pub mod schema;
 pub mod state;
 #[cfg(any(test, feature = "testkit"))]

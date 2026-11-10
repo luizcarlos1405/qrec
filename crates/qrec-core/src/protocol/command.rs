@@ -86,6 +86,22 @@ pub enum Command {
     AudioRemove { target: SceneTarget, track: TrackId },
     /// U. Copies layout fields between scenes, matched by id.
     SceneApply { from: SceneTarget, to: SceneDest },
+    /// `!` when the name exists (it is replaced). `None`: save the project
+    /// scene over the saved scene in use (A§9.11).
+    SceneSave { name: Option<String> },
+    /// U. Replaces the project scene with a saved one. `None`: revert to
+    /// the saved scene in use.
+    SceneUse { name: Option<String> },
+    /// Renames a saved scene (the library only).
+    SceneRename { name: String, to: String },
+    /// Copies a saved scene under `to`, or "<name> copy".
+    SceneDuplicate { name: String, to: Option<String> },
+    /// `!`. Deletes a saved scene (the library only).
+    SceneDelete { name: String },
+    /// U. A saved scene's layout on one take, matched by source.
+    SceneApplySaved { name: String, take: TakeId },
+    /// G, R. `scenes.json` changed (the window's settings watcher): read it again.
+    ScenesReload,
     /// U.
     AutocutSettings { patch: AutocutPatch },
     /// A.
@@ -211,6 +227,13 @@ impl Command {
             Command::AudioSet { .. } => "audioSet",
             Command::AudioRemove { .. } => "audioRemove",
             Command::SceneApply { .. } => "sceneApply",
+            Command::SceneSave { .. } => "sceneSave",
+            Command::SceneUse { .. } => "sceneUse",
+            Command::SceneRename { .. } => "sceneRename",
+            Command::SceneDuplicate { .. } => "sceneDuplicate",
+            Command::SceneDelete { .. } => "sceneDelete",
+            Command::SceneApplySaved { .. } => "sceneApplySaved",
+            Command::ScenesReload => "scenesReload",
             Command::AutocutSettings { .. } => "autocutSettings",
             Command::RecordStart { .. } => "recordStart",
             Command::RecordStop => "recordStop",
@@ -259,6 +282,8 @@ impl Command {
                 | Command::AudioSet { .. }
                 | Command::AudioRemove { .. }
                 | Command::SceneApply { .. }
+                | Command::SceneUse { .. }
+                | Command::SceneApplySaved { .. }
                 | Command::AutocutSettings { .. }
                 | Command::TakeDiscardLast
                 | Command::ClipAdd { .. }
@@ -291,6 +316,8 @@ impl Command {
         matches!(
             self,
             Command::ProjectSet { .. }
+                | Command::SceneSave { .. }
+                | Command::SceneDelete { .. }
                 | Command::TakePurge { .. }
                 | Command::HistoryRestore { .. }
                 | Command::HistoryClear
@@ -303,7 +330,11 @@ impl Command {
     pub fn gui_only(&self) -> bool {
         matches!(
             self,
-            Command::Seek { .. } | Command::Play | Command::Pause | Command::Shuttle { .. }
+            Command::Seek { .. }
+                | Command::Play
+                | Command::Pause
+                | Command::Shuttle { .. }
+                | Command::ScenesReload
         )
     }
 
@@ -321,6 +352,7 @@ impl Command {
                 | Command::Play
                 | Command::Pause
                 | Command::Shuttle { .. }
+                | Command::ScenesReload
         )
     }
 
@@ -369,7 +401,12 @@ impl Command {
             | Command::Seek { .. }
             | Command::Pause
             | Command::SetCanvasMode { .. }
-            | Command::SetUi { .. } => true,
+            | Command::SetUi { .. }
+            | Command::SceneSave { .. }
+            | Command::SceneRename { .. }
+            | Command::SceneDuplicate { .. }
+            | Command::SceneDelete { .. }
+            | Command::ScenesReload => true,
             Command::TakeDiscardLast => matches!(phase, RecordPhase::Finalizing { .. }),
             _ => false,
         }
@@ -391,6 +428,8 @@ impl Command {
             | Command::AudioSet { .. }
             | Command::AudioRemove { .. }
             | Command::SceneApply { .. }
+            | Command::SceneUse { .. }
+            | Command::SceneApplySaved { .. }
             | Command::AutocutSettings { .. }
             | Command::TakeDiscardLast
             | Command::TakePurge { .. }
@@ -417,7 +456,12 @@ impl Command {
             | Command::Pause
             | Command::Shuttle { .. }
             | Command::SetCanvasMode { .. }
-            | Command::SetUi { .. } => false,
+            | Command::SetUi { .. }
+            | Command::SceneSave { .. }
+            | Command::SceneRename { .. }
+            | Command::SceneDuplicate { .. }
+            | Command::SceneDelete { .. }
+            | Command::ScenesReload => false,
         }
     }
 
@@ -439,6 +483,7 @@ impl Command {
                 | Command::AudioSet { .. }
                 | Command::AudioRemove { .. }
                 | Command::AutocutSettings { .. }
+                | Command::SceneUse { .. }
                 | Command::RecordStart { .. }
                 | Command::RecordToggle { .. }
         )

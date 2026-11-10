@@ -124,6 +124,11 @@ impl UserDirs {
         self.config.join("config.toml")
     }
 
+    /// `config/scenes.json`: the saved scenes (A§9.11).
+    pub fn scenes_file(&self) -> PathBuf {
+        self.config.join(crate::scenes_file::SCENES_FILE)
+    }
+
     /// `config/keys.toml`: key binding overrides (A§9.7).
     pub fn keys_file(&self) -> PathBuf {
         self.config.join("keys.toml")
