@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Delete a scene</title>
+  <meta name="description" content="Delete… from a scene's menu. Saved scenes live outside the project, so this isn't in undo: it asks first, Cancel focused.">
+  <meta name="htmlboard" content="width=1600, height=1000">
+  <link rel="stylesheet" href="../styles.css">
+  <script type="module" src="../components.js"></script>
+  <style>
+    .panel-frame { position: absolute !important; left: 1216px; top: 48px; }
+    .modal { left: 540px; top: 300px; }
+    .modal .lead { margin-top: 12px; font-weight: 600; }
+    .modal p + p { margin-top: 8px; }
+    .scene-card { display: flex; align-items: center; gap: 12px; margin-top: 16px; padding: 12px; background: var(--qrec-field); border-radius: var(--qrec-radius-md); }
+  </style>
+</head>
+<body>
+<div class="window">
+  <img class="header" src="../assets/S02-live-idle-header.png" alt="">
+  <img class="stage" src="../assets/S02-live-idle-stage.png" alt="">
+  <img class="hints" src="../assets/S02-live-idle-hints.png" alt="">
+  <scene-panel class="panel-frame" state="clean"></scene-panel>
+  <div class="scrim"></div>
+  <div class="modal" role="alertdialog" aria-labelledby="t">
+    <h2 class="display-sm" id="t">Peel off this scene?</h2>
+    <p class="lead">Delete the scene “Two screens” from this computer.</p>
+    <p>Every project here loses it from the scene menu. Takes recorded with it keep their own layout, and no media is touched.</p>
+    <div class="scene-card">
+      <scene-thumb lg><i style="left: 0; top: 0; width: 50%; height: 100%"></i><i style="left: 50%; top: 0; width: 50%; height: 100%"></i><i class="cam" style="left: 40%; top: 66%; width: 20%; height: 30%"></i></scene-thumb>
+      <div>
+        <div class="body-strong">Two screens</div>
+        <div class="caption muted">3 layers: DP-4, DP-2, Logitech C920 · 2 audio tracks</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn lg secondary focus">Cancel</button>
+      <button class="btn lg destructive">Delete scene</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

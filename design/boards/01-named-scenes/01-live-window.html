@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Live · named scene</title>
+  <meta name="description" content="Live mode with a saved scene in use. The stage, timeline, header and hint bar are the approved S02; only the panel is new.">
+  <meta name="htmlboard" content="width=1600, height=1000">
+  <meta name="htmlboard:label" content="Screen + camera">
+  <meta name="htmlboard:variant" content="?state=menu · scene menu open">
+  <meta name="htmlboard:variant" content="?state=missing · switched to Two screens, DP-2 missing">
+  <link rel="stylesheet" href="../styles.css">
+  <script type="module" src="../components.js"></script>
+  <style>
+    .panel-frame { position: absolute !important; left: 1216px; top: 48px; }
+    /* The preview inside the stage crop: 960×540 at (128, 64) */
+    .preview { position: absolute; left: 128px; top: 64px; width: 960px; height: 540px; background: var(--qrec-project-canvas); overflow: hidden; }
+    .preview .lay { position: absolute; background-size: cover; background-position: left top; }
+    .preview .gone { position: absolute; display: flex; align-items: center; justify-content: center;
+      background: var(--qrec-bg); outline: 1px dashed var(--qrec-warning); outline-offset: -1px; }
+    .preview .gone span { background: var(--qrec-video-scrim); color: var(--qrec-video-text); padding: 4px 12px; border-radius: var(--qrec-radius-md); }
+    .badge { position: absolute; right: 12px; top: 12px; display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px;
+      border-radius: var(--qrec-radius-pill); background: var(--qrec-video-scrim); color: var(--qrec-video-text); font: 700 12px/16px var(--ui); letter-spacing: 0.06em; }
+    .toast { left: 340px; bottom: 44px; }
+    .toast .acts { display: flex; gap: 4px; margin-top: 8px; }
+    .toast .acts .btn { height: 28px; padding: 0 8px; color: var(--qrec-accent-text); }
+    [data-in] { display: none !important; }
+  </style>
+</head>
+<body>
+<div class="window">
+  <img class="header" src="../assets/S02-live-idle-header.png" alt="">
+  <img class="stage" src="../assets/S02-live-idle-stage.png" alt="">
+  <img class="hints" src="../assets/S02-live-idle-hints.png" alt="">
+
+  <div class="preview" data-in="missing">
+    <div class="lay" style="left: 0; top: 0; width: 480px; height: 540px; background-image: url(../assets/preview-screen-camera.png)"></div>
+    <div class="gone" style="left: 480px; top: 0; width: 480px; height: 540px"><span class="body-sm"><i class="ic s14 i-monitor-x" style="vertical-align: -2px"></i>&nbsp; Right screen · DP-2 isn't connected</span></div>
+    <div class="lay" style="left: 384px; top: 356px; width: 192px; height: 162px; background-image: url(../assets/face.png); background-position: center"></div>
+    <div class="badge">LIVE</div>
+  </div>
+
+  <scene-panel class="panel-frame"></scene-panel>
+
+  <div class="toast" data-in="missing" role="status">
+    <i class="ic s20 i-alert warning-text"></i>
+    <div class="grow">
+      <div class="body-strong">Switched to Two screens. DP-2 isn't connected.</div>
+      <div class="body-sm muted">Its layer stays in the scene, and new takes record without it until it's back or you replace it.</div>
+      <div class="acts"><button class="btn flat">Replace screen…</button><button class="btn flat">Undo</button></div>
+    </div>
+    <button class="icon-btn" aria-label="Dismiss"><i class="ic i-x"></i></button>
+  </div>
+</div>
+<script>
+  const state = new URLSearchParams(location.search).get('state') || 'clean';
+  for (const el of document.querySelectorAll('[data-in]')) {
+    if (el.dataset.in.split(' ').includes(state)) el.removeAttribute('data-in');
+  }
+  document.querySelector('scene-panel').setAttribute('state', state);
+</script>
+</body>
+</html>

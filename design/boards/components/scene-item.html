@@ -1,0 +1,20 @@
+<!-- <scene-item name="Screen + camera" summary="DP-4 · Logitech C920 · 2 audio" key="1" active><i style="inset: 0"></i><i class="cam" style="left: 78%; top: 70%; width: 20%; height: 27%"></i></scene-item> -->
+<scene-thumb><slot></slot></scene-thumb>
+<span class="text"><span class="nm">{{name}}</span><span class="caption sub"><i class="ic s12 i-alert wi"></i>{{summary}}</span></span>
+<i class="ic i-check ck"></i>
+<span class="keys"><span class="kc">Alt</span><span class="kc">{{key}}</span></span>
+<style>
+  & { display: flex; align-items: center; gap: 12px; height: 48px; padding: 0 10px; border-radius: var(--qrec-radius-md); }
+  .text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+  .nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub { display: flex; align-items: center; gap: 4px; color: var(--qrec-muted); white-space: nowrap; overflow: hidden; }
+  .wi, .ck { display: none; }
+  .ck { color: var(--qrec-accent-text); }
+  &[active] .ck { display: inline-block; }
+  &[hover] { background: var(--qrec-hover); }
+  &[focused] { background: var(--qrec-selected); box-shadow: inset 0 0 0 1px var(--qrec-accent); }
+  &[focused] .sub { color: var(--qrec-text); }
+  &[warning] .sub { color: var(--qrec-warning-text); }
+  &[warning] .wi { display: inline-block; }
+  &[nokey] .keys { visibility: hidden; }
+</style>

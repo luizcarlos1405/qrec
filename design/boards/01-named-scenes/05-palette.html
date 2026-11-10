@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Command palette · scenes</title>
+  <meta name="description" content="S19's palette, typing “scene”: every saved scene is a command, with its Alt key and CLI form.">
+  <meta name="htmlboard" content="width=1600, height=1000">
+  <link rel="stylesheet" href="../styles.css">
+  <script type="module" src="../components.js"></script>
+  <style>
+    .panel-frame { position: absolute !important; left: 1216px; top: 48px; }
+    .palette { position: absolute; left: 480px; top: 96px; width: 640px; padding: 12px 8px 8px; background: var(--qrec-raised);
+      border: 1px solid var(--qrec-border); border-radius: var(--qrec-radius-lg); box-shadow: var(--e2); }
+    .search { display: flex; align-items: center; gap: 10px; height: 40px; margin: 0 4px 12px; padding: 0 12px; background: var(--qrec-field);
+      border: 1px solid var(--qrec-accent); box-shadow: 0 0 0 1px var(--qrec-accent); border-radius: var(--qrec-radius-md); font-size: 16px; }
+    .search .caret { width: 1px; height: 20px; background: var(--qrec-text); margin-left: -9px; }
+    .prow { display: grid; grid-template-columns: 1fr 120px 236px; align-items: center; height: 40px; padding: 0 12px; border-radius: var(--qrec-radius-md); }
+    .prow.on { background: var(--qrec-selected); box-shadow: inset 0 0 0 1px var(--qrec-accent); }
+    .prow .keys { justify-self: end; margin-right: 16px; }
+    .prow .cli { justify-self: end; color: var(--qrec-muted); }
+    .prow .what { display: flex; align-items: center; gap: 8px; }
+    .prow .ck { color: var(--qrec-accent-text); }
+    .hint-bar { position: absolute; left: 0; bottom: 0; width: 1600px; height: 32px; display: flex; align-items: center; gap: 20px; padding: 0 12px;
+      background: var(--qrec-surface); border-top: 1px solid var(--qrec-border); font-size: 13px; }
+    .hint-bar span { display: inline-flex; align-items: center; gap: 6px; }
+  </style>
+</head>
+<body>
+<div class="window">
+  <img class="header" src="../assets/S02-live-idle-header.png" alt="">
+  <img class="stage" src="../assets/S02-live-idle-stage.png" alt="">
+  <scene-panel class="panel-frame" state="clean"></scene-panel>
+  <div class="scrim"></div>
+  <div class="hint-bar">
+    <span><span class="keys"><span class="kc">↑</span><span class="kc">↓</span></span>Choose</span>
+    <span class="muted"><span class="kc" style="color: var(--qrec-text)">Enter</span>Run</span>
+    <span class="muted"><span class="kc" style="color: var(--qrec-text)">Esc</span>Close</span>
+  </div>
+  <div class="palette" role="dialog" aria-label="Commands">
+    <div class="search"><i class="ic s20 i-search muted"></i>scene<span class="caret"></span></div>
+    <div class="prow"><span class="what">Use scene “Screen + camera” <i class="ic s14 i-check ck"></i></span><span class="keys"><span class="kc">Alt</span><span class="kc">1</span></span><span class="cli mono-sm">qrec scene use "Screen + camera"</span></div>
+    <div class="prow on"><span class="what">Use scene “Camera only”</span><span class="keys"><span class="kc">Alt</span><span class="kc">2</span></span><span class="cli mono-sm">qrec scene use "Camera only"</span></div>
+    <div class="prow"><span class="what">Use scene “Two screens” <span class="caption warning-text">DP-2 missing</span></span><span class="keys"><span class="kc">Alt</span><span class="kc">3</span></span><span class="cli mono-sm">qrec scene use "Two screens"</span></div>
+    <div class="prow"><span class="what">Use scene “Interview”</span><span class="keys"><span class="kc">Alt</span><span class="kc">4</span></span><span class="cli mono-sm">qrec scene use Interview</span></div>
+    <div class="prow"><span class="what">Save scene as…</span><span class="keys"></span><span class="cli mono-sm">qrec scene save &lt;name&gt;</span></div>
+    <div class="prow"><span class="what">Save changes to the scene</span><span class="keys"></span><span class="cli mono-sm">qrec scene save --update</span></div>
+    <div class="prow disabled"><span class="what">Revert scene to saved</span><span class="keys"></span><span class="cli mono-sm">qrec scene use --revert</span></div>
+  </div>
+</div>
+</body>
+</html>
