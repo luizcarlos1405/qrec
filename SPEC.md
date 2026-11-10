@@ -61,6 +61,7 @@
 | **Layer**       | A video source placed on the canvas with a rect, z-order, opacity, crop and visibility. In the UI these are called "Onion layers".                      |
 | **Audio track** | An audio source (`mic` or `system`) with gain, mute and sync offset. Each one is recorded to its own file.                                              |
 | **Scene**       | The full set of layers and audio tracks. The **project scene** is used for new takes. Each take keeps its own **snapshot** of the scene.                |
+| **Saved scene** | A scene saved under a name on this computer, to use again in any project (§5.6). Switching to one replaces the project scene.                         |
 | **Take**        | One recording session (start → stop). It is a folder with one file per source, all on one shared clock. Takes are immutable media.                      |
 | **Clip**        | A timeline item that references a take with an in/out range `[in, out)` in frames. One take can back several clips, for example after a cut or autocut. |
 | **Timeline**    | An ordered, gapless list of clips (one magnetic track).                                                                                                 |
@@ -356,6 +357,45 @@ selection for anything else.)
 `recording.countdownSecs` can be 0–10 and defaults to **0**. During a
 countdown the canvas shows a big number, and `Esc` or `r` aborts it.
 
+### 5.6 Saved scenes (issue #3)
+
+A setup such as "screen + camera in the corner", "camera only" or "two
+screens" can be saved under a name and used again, in this project or any
+other on the same computer.
+
+- **What a saved scene holds:** the layers (source, name, rect, crop,
+  opacity, fit, z-order, visibility, lock) and the audio tracks (role,
+  source, label, gain, mute, sync offset), plus which track is the autocut
+  track. Not the canvas size or fps: those belong to the project.
+- **Where:** `~/.config/qrec/scenes.json` (§6.4), in the order they were
+  saved. Names are unique, compared without case; they can't be empty.
+- **Save:** _Save scene as…_ stores the project scene under a new name. A
+  name that exists asks first and then replaces that scene. _Save changes_
+  stores the project scene over the saved scene it came from.
+- **Use:** picking a saved scene replaces the project scene in **one
+  undoable step**. Layers and tracks whose source the project scene already
+  has keep their ids, so take layouts still match them. Takes already
+  recorded keep their snapshot. It isn't allowed while recording.
+- **Which scene is in use, and edited:** the panel names the saved scene the
+  project scene equals. When it equals none, it names the one last used or
+  saved, marked _Edited_, with _Save changes_ and _Revert to saved_. With
+  neither, it says _No saved scene_ and offers _Save as…_. This is derived,
+  so undoing a switch shows the scene from before.
+- **A source that isn't connected** (an unplugged screen, a camera on
+  another machine) doesn't block the switch. Its layer stays in the scene,
+  the panel and the canvas say it isn't connected, and the layer offers
+  _Replace…_ (another screen or camera). Record still works: the take is
+  recorded without that source, and its snapshot marks the layer missing.
+- **Manage:** rename, duplicate, replace with the current scene, and delete.
+  Deleting asks first (saved scenes live outside the project's undo
+  history). None of these change the project or its takes.
+- **Apply to a take:** in Program, the take banner's Layout menu can apply a
+  saved scene to the selected take, in one undoable step. Layers and tracks
+  are matched by source; a take layer the scene doesn't have is hidden, and
+  a scene layer the take has no stream for is skipped. A scene that shares
+  no layer with the take can't be applied.
+- **Keys:** `Alt+1` … `Alt+9` use the first nine saved scenes, in Live.
+
 ---
 
 ## 6. Project file and on-disk layout
@@ -567,6 +607,9 @@ copy to `.qrec/qrec.v{N}.json.bak`.
     unset by default, §4.4)
   - open the last project on start (`projects.open_last`, off by default)
 - `keys.toml`: keybinding overrides (§10).
+- `scenes.json`: the saved scenes (§5.6). A file that can't be read counts
+  as no saved scenes (the window says so) and is never overwritten by a
+  save until it can be read again.
 - `~/.local/state/qrec/`: portal restore tokens, the logs of the last
   session, and the recent projects (`recent-projects.json`: what the window
   opened, at most 50; losing it loses only the list).
@@ -676,6 +719,8 @@ recording time and status, with actions:
     about the disk. Undoing a recording removes **its clip**, and the take
     shows up in the bin. Redo puts the clip back.
   - UI state.
+  - The saved scenes (§5.6): saving, renaming and deleting one. Switching to
+    one, or applying one to a take, is undoable: it changes a scene.
   - Purge, which is destructive and confirmed. It also removes history
     entries that reference the purged take.
 
@@ -959,6 +1004,14 @@ qrec scene audio set <id> [--gain-db -3] [--mute true|false] [--sync-offset-ms 8
 qrec scene audio remove <id>
 qrec scene apply --take <take> | --to-all-takes | --from-take <take>
         # (scene commands accept --take <take> to edit a take's snapshot instead of the project scene)
+qrec scene list                        # saved scenes; which one the project uses, and whether it was edited
+qrec scene save <name> [--yes]         # save the project scene as <name> (--yes replaces one that exists)
+qrec scene save                        # save changes to the scene in use
+qrec scene use <name> | --revert       # switch to a saved scene (undoable)
+qrec scene rename <name> <new-name>
+qrec scene duplicate <name> [--as <new-name>]
+qrec scene rm <name> --yes             # delete a saved scene (the project is untouched)
+qrec scene apply --scene <name> --take <take>   # a saved scene's layout on one take (undoable)
 
 qrec record start [--over <clip>… | --over-selection] [--countdown N]
 qrec record stop | toggle | cancel

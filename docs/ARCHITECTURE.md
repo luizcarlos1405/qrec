@@ -285,6 +285,7 @@ pub struct UiState {
     pub solo: Option<TrackId>,
     pub lane_mute: BTreeSet<TrackId>,    // "laneMute": lanes muted for playback only (below)
     pub panels: BTreeMap<String, f64>,
+    pub scene: Option<String>,           // the saved scene last used, saved or renamed to (A§9.11)
 }
 
 pub struct History {
@@ -297,6 +298,7 @@ pub struct History {
 
 pub struct Runtime {
     pub host: HostKind,                  // Gui | Headless | Cli
+    pub saved_scenes: ScenesFile,        // scenes.json as last read (A§9.11)
     pub record: RecordPhase,
     pub jobs: BTreeMap<JobId, Job>,
     pub silence: BTreeMap<SilenceKey, Vec<Interval>>,
@@ -427,6 +429,7 @@ pub struct Facts {
     pub min_take_number: u32,                       // 1 + highest takes/take-N folder
     pub files: BTreeMap<String, FileFact>,          // size/mtime for silence keys
     pub player_ns: Option<u64>,                     // a relative Seek while playing: the GUI's Program player (timeline ns)
+    pub saved_scenes: Option<ScenesFile>,           // the Scene* commands: scenes.json as read now (A§9.11)
 }
 pub struct AudioDeviceInfo { pub name: String, pub description: String, pub is_monitor: bool }
 pub struct ScreenInfo { pub output: String, pub description: String, pub x: i32, pub y: i32, pub width: u32, pub height: u32, pub scale: f64 }
@@ -440,7 +443,7 @@ pub struct FileFact { pub path: String, pub bytes: u64, pub mtime_ns: i64 }
 pub struct FactsNeeded {
     pub folder_name: bool, pub audio_devices: bool, pub video_sources: bool,
     pub out: Option<String>, pub take_files: Vec<TakeId>, pub take_dirs: bool,
-    pub files: Vec<String>, pub player: bool,
+    pub files: Vec<String>, pub player: bool, pub saved_scenes: bool,
 }
 ```
 
@@ -523,6 +526,13 @@ need confirmation, `G` = GUI host only, `R` = allowed while recording (A§5.3).
 | `AudioSet` | `target`, `track`, `patch: AudioPatch` | U | `qrec scene audio set <id> [--gain-db] [--mute] [--sync-offset-ms] [--label] [--source]` |
 | `AudioRemove` | `target`, `track` | U | `qrec scene audio remove <id>` |
 | `SceneApply` | `from: SceneTarget`, `to: SceneDest` | U | `qrec scene apply --take T \| --to-all-takes \| --from-take T [--to-all-takes]` |
+| `SceneSave` | `name: Option<String>` (none: the scene in use) | `!` when the name exists | `qrec scene save [<name>] [--yes]` |
+| `SceneUse` | `name: Option<String>` (none: revert to the scene in use) | U | `qrec scene use <name> \| --revert` |
+| `SceneRename` | `name`, `to` | | `qrec scene rename <name> <new>` |
+| `SceneDuplicate` | `name`, `to: Option<String>` | | `qrec scene duplicate <name> [--as N]` |
+| `SceneDelete` | `name` | `!` | `qrec scene rm <name> --yes` |
+| `SceneApplySaved` | `name`, `take` | U | `qrec scene apply --scene <name> --take T` |
+| `ScenesReload` | – | G, R | — (the settings watcher saw `scenes.json` change) |
 | `AutocutSettings` | `patch: AutocutPatch` | U | `qrec autocut settings [--auto-run] [--track] [--threshold-db] …` |
 | `RecordStart` | `mode: RecordModeArg`, `countdown: Option<u32>`, `wait` | A | `qrec record start [--over <clip>… \| --over-selection] [--countdown N] [--wait]` |
 | `RecordStop` / `RecordCancel` | – | A, R | `qrec record stop` / `cancel` |
@@ -677,6 +687,7 @@ pub enum Effect {
     CancelTimer { timer: TimerId },
     // people and requesters
     Notify(Toast),
+    WriteScenes(SavedScenes),                  // scenes.json, atomically (A§9.11); after the commit
     Progress { req: ReqId, progress: Progress },
     Reply { req: ReqId, reply: Result<CmdResult, CoreError> },
     Log { level: LogLevel, message: String },
@@ -2702,6 +2713,59 @@ the file. A folder whose path isn't UTF-8 isn't listed.
 `--project`: the project in the cwd (one that lost its `qrec.json` too); else
 the last project, with `projects.open_last` on and only if it still holds
 `qrec.json`; else the picker (GUI G§4.12).
+
+### A§9.11 Saved scenes (`scenes.rs`, SPEC §5.6)
+
+```rust
+pub struct SavedScenes { pub version: u32, pub scenes: Vec<SavedScene> }  // scenes.json, camelCase; saved order
+pub struct SavedScene { pub name: String, pub saved_at: DateTime<Utc>, pub scene: Scene,
+                        pub autocut_track: Option<TrackId> }             // the scene's own ids
+pub enum ScenesFile { Read(SavedScenes), Unreadable(String) }           // Facts::saved_scenes, Runtime::saved_scenes
+pub struct SceneStatus { pub name: Option<String>, pub edited: bool }   // view::scenes::status
+```
+
+The library lives in `$XDG_CONFIG_HOME/qrec/scenes.json`. The shell reads
+it for the `Scene*` commands (`FactsNeeded::saved_scenes`), at a Session's
+open and on `ScenesReload` (the window's settings watcher, A§8.9, watches the
+same folder), and writes it for `Effect::WriteScenes` with a temp file renamed
+over it. A file that can't be read (`Unreadable`: bad JSON, a newer version)
+counts as empty for listing and using, and every command that would write it
+is `Invalid` ("scenes.json can't be read: …"), so a save never drops what is
+there. `Runtime::saved_scenes` is the copy the views read.
+
+- **Names:** trimmed, not empty, at most 80 chars, no control characters;
+  unique without case. `SceneSave` with a name that exists needs
+  confirmation and replaces that entry in place (its position stays).
+- **What is saved:** the project scene with `missing` cleared, and the
+  autocut track (`autocut.track`) when it names a track of the scene.
+- **Same layout** (`scenes::same_layout`): the layers in order, equal but
+  for ids (source compared by kind and output/device, not label), the tracks
+  in order, equal but for ids, and the autocut track by position. Labels of
+  sources don't count either (a camera's label comes from the machine).
+- **Status:** the first saved scene with the same layout as the project
+  scene, preferring `ui.scene` when it matches, is in use, not edited. Else
+  `ui.scene`, when the library still has it, is in use and edited. Else none.
+  `ui.scene` (UI state, `.qrec/ui.json`) is the scene last used, saved or
+  renamed to; deleting it clears it.
+- **Use** (`SceneUse`, one history entry "Use scene X"): the saved layers
+  and tracks replace the project scene's. One whose source the project
+  scene has keeps that id; the others get new ids (`ctx::next_layer_id`,
+  `next_track_id`). `autocut.track` becomes the saved autocut track's new
+  id (null when the scene has none). `ui.scene` = the name, and
+  `ui.selected_layer` is cleared. Not while a take is recording or
+  finalizing (`Busy`). `name: None` reverts to `ui.scene`.
+- **Apply saved** (`SceneApplySaved`): the take's layers matched by source
+  get the saved layout fields (`rect, crop, opacity, visible, fit`, z-order
+  among the matched); a take layer with no match is hidden; tracks matched
+  by source get `gainDb, muted, syncOffsetMs`. No layer matched ⇒ `Invalid`
+  ("<take> shares no layer with scene X"). The take must not be recording.
+- **Rename, duplicate, delete** write the library only. A rename of
+  `ui.scene` follows it; a duplicate is named "<name> copy" (then "copy 2",
+  …) unless `to` is given; a delete needs confirmation and clears `ui.scene`
+  when it was that one.
+- **Missing sources:** nothing here. The capture engine leaves out a source
+  that isn't there when a take starts and reports it as `StreamLost` right
+  after `CaptureStarted`, so the take's layer is marked `missing` (A§8.11).
 
 ---
 
