@@ -1,19 +1,21 @@
 # Qrec
 
-**Qrec** (_Quick Recording_, rhymes with Shrek) is a Wayland screen and camera
-recorder built for one loop: **press R, talk, press R, repeat**. Every take
-lands on a magnetic timeline, so when you stop recording the video is
-already mostly edited: trim, split, reorder, autocut the silences, export.
+**Qrec** (_Quick Recording_, rhymes with Shrek) is a screen and camera
+recorder for Linux, built for one loop: **press R, talk, press R, repeat**.
+Every take lands on a magnetic timeline, so when you stop recording the
+video is already mostly edited: trim, split, reorder, autocut the silences,
+export.
 
 _Ogres have layers. So do your recordings._
 
 ![The Qrec window: the live canvas with a screen and a camera layer, the onion layers panel and the timeline of takes](design/screens/S02-live-idle.png)
 
-Qrec runs on Linux under Wayland (screens through the desktop portal,
-cameras, microphones and system audio through PipeWire/GStreamer). The
-window and the `qrec` command line drive the same project, so you can
-record from a compositor key bind, edit in the window, or let a script or
-an LLM agent do either.
+Qrec runs on Linux, under Wayland (screens through the desktop portal) or
+X11 (screens through `ximagesrc`), with cameras, microphones and system
+audio through GStreamer. The window and the `qrec` command line drive the
+same project, so you can record from a global shortcut, edit in the window,
+or let a script or an LLM agent do either. Only niri has been tested on a
+real session: see [Supported setups](#supported-setups).
 
 ## How it works
 
@@ -78,6 +80,49 @@ these frames (docs/GUI.md G§7.2)._
 - `docs/RECORDING.md` — capture lessons from the earlier `qrec-tui`.
 - `design/README.md` — the pen.dev designs and the decisions waiting for review.
 
+## Supported setups
+
+Qrec needs Linux with GTK 4.22 and libadwaita 1.9 or newer, GStreamer 1.24
+or newer and ffmpeg. It builds and runs from the Nix flake (below): there are
+no distribution packages or Flatpak yet. Only niri has been tested on a real
+session. "Expected to work" means the loop should (record a screen and a
+mic, edit, export), but nobody has tried it there yet.
+
+| Desktop | Screens through | State |
+| --- | --- | --- |
+| niri (Wayland) | the desktop portal, `xdg-desktop-portal-gnome` | Tested on a real session (the dev machine, below) |
+| GNOME (Wayland) | the desktop portal, `xdg-desktop-portal-gnome` | Expected to work, untested |
+| KDE Plasma (Wayland) | the desktop portal, `xdg-desktop-portal-kde` | Expected to work, untested |
+| sway, river, labwc (wlroots) | the desktop portal, `xdg-desktop-portal-wlr` with a screen chooser | Expected to work, untested |
+| Hyprland | the desktop portal, `xdg-desktop-portal-hyprland` | Expected to work, untested |
+| X11 (any desktop or window manager) | `ximagesrc`, no portal | Tested on a private Xvfb only |
+| Windows, macOS | — | Not supported in v1 |
+
+`qrec doctor` checks the machine it runs on. It starts with the session it
+found (`Session: Wayland (niri) · screens: portal`), and for what is missing
+it gives this distribution's install command (apt, dnf, pacman or zypper;
+`nix develop` in the dev shell) and the portal setup this desktop needs: on
+wlroots compositors a screen chooser and `XDPW_PERSIST_MODE=permanent`, so
+the screen choice is remembered; on Hyprland, the restore-token box in its
+picker. Only what the app itself needs blocks the window; anything else turns
+one feature off ("Screen capture is off: …"), and the rest works.
+
+### On X11
+
+- The window opens on X11 when the session has no Wayland display.
+  `GDK_BACKEND` only counts when the display it names is there.
+- Screens are the X server's RandR monitors (`qrec sources list`). There is
+  no screen picker: adding a screen layer is the consent, as with OBS and
+  ffmpeg, and the window's REC badge shows while a take records.
+- A monitor that is unplugged, moved or resized mid-take loses its layer,
+  as an unplugged camera does (SPEC §16).
+- Copy image goes through the X clipboard. After Qrec quits, the image stays
+  there only if a clipboard manager took it.
+- Global shortcuts go in your window manager's config (i3's `bindsym`) or
+  your desktop's keyboard settings; `qrec doctor` prints them.
+- Under XWayland (a Wayland session that also sets `DISPLAY`), screens still
+  go through the portal: XWayland only shows X windows.
+
 ## Build and run
 
 Everything comes from the Nix flake (GStreamer, GTK and Rust aren't
@@ -97,7 +142,7 @@ else it shows the project picker: recent projects, open a folder, or make a
 new one. Turn on `projects.open_last` to go straight to the last project
 instead. `qrec --project DIR` opens that folder (an empty one becomes a
 project named after it) and `qrec --pick` always shows the picker.
-While the window is open, `qrec …` from a terminal or a compositor bind
+While the window is open, `qrec …` from a terminal or a global shortcut
 talks to it instead of starting a host of its own, and both change the
 project through the same commands.
 
@@ -110,8 +155,9 @@ QREC_CAPTURE_BACKEND=fake cargo run -- --project tmp/try   # test patterns, no d
 The package also installs `share/applications/com.rsensato.qrec.desktop`
 and hicolor icons, so `nix profile install .` puts Qrec in the app
 launcher.
-A launcher starts Qrec in `$HOME`, which isn't a project: the window says
-"Not my swamp". Start it from a project folder, or with `--project`.
+A launcher starts Qrec in `$HOME`, which isn't a project, so it shows the
+project picker (or opens the last project, with `projects.open_last`), on
+Wayland and X11 alike.
 
 ## Quick start (CLI)
 
@@ -124,7 +170,7 @@ qrec scene layer add camera --device /dev/video0
 qrec scene audio add mic
 qrec scene audio add system
 
-qrec record start                    # the first screen layer shows the portal picker once
+qrec record start                    # on Wayland, the portal's picker asks once per screen
 qrec record stop                     # the take is probed and appended to the timeline
 qrec take discard-last               # didn't like it? (undoable)
 
@@ -142,22 +188,41 @@ Times accept frames (`412f`), seconds (`13.7s`) and timecodes
 `history clear`, overwriting an export) need `--yes`. Run `qrec --help` or
 `qrec <command> --help` for everything.
 
-### Global key binds (niri)
+### Global shortcuts
 
-`qrec doctor` prints a ready-to-paste snippet; record from any app with:
+Qrec grabs no keys of its own: your desktop runs `qrec record toggle`,
+`qrec record start --over-selection` and `qrec take discard-last` from
+Mod+Shift+R, O and D, so you can record from any app. `qrec doctor` prints
+how to bind them on the desktop it runs on, and the cheat sheet (`?`) shows
+the same with a Copy snippet button:
+
+| Desktop | Where they go |
+| --- | --- |
+| niri | `~/.config/niri/config.kdl` (below) |
+| sway | `~/.config/sway/config`: `bindsym $mod+Shift+r exec qrec record toggle`, … |
+| i3 | `~/.config/i3/config`: the same with `--no-startup-id`, after removing i3's default `$mod+Shift+r` restart bind |
+| Hyprland | `~/.config/hypr/hyprland.conf`: `bind = SUPER SHIFT, R, exec, qrec record toggle`, … |
+| river | `~/.config/river/init`: `riverctl map normal Super+Shift R spawn 'qrec record toggle'`, … |
+| GNOME | GNOME Settings › Keyboard › View and Customize Shortcuts › Custom Shortcuts, one each |
+| KDE Plasma | System Settings › Keyboard › Shortcuts › Add New › Command or Script…, one each, with Meta |
+| anything else | its keyboard settings: the three commands with Super+Shift+R, O and D |
+
+On niri:
 
 ```kdl
 binds {
     Mod+Shift+R { spawn "qrec" "record" "toggle"; }
+    Mod+Shift+O { spawn "qrec" "record" "start" "--over-selection"; }
     Mod+Shift+D { spawn "qrec" "take" "discard-last"; }
 }
 ```
 
-Compositor binds run in `$HOME`; the CLI then finds the single running
+Global shortcuts run in `$HOME`; the CLI then finds the single running
 Qrec (a headless recording host or the window). With nothing running
 yet, `$HOME` isn't a project ("Not my swamp"): either start the first take
-from the project folder, or name it in the bind with
-`"qrec" "--project" "/home/me/videos/my-video" "record" "toggle"`.
+from the project folder, or name the project in the shortcut's command:
+`qrec --project /home/me/videos/my-video record toggle` (on niri,
+`"qrec" "--project" "/home/me/videos/my-video" "record" "toggle"`).
 
 ### For LLM agents
 
@@ -200,9 +265,10 @@ QREC_CAPTURE_BACKEND=fake qrec record start          # record test patterns, no 
 ```
 
 The window's tests are ignored by default: each `crates/qrec/tests/gui_*.rs`
-suite runs the window in a nested headless sway, never on your desktop,
-with the fake capture backend. Screenshots and logs go to
-`tmp/gui-shots/<area>/` (docs/GUI.md G§8.4):
+suite runs the window in a nested headless sway (`gui_x11` on a private
+Xvfb with no window manager), never on your desktop, with the fake capture
+backend. Screenshots and logs go to `tmp/gui-shots/<area>/` (docs/GUI.md
+G§8.4):
 
 ```sh
 scripts/check-quick                  # fmt, clippy, the changed crates' tests and areas' suites
@@ -212,6 +278,8 @@ cargo nextest run -p qrec --run-ignored only --test gui_smoke   # the end-to-end
 QREC_TEST_WLR=gles2 cargo nextest run -p qrec --run-ignored only --test gui_smoke
 QREC_TEST_SCALE=2 cargo test -p qrec --test gui_stage -- --ignored  # libtest works too
 nix build && cargo test -p qrec --test gui_smoke packaged -- --ignored   # the package in nested sway
+cargo nextest run -p qrec --run-ignored only --test gui_x11     # the window on X11 (a private Xvfb)
+cargo nextest run -p qrec --run-ignored only --test x11         # X11 screens, doctor and takes, real backend
 ```
 
 Several cases run at once, each with its own compositor; the
@@ -219,7 +287,9 @@ timing-sensitive ones run alone (`Options::exclusive`, G§8.4).
 
 The compositor renders with pixman by default (software: nothing opens a
 GPU node). `QREC_TEST_WLR=gles2` uses GL on the first Intel or AMD render
-node, never NVIDIA's, and `QREC_TEST_SCALE` sets the output's scale. With
+node, never NVIDIA's (on the Xvfb, GL on llvmpipe), and `QREC_TEST_SCALE`
+sets the output's scale (1 or 2 on X11). The X11 cases start their own Xvfb
+(`-displayfd`, a display from 64 on) and never touch yours. With
 `QREC_GUI_PROBE=1` the window logs every main-loop stall over 50 ms and
 what was running (the smoke runs with it).
 
@@ -235,11 +305,15 @@ probed. Qrec pins VA-API to the configured (or first Intel/AMD) render
 node, sets `LIBVA_DRIVER_NAME` before any thread starts, keeps GES in
 software, and ships GStreamer without the `nvcodec`/`qsv` plugins.
 
-## Manual checks on real hardware
+## Manual checks on niri
 
-Automated tests use the fake backend. These need the real machine; the
-results are from the dev machine (niri, PipeWire 1.6.6, GStreamer 1.26,
-2026-10-15):
+The automated tests use the fake backend, or the real one on a private Xvfb
+(X11). These need a real session on real hardware, and they have only been
+run on niri: the results are from the dev machine (niri, PipeWire 1.6.6,
+GStreamer 1.26, 2026-10-15). They came before Wayland screens took their
+geometry from xdg-output and before the portal's streams were matched by
+mapping id first; on niri neither should change anything, which check 1 with
+two monitors would confirm.
 
 1. **Portal restore tokens (M0a):** `qrec scene layer add screen --output <name>`,
    `qrec record start`, pick the monitor in the portal dialog, stop. Repeat
