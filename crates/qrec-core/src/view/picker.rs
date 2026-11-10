@@ -42,6 +42,9 @@ pub struct PickerRow {
     pub path: String,
     /// "Today at 15:02", or why it can't be opened.
     pub detail: String,
+    /// The characters of `name` the search matched (indices in chars), to
+    /// show in bold; empty without a search or when only the path matched.
+    pub matches: Vec<usize>,
     pub state: FolderState,
 }
 
@@ -73,12 +76,12 @@ pub fn rows(
                 .file_name()
                 .map_or_else(|| project.dir.clone(), |n| n.to_string_lossy().into_owned());
             let path = format::display_path(&project.dir, "", home);
-            let score = if query.is_empty() {
-                0
+            let (score, matches) = if query.is_empty() {
+                (0, Vec::new())
             } else {
                 fuzzy_match(query, &name)
-                    .map(|(score, _)| score + NAME_BONUS)
-                    .or_else(|| fuzzy_match(query, &path).map(|(score, _)| score))?
+                    .map(|(score, at)| (score + NAME_BONUS, at))
+                    .or_else(|| fuzzy_match(query, &path).map(|(score, _)| (score, Vec::new())))?
             };
             let state = state_of(&project.dir);
             let detail = match state {
@@ -95,6 +98,7 @@ pub fn rows(
                     name,
                     path,
                     detail,
+                    matches,
                     state,
                 },
             ))
@@ -208,6 +212,7 @@ mod tests {
                 name: "onions".into(),
                 path: "~/talks/onions".into(),
                 detail: "Today at 15:02".into(),
+                matches: Vec::new(),
                 state: FolderState::Ready,
             }]
         );
@@ -233,6 +238,18 @@ mod tests {
         let found = rows(&recents, ready, "onions", HOME, now());
         assert_eq!(names(&found), ["onions", "layers"]);
         assert!(rows(&recents, ready, "zzz", HOME, now()).is_empty());
+    }
+
+    #[test]
+    fn a_search_marks_the_letters_of_the_name_it_matched() {
+        let recents = list(&["/talks/rust-traits-talk", "/onions/layers"]);
+        let found = rows(&recents, ready, "rst", HOME, now());
+        assert_eq!(found[0].matches, [0, 2, 3], "r, s, t of rust");
+        // Only the path matched: nothing in the name to mark.
+        let by_path = rows(&recents, ready, "onions", HOME, now());
+        assert_eq!(names(&by_path), ["layers"]);
+        assert!(by_path[0].matches.is_empty());
+        assert!(rows(&recents, ready, "", HOME, now())[0].matches.is_empty());
     }
 
     #[test]

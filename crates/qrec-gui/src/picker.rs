@@ -39,9 +39,11 @@ use qrec_shell::paths::{Env, UserDirs};
 use qrec_shell::projects::{self, ProjectFolder};
 
 use crate::app::{self, APP_ID};
+use crate::theme::art::Art;
 use crate::theme::{MotionPolicy, Theme};
 use crate::widgets::button::{self, Kind};
-use crate::widgets::keycap::KeyCap;
+use crate::widgets::keycap::{CapSize, CapVariant, KeyCap};
+use crate::widgets::spinner::Spinner;
 use crate::{guard, guarded};
 
 /// The window's GUI action for "Open or create a project…".
@@ -52,6 +54,10 @@ const DEFAULT_SIZE: (i32, i32) = (760, 640);
 const MIN_SIZE: (i32, i32) = (480, 420);
 /// The content's width at 100 %.
 const COLUMN: f64 = 760.0;
+/// How long the folders may take to be looked at before a row still
+/// waiting says "Checking…" (the board's checking state): most answer at
+/// once, and a spinner on every row at start would only flicker.
+const SLOW_CHECK_MS: u64 = 500;
 
 /// How the picker was started.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +147,40 @@ fn activate(application: &adw::Application, args: PickerArgs) {
     picker.search.grab_focus();
     tracing::info!("the project picker is up");
     picker.check_folders();
+    let weak = Rc::downgrade(&picker);
+    guard::timeout_local_once(
+        std::time::Duration::from_millis(SLOW_CHECK_MS),
+        "the picker: slow folders",
+        move || {
+            if let Some(picker) = weak.upgrade() {
+                picker.slow_checks.set(true);
+                let waiting = picker
+                    .shown
+                    .borrow()
+                    .iter()
+                    .any(|row| row.state == FolderState::Checking);
+                if waiting {
+                    picker.refresh_rows();
+                }
+            }
+        },
+    );
+}
+
+/// `name` with the characters a search matched (`at`, in chars) in bold.
+fn name_markup(name: &str, at: &[usize]) -> String {
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        let text = glib::markup_escape_text(&c.to_string());
+        if at.contains(&i) {
+            out.push_str("<span weight=\"800\">");
+            out.push_str(&text);
+            out.push_str("</span>");
+        } else {
+            out.push_str(&text);
+        }
+    }
+    out
 }
 
 /// `work` on `qrec-picker-io`, then `then` on the GTK thread with what it
@@ -212,7 +252,15 @@ struct Picker {
     error: gtk::Label,
     search: gtk::SearchEntry,
     list: gtk::ListBox,
-    placeholder: gtk::Label,
+    /// "Recent" and the count over the list (without a search).
+    recent: gtk::Box,
+    recent_count: gtk::Label,
+    /// No projects at all: C31's empty state (the quiet swamp).
+    empty: gtk::Box,
+    /// A search that matches nothing.
+    no_match: gtk::Label,
+    /// The folders took longer than [`SLOW_CHECK_MS`]: waiting rows say so.
+    slow_checks: Cell<bool>,
     entry: gtk::Entry,
     hint: gtk::Label,
     folder_link: gtk::Button,
@@ -306,11 +354,54 @@ impl Picker {
         list.set_widget_name("picker-list");
         list.add_css_class("picker-list");
         list.set_selection_mode(gtk::SelectionMode::Single);
-        let placeholder = wrapping(&["picker-placeholder", "t-body", "muted"]);
-        placeholder.set_widget_name("picker-placeholder");
-        placeholder.set_xalign(0.5);
-        placeholder.set_justify(gtk::Justification::Center);
+        // The list's placeholder: the empty state, or a search's no match.
+        let empty = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        empty.set_widget_name("picker-empty");
+        empty.add_css_class("picker-empty");
+        empty.set_valign(gtk::Align::Center);
+        empty.set_vexpand(true);
+        if let Some(svg) = theme.art(Art::QuietSwamp) {
+            // 200×120, as the art is drawn (`rfUfx`), times the UI scale.
+            let art = gtk::Picture::for_paintable(&svg);
+            art.set_can_shrink(true);
+            art.set_content_fit(gtk::ContentFit::Contain);
+            let scale = theme.scale();
+            art.set_size_request(
+                (200.0 * scale).round() as i32,
+                (120.0 * scale).round() as i32,
+            );
+            art.set_widget_name("picker-empty-art");
+            // In a column of its width: a picture is as tall as the width it
+            // gets (the timeline's empty state does the same).
+            let column = crate::timeline::root::Column::new(&art, (200.0 * scale).round() as i32);
+            column.set_halign(gtk::Align::Center);
+            empty.append(&column);
+        }
+        let empty_title = label("No projects yet", &["t-display-sm"]);
+        empty_title.set_xalign(0.5);
+        empty.append(&empty_title);
+        let empty_body = wrapping(&["t-body", "muted"]);
+        empty_body.set_text(
+            "Make a new one, or open a folder that holds a qrec.json. Projects you open show up here.",
+        );
+        empty_body.set_xalign(0.5);
+        empty_body.set_justify(gtk::Justification::Center);
+        empty.append(&empty_body);
+        let no_match = wrapping(&["picker-no-match", "t-body", "muted"]);
+        no_match.set_widget_name("picker-placeholder");
+        no_match.set_text("No project matches that.");
+        no_match.set_xalign(0.5);
+        no_match.set_justify(gtk::Justification::Center);
+        let placeholder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        placeholder.append(&empty);
+        placeholder.append(&no_match);
         list.set_placeholder(Some(&placeholder));
+        let recent = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        recent.set_widget_name("picker-recent");
+        recent.add_css_class("picker-recent");
+        recent.append(&label("Recent", &["t-caption-strong", "muted"]));
+        let recent_count = label("", &["t-caption", "muted"]);
+        recent.append(&recent_count);
         let scroller = gtk::ScrolledWindow::new();
         scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
         scroller.set_vexpand(true);
@@ -322,6 +413,7 @@ impl Picker {
         page.append(&here);
         page.append(&error);
         page.append(&search);
+        page.append(&recent);
         page.append(&scroller);
         let list_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
         list_page.append(&column(&page, theme.scale()));
@@ -339,7 +431,7 @@ impl Picker {
         entry.set_widget_name("picker-new-entry");
         entry.set_placeholder_text(Some("demo"));
         entry.update_property(&[gtk::accessible::Property::Label("Name or path")]);
-        let hint = wrapping(&["t-caption", "muted"]);
+        let hint = wrapping(&["t-body-sm", "muted", "picker-new-hint"]);
         hint.set_widget_name("picker-new-hint");
         let new_error = wrapping(&["picker-error"]);
         new_error.set_widget_name("picker-new-error");
@@ -349,6 +441,17 @@ impl Picker {
         folder_link.set_halign(gtk::Align::Start);
         let create = button::labeled("Create", None, None, &keymap, Kind::Primary);
         create.set_widget_name("picker-create");
+        // Enter creates (a fixed key, not a keys.toml binding: G§4.12).
+        if let Some(content) = create.child().and_downcast::<gtk::Box>() {
+            button::show_binding_cap(
+                &content,
+                Some(&["Enter".to_owned()]),
+                "picker-create-cap",
+                CapSize::Md,
+                CapVariant::OnFill,
+            );
+        }
+        create.update_property(&[gtk::accessible::Property::Label("Create, Enter")]);
         let cancel = button::labeled("Cancel", None, None, &keymap, Kind::Secondary);
         cancel.set_widget_name("picker-cancel");
         let actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -403,7 +506,11 @@ impl Picker {
             error,
             search,
             list,
-            placeholder,
+            recent,
+            recent_count,
+            empty,
+            no_match,
+            slow_checks: Cell::new(false),
             entry,
             hint,
             folder_link,
@@ -508,11 +615,11 @@ impl Picker {
                 now,
             )
         };
-        self.placeholder.set_text(if query.trim().is_empty() {
-            "No projects yet. Make a new one, or open a folder."
-        } else {
-            "No project matches that."
-        });
+        let searching = !query.trim().is_empty();
+        self.empty.set_visible(!searching);
+        self.no_match.set_visible(searching);
+        self.recent.set_visible(!searching && !rows.is_empty());
+        self.recent_count.set_text(&rows.len().to_string());
         // One by one: `remove_all` takes the placeholder as well.
         while let Some(row) = self.list.row_at_index(0) {
             self.list.remove(&row);
@@ -532,23 +639,48 @@ impl Picker {
     fn row_widget(self: &Rc<Self>, row: &PickerRow) -> gtk::ListBoxRow {
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         line.add_css_class("picker-row");
-        let folder = gtk::Image::from_icon_name("qrec-folder-symbolic");
-        folder.add_css_class("muted");
+        // A gone folder wears the missing-media pattern (DESIGN, C09).
+        let folder = if row.openable() {
+            let icon = gtk::Image::from_icon_name("qrec-folder-symbolic");
+            icon.add_css_class("muted");
+            icon
+        } else {
+            let icon = gtk::Image::from_icon_name("qrec-triangle-alert-symbolic");
+            icon.add_css_class("warning-text");
+            icon
+        };
+        folder.set_valign(gtk::Align::Center);
         line.append(&folder);
         let words = gtk::Box::new(gtk::Orientation::Vertical, 0);
         words.set_hexpand(true);
         words.set_valign(gtk::Align::Center);
-        let name = label(&row.name, &["t-body", "picker-name"]);
+        let name = label("", &["t-body", "picker-name"]);
+        name.set_markup(&name_markup(&row.name, &row.matches));
         name.set_ellipsize(gtk::pango::EllipsizeMode::End);
         words.append(&name);
-        let path = label(&row.path, &["t-caption", "muted"]);
+        let path = label(&row.path, &["t-mono-sm", "muted", "picker-path"]);
         path.set_ellipsize(gtk::pango::EllipsizeMode::Start);
         words.append(&path);
         line.append(&words);
-        let detail = label(&row.detail, &["t-caption", "muted"]);
+        let checking = row.state == FolderState::Checking && self.slow_checks.get();
+        if checking {
+            let spinner = Spinner::new(12);
+            spinner.set_valign(gtk::Align::Center);
+            spinner.add_css_class("muted");
+            line.append(&spinner);
+        }
+        let detail = label(
+            if checking { "Checking…" } else { &row.detail },
+            &["t-caption", "muted", "picker-detail"],
+        );
         detail.set_valign(gtk::Align::Center);
+        if !row.openable() {
+            detail.remove_css_class("muted");
+            detail.add_css_class("warning-text");
+        }
         line.append(&detail);
         let forget = button::icon("qrec-x-symbolic", "Remove from list", None, &self.keymap);
+        forget.add_css_class("picker-forget");
         forget.set_valign(gtk::Align::Center);
         let weak = Rc::downgrade(self);
         let dir = row.dir.clone();
@@ -780,15 +912,23 @@ impl Picker {
             self.home.as_deref(),
         );
         self.create.set_sensitive(hint.can_create());
-        let text = match &hint {
-            NewProjectHint::Idle { text } | NewProjectHint::NeedsFolder { text } => text.clone(),
-            NewProjectHint::Creates { path } => format!("Creates {path}"),
+        self.hint.remove_css_class("record-text");
+        let markup = match &hint {
+            NewProjectHint::Idle { text } | NewProjectHint::NeedsFolder { text } => {
+                glib::markup_escape_text(text).to_string()
+            }
+            // The path in mono, as every path (DESIGN Typography).
+            NewProjectHint::Creates { path } => format!(
+                "Creates <span font_family=\"JetBrains Mono\" size=\"92%\">{}</span>",
+                glib::markup_escape_text(path)
+            ),
             NewProjectHint::Problem { text } => {
                 self.entry.add_css_class("invalid");
-                text.clone()
+                self.hint.add_css_class("record-text");
+                glib::markup_escape_text(text).to_string()
             }
         };
-        self.hint.set_text(&text);
+        self.hint.set_markup(&markup);
         let link = match &folder {
             Some(folder) => format!("Change the projects folder ({})…", self.shown_path(folder)),
             None => "Choose a projects folder…".to_owned(),

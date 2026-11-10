@@ -2,7 +2,7 @@
  * The project picker (G§4.12): the window `qrec` shows when it has no
  * project to open. Built in the patterns of X2 (the minimal header, the
  * storybook title) and S21 (the rows, the 16 px rhythm). Its design is
- * design/boards/08-project-picker/ (awaiting approval).
+ * design/boards/08-project-picker/, approved on 2026-11-10.
  */
 
 .qrec-picker {
@@ -50,8 +50,21 @@
   line-height: 18px;
 }
 
-.qrec-picker .picker-placeholder {
-  margin: 48px 0;
+/* The list's placeholder: C31's empty state, or a search's no match. */
+.qrec-picker .picker-empty {
+  border-spacing: 12px;
+  padding-bottom: 24px;
+}
+
+.qrec-picker .picker-no-match {
+  margin: 32px 0;
+}
+
+/* "Recent" and the count, over the rows. */
+.qrec-picker .picker-recent {
+  border-spacing: 8px;
+  padding: 4px 12px 0 12px;
+  margin-bottom: -8px;
 }
 
 .qrec-picker list.picker-list {
@@ -67,8 +80,28 @@
   background-color: var(--qrec-hover);
 }
 
+/* Selected: R1's fill and the 1 px accent stroke every selected row has;
+   its texts turn `text` (DESIGN Do's). */
 .qrec-picker list.picker-list > row:selected {
   background-color: var(--qrec-selected);
+  box-shadow: inset 0 0 0 1px var(--qrec-accent);
+}
+
+.qrec-picker list.picker-list > row:selected .muted {
+  color: var(--qrec-text);
+}
+
+/* Remove from list: on the hovered and selected rows, and always on a
+   gone folder's (C09's reveal by opacity, so nothing moves). */
+.qrec-picker .picker-forget {
+  opacity: 0;
+}
+
+.qrec-picker list.picker-list > row:hover .picker-forget,
+.qrec-picker list.picker-list > row:selected .picker-forget,
+.qrec-picker .picker-forget:focus-visible,
+.qrec-picker .picker-row.gone .picker-forget {
+  opacity: 1;
 }
 
 .qrec-picker list.picker-list > row:focus:focus-visible {
@@ -77,8 +110,13 @@
 }
 
 .qrec-picker .picker-row {
+  min-height: 40px;
   padding: 8px 8px 8px 12px;
   border-spacing: 12px;
+}
+
+.qrec-picker .picker-row .picker-path {
+  margin-top: 2px;
 }
 
 .qrec-picker .picker-name {
