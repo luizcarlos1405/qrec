@@ -1,0 +1,27 @@
+<!-- <project-row path="~/Videos/qrec/rust-traits-talk" when="Today at 15:02" selected>rust-traits-talk</project-row> <project-row path="~/Downloads/moved-away" when="Folder not found" gone>moved-away</project-row> -->
+<i class="ic folder i-folder"></i>
+<i class="ic alert i-alert"></i>
+<span class="text"><span class="nm"><slot></slot></span><span class="mono-sm path">{{path}}</span></span>
+<span class="caption when">{{when}}</span>
+<button class="icon-btn rm" aria-label="Remove from list"><i class="ic i-x"></i></button>
+<style>
+  & { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 8px 0 12px; border-radius: var(--qrec-radius-md); }
+  .folder { color: var(--qrec-muted); }
+  .alert { display: none; color: var(--qrec-warning-text); }
+  .text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+  .nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .nm b { font-weight: 800; color: var(--qrec-accent-text); }
+  .path { color: var(--qrec-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .when { color: var(--qrec-muted); white-space: nowrap; }
+  .rm { visibility: hidden; color: var(--qrec-muted); }
+  &[hover] { background: var(--qrec-hover); }
+  &[hover] .rm, &[selected] .rm, &[gone] .rm { visibility: visible; }
+  &[selected] { background: var(--qrec-selected); box-shadow: inset 0 0 0 1px var(--qrec-accent); }
+  &[selected] .path, &[selected] .when, &[selected] .rm { color: var(--qrec-text); }
+  &[gone] .folder { display: none; }
+  &[gone] .alert { display: inline-block; }
+  &[gone] .nm { color: var(--qrec-disabled-text); font-weight: 400; }
+  &[gone] .when { color: var(--qrec-warning-text); }
+  &[checking] .when::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; vertical-align: -1px;
+    border: 1.5px solid var(--qrec-muted); border-right-color: transparent; border-radius: 50%; }
+</style>

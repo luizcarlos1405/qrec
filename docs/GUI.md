@@ -3351,7 +3351,7 @@ info toast titled with the reason. (`palette.open` and `keys.help` toasted
 
 What `qrec` shows with nothing to open (SPEC §4.4). `Shell::gui` decides: `--project` opens that folder; otherwise `qrec_shell::projects::bare_launch` looks at the cwd, `projects.open_last` and the recent list, and says open that project or show the picker. `qrec --pick` (`Plan::Picker`) always shows it. It logs to `state/picker.log`.
 
-**Not drawn.** There is no frame for it in `design/qrec.pen`: it is built from X2's shell (the minimal header `Xba2H`, the storybook title) and S21's rows, like Settings › Recording and Autocut. Swamp Night's tokens carry to the other themes. It still needs a frame and the owner's approval.
+**Design.** It was built from X2's shell (the minimal header `Xba2H`, the storybook title) and S21's rows before any frame existed. Its boards are `design/boards/08-project-picker/` (2026-11-10): the list and its states, no projects, New project, X3's Open another project, and Settings › Project's All projects group. They await the owner's approval; their notes board lists what changes from the build.
 
 **One startup path.** The picker is a small window of its own: no lock, host or GStreamer. Picking a project `exec`s `qrec --project <dir>` over the process, so the project goes through G§3.3 unchanged, logs to its own log and the shell still gets the window's exit code; the pid stays the same. The `xdg_activation` token goes along in `XDG_ACTIVATION_TOKEN`, as GTK already consumed the one this process got. An `exec` that fails comes back as an error line in the picker.
 

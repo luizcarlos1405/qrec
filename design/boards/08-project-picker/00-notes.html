@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Project picker · notes</title>
+  <meta name="description" content="The picker shipped on 2026-11-09 without a design (#14). These boards are that design: what they show, what changes from the build, and what needs your answer.">
+  <meta name="htmlboard" content="width=880">
+  <link rel="stylesheet" href="../styles.css">
+  <style>
+    body { padding: 40px 48px 48px; }
+    h1 { font-family: var(--display); font-weight: 600; font-size: 32px; line-height: 38px; }
+    h2 { font-family: var(--ui); font-weight: 700; font-size: 12px; line-height: 16px; margin: 32px 0 8px; color: var(--qrec-accent-text); text-transform: uppercase; letter-spacing: 0.06em; }
+    p, li { max-width: 72ch; }
+    ol, ul { padding-left: 20px; display: grid; gap: 8px; }
+    li::marker { color: var(--qrec-muted); }
+    code { font-family: var(--mono); font-size: 12px; background: var(--qrec-field); padding: 1px 5px; border-radius: var(--qrec-radius-sm); }
+    b { font-weight: 600; }
+    .lede { margin-top: 8px; color: var(--qrec-muted); }
+    .q { padding: 12px 16px; border: 1px solid var(--qrec-border); border-radius: var(--qrec-radius-md); background: var(--qrec-surface); }
+    .q + .q { margin-top: 8px; }
+    .q .rec { display: block; margin-top: 4px; color: var(--qrec-muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>Project picker</h1>
+  <p class="lede">What <code>qrec</code> shows with nothing to open (SPEC §4.4, docs/GUI.md G§4.12). It shipped on 2026-11-09, built from X2's and S21's patterns with no frame. These boards are its design, at the window's default 760×640, on the approved chrome: X3's minimal header, the artwork's quiet swamp, X3 and S18b themselves.</p>
+
+  <h2>What's on the board</h2>
+  <ol>
+    <li><b>Project picker</b>: the recent projects, most recent first. One selected, one hovered, one whose folder is gone. Variants: searching (matched letters in bold), no match, folders still being looked at, a folder that wouldn't open.</li>
+    <li><b>No projects</b>: the first run, and qrec started in an empty folder (<i>Start a project here</i>).</li>
+    <li><b>New project</b>: the field empty, a name typed (<i>Creates …</i>), a name with no projects folder set, a folder that's taken.</li>
+    <li><b>X3 · Open another project</b>: X3 when qrec wasn't started with <code>--project</code>, with one more way out.</li>
+    <li><b>Settings › Project</b>: the <i>All projects</i> group under Canvas.</li>
+  </ol>
+
+  <h2>What changes from the build</h2>
+  <ul>
+    <li><b>Paths are mono</b> (<code>mono-sm</code>, DESIGN Typography: file paths), shortened with <code>~</code>.</li>
+    <li><b>The selected row</b> gets the 1 px <code>accent</code> stroke every selected row has (DESIGN Shapes). Its texts turn <code>text</code>.</li>
+    <li><b>Remove from list (×)</b> shows on the hovered and selected rows only, and always on a gone one, where it's the only thing to do.</li>
+    <li><b>A gone folder</b> wears the missing-media pattern: <code>triangle-alert</code> and <i>Folder not found</i> in <code>warning-text</code>, the name in <code>disabled-text</code>.</li>
+    <li><b>"Recent" heads the list</b>, with the count.</li>
+    <li><b>Search matches are bold</b>, as in the palette (C34).</li>
+    <li><b>The empty list is an empty state</b> (C31): the quiet swamp, a storybook title and one sentence, instead of a grey line in the middle of the window.</li>
+    <li><b>New project</b>: the hint's path in mono, <i>Create</i> with its <code>Enter</code> key cap, a taken folder shown on the field (invalid stroke) and in <code>record-text</code>.</li>
+    <li><b>Checking a folder</b> shows a small spinner next to <i>Checking…</i>.</li>
+  </ul>
+
+  <h2>Questions for you</h2>
+  <div class="q"><b>1. Is 760×640 the right default size?</b><span class="rec">It's the build's DEFAULT_SIZE. The list fits about seven projects before it scrolls.</span></div>
+  <div class="q"><b>2. Should the selected row show its key?</b><span class="rec">The hint bar already says Enter opens. A key cap on the row would repeat it.</span></div>
+  <div class="q"><b>3. May two windows on different projects record at once?</b><span class="rec">Still open (G§4.12). It doesn't change these boards, but "Open or create a project…" from a recording window depends on it.</span></div>
+</body>
+</html>

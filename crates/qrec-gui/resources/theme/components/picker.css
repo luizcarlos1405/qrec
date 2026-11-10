@@ -1,8 +1,8 @@
 /*
  * The project picker (G§4.12): the window `qrec` shows when it has no
  * project to open. Built in the patterns of X2 (the minimal header, the
- * storybook title) and S21 (the rows, the 16 px rhythm); it has no frame in
- * design/qrec.pen yet.
+ * storybook title) and S21 (the rows, the 16 px rhythm). Its design is
+ * design/boards/08-project-picker/ (awaiting approval).
  */
 
 .qrec-picker {

@@ -22,9 +22,10 @@ npx htmlboard@0.9.0 design/boards --root . -p 3060   # from the repo root, then 
 | `05-dialogs-and-settings/` | S18, S18b, S19–S22 |
 | `06-errors-and-notices/` | S23–S25, X1–X3 |
 | `07-named-scenes/` | Issue #3, named scenes (not approved yet; its notes board lists the open questions) |
+| `08-project-picker/` | The project picker, Settings › Project's All projects and X3's Open another project (not approved yet; the notes board lists what changes from the build) |
 
 - **The ported boards** (00–06) are pen.dev's html-css export of each frame: absolutely positioned, as pen drew them, with every color a theme token (`var(--qrec-*)`). Each file names its pen frame id in a comment. Rendered in a browser they match pen's own export of the same frame to within 0.3% of pixels (text antialiasing). Edit them in place for small changes; new work is better written as new boards.
-- **New boards** (07 on) are written by hand on the shared chrome: `boards/styles.css` (type roles, buttons, key caps, fields, popovers, toasts, modals) and `boards/components/` (`<layer-row>`, `<audio-row>`, `<scene-thumb>`, `<scene-panel state="…">`). `npx htmlboard@0.9.0 catalog design/boards` lists them.
+- **New boards** (07 on) are written by hand on the shared chrome: `boards/styles.css` (type roles, buttons, key caps, fields, popovers, toasts, modals) and `boards/components/` (`<layer-row>`, `<audio-row>`, `<scene-thumb>`, `<scene-panel state="…">`, `<project-row>`). Where approved chrome exists they splice the ported markup instead of redrawing it (the named-scenes windows are S02 and S06 with pen's panel replaced; the picker uses X3's header), so they follow the theme switch too. `npx htmlboard@0.9.0 catalog design/boards` lists them.
 - **Tokens:** [`tokens/qrec-tokens.json`](tokens/qrec-tokens.json) is the source. `QREC_UPDATE_TOKENS=1 cargo test -p qrec-gui --test tokens` regenerates `boards/themes.css` with the GTK theme CSS and `palette.rs`, and the test fails when they drift.
 - **Agents:** the htmlboard skills are in `.claude/skills/htmlboard*` (and `.agents/skills/`). After an htmlboard upgrade, run `npx htmlboard@<version> skills install` and bump the version above.
 - The PNGs in [`screens/`](screens/) are 1:1 exports of the approved pen frames: 1600×1000, except S13b (384×920) and S15c (1040×769).
