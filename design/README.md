@@ -1,6 +1,6 @@
 # Qrec design
 
-The GTK GUI is designed before any UI code is written ([SPEC](../SPEC.md) §15.1). **The designs are HTML boards in [`boards/`](boards/)**, shown on an [htmlboard](https://www.npmjs.com/package/htmlboard) canvas. Until 2026-11-10 they were drawn in pen.dev (`qrec.pen`); every frame of that document was ported then, and `qrec.pen` stays only as the archive of the approved original.
+The GTK GUI is designed before any UI code is written ([SPEC](../SPEC.md) §15.1). **The designs are HTML boards in [`boards/`](boards/)**, shown on an [htmlboard](https://www.npmjs.com/package/htmlboard) canvas. Until 2026-11-10 they were drawn in pen.dev (`qrec.pen`); every frame of that document was ported then, and `qrec.pen` was deleted (git history has it).
 
 The first round was a **vertical slice in the main theme, Swamp Night**: 26 frames covering what the GUI milestone M4 (SPEC §18) needed first (first run, the record loop, the timeline editor, layer editing, the bin, export and the destructive confirmations), approved by the product owner on 2026-10-15, plus the drafts S19–S25 and X1–X3, approved as drawn the same day. The tables below still describe them.
 
@@ -100,7 +100,7 @@ The JSON was generated from the pen.dev variables on 2026-10-14 and is edited by
 
 ## Exports for tools (2026-10-17)
 
-`qrec.pen` is encrypted and archived; the boards replace it. [`export/`](export/INDEX.md) keeps what the build and tests need from it: one SVG per icon and size and the art as PNG (frames are exported as HTML on demand, uncommitted). [`export/INDEX.md`](export/INDEX.md) lists what is where and how the exports were checked (the slice PNGs and the tokens still match the document).
+`qrec.pen` was deleted on 2026-11-10; the boards replace it. [`export/`](export/INDEX.md) keeps what the build and tests need from it: one SVG per icon and size and the art as PNG (frames are exported as HTML on demand, uncommitted). [`export/INDEX.md`](export/INDEX.md) lists what is where and how the exports were checked (the slice PNGs and the tokens still match the document).
 
 ## Decisions (product owner, 2026-10-15)
 

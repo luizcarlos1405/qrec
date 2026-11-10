@@ -47,9 +47,10 @@ timing-sensitive case says `Options::exclusive` and runs alone
   (ARCHITECTURE §8.7).
 - `qrec-gui` (GTK views) follows the htmlboard designs in `design/boards/`
   (SPEC §15.1; `design/README.md` says how to open the canvas). The Swamp
-  Night slice, approved on 2026-10-15 and ported from `design/qrec.pen` (now
-  an archive), is the reference; other themes are token swaps
-  (`design/tokens/qrec-tokens.json`). Design new UI as boards there.
+  Night slice, approved on 2026-10-15 and ported from pen.dev's
+  `design/qrec.pen` (deleted, in git history), is the reference; other
+  themes are token swaps (`design/tokens/qrec-tokens.json`). Design new UI
+  as boards there.
 - Scratch work (manual checks, recordings, experiments) goes in the
   gitignored `tmp/` at the repo root, never in `/tmp` paths others share.
 - JSON is camelCase; error codes are snake_case; CLI `--json` output is
