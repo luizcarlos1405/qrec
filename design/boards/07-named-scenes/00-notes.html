@@ -48,7 +48,10 @@
     <li><b>CLI:</b> <code>qrec scene save &lt;name&gt; [--update]</code>, <code>qrec scene use &lt;name&gt; [--revert]</code>, <code>qrec scene list</code>, <code>qrec scene rename &lt;old&gt; &lt;new&gt;</code>, <code>qrec scene rm &lt;name&gt;</code>, all with <code>--json</code>, next to the existing <code>qrec scene layer …</code>.</li>
   </ul>
 
-  <h2>Questions for you</h2>
+  <h2>Approved and built (2026-11-10)</h2>
+  <p>Approved as drawn, with the answers the design assumed: per computer, Record without the missing source, scenes in the order they were saved. Built in the core, the CLI (<code>qrec scene list | save | use | rename | duplicate | rm</code>, <code>apply --scene</code>) and the window. Two parts aren't built yet: renaming inline in the menu (Rename opens the save popover instead) and the take banner's <i>Save this layout as a scene…</i>.</p>
+
+  <h2>Questions (answered)</h2>
   <div class="q"><b>1. Per computer, or per project?</b><span class="rec">The design assumes per computer. Per project would drop the missing-source case and keep the scenes in the folder you share.</span></div>
   <div class="q"><b>2. With a source missing, should Record still work?</b><span class="rec">The design records without the missing layer. The alternative is to disable Record until it's replaced or removed, as S01a does with no sources.</span></div>
   <div class="q"><b>3. Do scenes need a manual order?</b><span class="rec">The design orders by creation, so Alt+1 stays stable. Dragging rows in the menu would let you choose which nine get a key.</span></div>

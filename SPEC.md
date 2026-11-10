@@ -807,6 +807,7 @@ silencedetect=noise=<thresholdDb>dB:d=<minSilence> -vn -f null -` on
 |              | `Ctrl+A`                                  | Select all                                                                                         | —                                       |
 | **Output**   | `p`                                       | Save the frame at the playhead as PNG                                                              | `qrec frame save --at <t>`              |
 |              | `Ctrl+E`                                  | Export…                                                                                            | `qrec export`                           |
+| **Canvas**   | `Alt+1` … `Alt+9`                         | Use saved scene 1 … 9 (Live; §5.6)                                                                 | `qrec scene use <name>`                 |
 | **View**     | `=` / `-`                                 | Zoom the timeline in / out                                                                         | —                                       |
 |              | `\`                                       | Zoom to fit                                                                                        | —                                       |
 |              | `z`                                       | Zoom to the selection                                                                              | —                                       |

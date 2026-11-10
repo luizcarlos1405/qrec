@@ -3063,6 +3063,41 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
   its tag 22 px above the lane; the toolbar's settings icon runs
   `autocut.page` (`autocut.preview`, G§3.8 step 10).
 
+**Saved scenes** (SPEC §5.6, `panel::scenes`, boards
+`design/boards/07-named-scenes/`, approved 2026-11-10). In Live with the
+project scene, `view::panel::scene_bar` puts a 40 px bar at the top of the
+panel's column (`#scene-bar`, a `gtk::MenuButton`): a 32×18 thumbnail of
+the scene drawn from its rects (`DrawingArea`: screens `muted-40`, cameras
+`take-moss`, a source that isn't connected outlined in `warning`), the
+saved scene's name or a muted "No saved scene", "Edited" with a 6 px
+`accent-2` dot, the chevron; Save (`SceneSave{None}`) beside it when
+edited, Save as… when no saved scene is in use. Its popover lists the
+saved scenes (48 px rows: thumbnail, name, `scenes::summary`, the check on
+the one in use, `Alt` and its digit for the first nine; activating a row
+sends `SceneUse`) with each row's ⋮ (revealed on hover): Rename… (the save
+popover in rename mode), Replace with current scene (`SceneSave{name}`:
+the core's modal confirms), Duplicate, Delete… (`SceneDelete`: "Peel off
+this scene?", `view::confirm`); then Save changes (edited only), Save as
+new scene… and Revert to saved (`SceneUse{None}`, enabled when edited).
+The save popover (`#scene-name`, under the bar, 320 px) names a new scene
+after what it shows ("Screen + camera", then "… 2"), says what a scene
+holds, and turns Save into Replace with the warning "A scene named “X”
+exists. Saving replaces it." when the name is taken (sent confirmed: the
+person just read it). The palette's "Save scene as…" (`scene.save-as`, a
+GUI action) opens it. A Live layer whose screen or camera discovery didn't
+find reads "DP-2 isn't connected" (`view::panel::mark_not_connected`) with
+Replace… (the connected sources of its kind not in the scene, as
+`LayerSet{source}`). After a new "Use scene" entry the panel discovers the
+sources again and, when some aren't connected, toasts "Switched to X. DP-2
+isn't connected." with Undo. In Program, the take banner's Layout menu
+ends with "Apply a saved scene ▸" (`view::panel::apply_saved_items`: each
+scene with what it matches or hides, disabled when it shares no layer).
+`Alt+1` … `Alt+9` are `scene.use-N` (the palette names each by its scene
+and leaves out keys with none; the cheat sheet shows them as one row). The
+settings watcher also follows `scenes.json`: each settled change sends
+`ScenesReload`. Not done yet: renaming inline in the menu (the popover
+renames), and "Save this layout as a scene…" from a take's banner.
+
 ### G§4.8 `view::bin` and `view::export` (WP7)
 
 - **The fact `Take.recovered`** (WP0a): `#[serde(default,
