@@ -131,6 +131,8 @@ pub enum BlockingAction {
     Wait,
     /// Quit with [`BlockKind::exit_code`].
     Quit,
+    /// X3: the project picker, instead of a project that can't open.
+    ChooseProject,
 }
 
 fn button(label: &str, action: BlockingAction, primary: bool) -> BlockingButton {
@@ -1075,6 +1077,21 @@ pub fn unreadable(error: &CoreError, file: &str) -> UnreadablePage {
     }
 }
 
+impl UnreadablePage {
+    /// The page for a window Qrec chose to open (no `--project`): a broken
+    /// project opened by `projects.open_last` would otherwise be a dead end
+    /// on every start.
+    pub fn offering_picker(mut self) -> Self {
+        self.buttons.push(page_button(
+            "Open another project…",
+            PageAction::Flow(BlockingAction::ChooseProject),
+            ButtonKind::Secondary,
+            false,
+        ));
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1641,7 +1658,14 @@ mod tests {
     /// after the pointer, the length counted in the sentence.
     #[test]
     fn x3_shows_the_first_error_and_the_restore() {
+        let offered = unreadable(&invalid_project_error(), "~/talk/qrec.json").offering_picker();
+        assert_eq!(
+            offered.buttons[1].action,
+            PageAction::Flow(BlockingAction::ChooseProject)
+        );
+        assert_eq!(offered.buttons[0].label, "Quit", "Quit stays where it is");
         let page = unreadable(&invalid_project_error(), "~/talk/qrec.json");
+        assert_eq!(page.buttons.len(), 1, "with --project: the approved page");
         let problem = page.problem.expect("a validation box");
         assert_eq!(problem.file, "~/talk/qrec.json");
         assert_eq!(problem.message, "/timeline/clips/4/out: 1400 > 1377");

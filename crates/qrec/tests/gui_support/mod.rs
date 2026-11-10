@@ -807,7 +807,14 @@ impl Nested {
         for key in &launch.unset {
             command.env_remove(key);
         }
-        command.arg("--project").arg(project).arg("-v");
+        match &launch.bare {
+            Some((cwd, args)) => {
+                command.current_dir(cwd).args(args).arg("-v");
+            }
+            None => {
+                command.arg("--project").arg(project).arg("-v");
+            }
+        }
         let group = Group::spawn("qrec", command, &log);
         // Traced, the window is strace's child.
         let pid = match launch.strace {
@@ -1441,6 +1448,9 @@ pub struct Launch {
     /// variables alone, as a desktop's launch does
     /// ([`Launch::session_backend`]).
     pub session_backend: bool,
+    /// Run as `qrec <args> -v` in this folder instead of `--project`: the
+    /// launch that decides what to open (SPEC §4.4, [`Launch::bare_in`]).
+    pub bare: Option<(PathBuf, Vec<String>)>,
 }
 
 impl Launch {
@@ -1454,6 +1464,17 @@ impl Launch {
     pub fn with_env(mut self, key: &str, value: &str) -> Self {
         self.env.push((key.to_owned(), value.to_owned()));
         self
+    }
+
+    /// `qrec <args> -v` in `cwd`, no `--project` (`args` may be empty).
+    pub fn bare_in(cwd: &Path, args: &[&str]) -> Self {
+        Self {
+            bare: Some((
+                cwd.to_path_buf(),
+                args.iter().map(|a| (*a).to_owned()).collect(),
+            )),
+            ..Self::default()
+        }
     }
 
     /// Under `strace -f -e trace=open,openat,openat2`, into `trace`.

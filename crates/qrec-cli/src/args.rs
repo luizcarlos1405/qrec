@@ -36,6 +36,12 @@ PROJECT FOLDER
   Commands that need no project work anywhere: --help, version, doctor,
   sources list, schema, keys, agent-guide, config, completions.
 
+THE WINDOW
+  `qrec` with no command opens the project in the current folder. Anywhere
+  else it shows the project picker, or opens the last project when
+  projects.open_last is on. `qrec --project DIR` opens that folder and
+  `qrec --pick` always shows the picker.
+
 TIMES
   412f (frames), 13.7s, 00:00:13:21 (HH:MM:SS:FF), 00:00:13.700. Relative
   values (+1f, -2s) only where a help text says so. Clip times count from
@@ -73,7 +79,11 @@ EXIT CODES
 pub struct Cli {
     #[command(flatten)]
     pub global: Global,
-    // No command opens the GUI in the current folder.
+    /// Show the project picker, whatever the current folder holds.
+    #[arg(long, conflicts_with = "project")]
+    pub pick: bool,
+    // No command opens the GUI: the current folder's project, else the last
+    // project or the picker (SPEC §4.4).
     #[command(subcommand)]
     pub command: Option<Cmd>,
 }
@@ -109,6 +119,14 @@ pub enum Cmd {
     /// the folder must be strictly empty. Other project commands also create
     /// the project on their first change.
     Init(InitArgs),
+    /// Make a new folder and start a project in it.
+    ///
+    /// A name (no slash) goes in the projects folder, set with `qrec config set
+    /// projects.folder DIR`; with none set it is refused. A path (it has a
+    /// slash: ./demo, ../demo, /mnt/videos/demo) is used as it is. Only the
+    /// last part is made: the folder it goes in must exist. An empty folder
+    /// already there is used; one that isn't empty is refused.
+    Create(CreateArgs),
     /// Show a project summary; with --json the full state plus host and recording status.
     Status,
     /// Check dependencies, portal and devices; print this desktop's global shortcuts.
@@ -178,7 +196,8 @@ pub enum Cmd {
     /// Without a subcommand, prints every setting. Keys: theme,
     /// canvas.{width,height,fps,background}, recording.countdown_secs,
     /// autocut.{auto_run_after_take,threshold_db,min_silence_ms,padding_ms,min_keep_ms},
-    /// encoder.{preference,vaapi_device}, ui.{scale,reduced_motion,sounds}.
+    /// encoder.{preference,vaapi_device}, ui.{scale,reduced_motion,sounds},
+    /// projects.{folder,open_last}.
     Config(ConfigArgs),
     /// Print the effective keymap: defaults plus ~/.config/qrec/keys.toml overrides.
     Keys,
@@ -203,6 +222,19 @@ pub struct InitArgs {
     #[arg(long, value_name = "WxH@FPS")]
     pub canvas: Option<String>,
     /// Project name (default: the folder name).
+    #[arg(long)]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Args)]
+pub struct CreateArgs {
+    /// The new project: a name (goes in projects.folder) or a path (has a slash).
+    #[arg(value_name = "NAME|PATH")]
+    pub target: PathBuf,
+    /// Canvas size and frame rate, e.g. 1920x1080@30 or 2560x1440@30000/1001 (default from config).
+    #[arg(long, value_name = "WxH@FPS")]
+    pub canvas: Option<String>,
+    /// Project name (default: the new folder's name).
     #[arg(long)]
     pub name: Option<String>,
 }

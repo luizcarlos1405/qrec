@@ -61,6 +61,7 @@ suites_for() {
       echo gui_bin_export ;;
     crates/qrec-gui/src/blocking/* | */components/blocking.css | crates/qrec-core/src/view/blocking*) echo gui_blocking ;;
     crates/qrec-gui/src/startup/*) echo gui_shell gui_blocking ;;
+    crates/qrec-gui/src/picker.rs | crates/qrec-gui/src/settings/projects.rs | */components/picker.css | crates/qrec-core/src/view/picker* | crates/qrec-shell/src/projects.rs) echo gui_picker ;;
     crates/qrec-gui/src/palette.rs | crates/qrec-gui/src/cheatsheet.rs | crates/qrec-gui/src/settings/* | crates/qrec-gui/src/widgets/theme_card.rs | */components/overlays.css)
       echo gui_overlays ;;
     crates/qrec-gui/src/theme/fonts.rs | crates/qrec-gui/resources/fonts/*) echo gui_text ;;

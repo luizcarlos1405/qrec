@@ -41,8 +41,8 @@
 
 - X11. The design keeps it possible later: GStreamer `ximagesrc` would be a
   new source kind, not a rewrite.
-- Project management (recent projects, project browser). You launch Qrec in
-  the right folder.
+- Managing projects beyond opening and creating them (§4.4): no renaming,
+  moving or deleting them from the app.
 - Multi-track editing, B-roll, transitions, titles, effects, color grading.
 - Capturing a single window, and drawing a screen region. A layer's `crop`
   can still trim a monitor numerically (§12), but there is no "draw a region"
@@ -212,6 +212,36 @@ Anything else is rejected with the message _"Not my swamp: this folder isn't
 empty and has no qrec.json"_ and exit code 3. Commands that don't use a
 project still work anywhere: `--help`, `version`, `doctor`, `sources list`,
 `schema`, `keys`, `agent-guide`.
+
+**New projects.** `qrec create <name-or-path>` makes a new folder and starts
+a project in it. A slash tells the two apart:
+
+- A **name** (`demo`) goes in the projects folder of the user config
+  (`projects.folder`, §6.4). There is no default place: with none set, a name
+  is a usage error (exit 2).
+- A **path** (`./demo`, `../demo`, `/mnt/videos/demo`) is used as it is,
+  against the current directory when relative. The setting plays no part.
+
+Only the last part is made; the folder it goes in must already exist. The
+folder rule then decides what becomes of what is there: a folder just made,
+or an empty one already there, becomes the project; an existing project is
+`invalid` "already a project" (exit 1); anything else is "Not my swamp" (exit
+3). A file at that path is an `io` error (exit 1). `--project` doesn't go
+with `create` (usage, exit 2).
+
+**What the window opens.** `qrec --project <dir>` applies the folder rule to
+that folder. `qrec` alone opens the project in the current folder. Anywhere
+else it shows the **project picker**, or, with `projects.open_last` on (§6.4),
+opens the last project if it is still there. An empty folder is no longer made
+a project just by running `qrec` in it: the picker offers "Start a project
+here". `qrec --pick` always shows the picker.
+
+The picker lists the recent projects (§6.4), most recent first, searchable.
+It opens one, opens another folder, and makes a new project with the same
+name-or-path rule as `qrec create`. A folder that has moved stays listed,
+marked, until it is removed from the list, which never touches the folder.
+A running window opens the picker from the command palette, in a process of
+its own, so a project it opens gets its own window beside this one.
 
 ---
 
@@ -533,9 +563,13 @@ copy to `.qrec/qrec.v{N}.json.bak`.
     dev machine; never let the encoder auto-pick, see `RECORDING.md`)
   - UI scale
   - reduced motion
+  - projects folder: where a new project given by name goes (`projects.folder`,
+    unset by default, §4.4)
+  - open the last project on start (`projects.open_last`, off by default)
 - `keys.toml`: keybinding overrides (§10).
-- `~/.local/state/qrec/`: portal restore tokens and the logs of the last
-  session.
+- `~/.local/state/qrec/`: portal restore tokens, the logs of the last
+  session, and the recent projects (`recent-projects.json`: what the window
+  opened, at most 50; losing it loses only the list).
 
 ---
 
@@ -907,8 +941,10 @@ Time arguments accept:
 Timeline positions are clip-relative unless `--timeline` is given.
 
 ```
-qrec                         # open GUI in cwd (folder rule §4.4)
+qrec                         # open GUI: the cwd's project, else the picker or the last project (§4.4)
+qrec --pick                  # the project picker, whatever the cwd holds
 qrec init [--canvas 1920x1080@30]
+qrec create <name|path> [--canvas 1920x1080@30] [--name NAME]   # new folder + project (§4.4)
 qrec status                  # summary; --json = full state + host/recording status
 qrec doctor                  # dependency + portal + device check, niri bind snippet
 qrec sources list            # screens, cameras, mics, system-audio monitors

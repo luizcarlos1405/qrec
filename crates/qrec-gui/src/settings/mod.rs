@@ -19,6 +19,7 @@ pub mod appearance;
 pub mod autocut;
 pub mod keyboard;
 pub mod project;
+pub mod projects;
 pub mod recording;
 
 use std::cell::{Cell, RefCell};

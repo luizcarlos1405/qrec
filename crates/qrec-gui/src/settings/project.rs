@@ -36,6 +36,7 @@ pub struct ProjectPage {
     root: gtk::Box,
     size: gtk::DropDown,
     parts: Rc<Parts>,
+    all_projects: super::projects::AllProjects,
 }
 
 impl ProjectPage {
@@ -115,6 +116,10 @@ impl ProjectPage {
             &background,
         );
         content.append(&background_row);
+        // What isn't this project's: the machine's own settings about
+        // projects, under its rows.
+        let all_projects = super::projects::AllProjects::new(ctx);
+        content.append(&all_projects.widget());
         root.append(&content);
 
         // The footer: where this lives.
@@ -162,7 +167,12 @@ impl ProjectPage {
         // reach the list, and `Esc` closes the list, not Settings (G§3.8
         // step 4).
         crate::panel::menus::track_dropdown(ctx, &size);
-        Self { root, size, parts }
+        Self {
+            root,
+            size,
+            parts,
+            all_projects,
+        }
     }
 
     /// Shows the project as the newest snapshot has it, whatever the page
@@ -172,6 +182,7 @@ impl ProjectPage {
     /// typed in.
     pub fn refresh(&self) {
         self.parts.resync();
+        self.all_projects.refresh();
     }
 
     pub fn widget(&self) -> gtk::Widget {
@@ -207,7 +218,11 @@ fn caption_label(text: &str) -> gtk::Label {
 }
 
 /// A 60 px row: label over caption on the left, `control` on the right.
-fn row(label: &str, caption: &str, control: &impl IsA<gtk::Widget>) -> (gtk::Box, gtk::Label) {
+pub(super) fn row(
+    label: &str,
+    caption: &str,
+    control: &impl IsA<gtk::Widget>,
+) -> (gtk::Box, gtk::Label) {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 24);
     row.add_css_class("settings-row");
     let text = gtk::Box::new(gtk::Orientation::Vertical, 0);

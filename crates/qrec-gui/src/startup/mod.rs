@@ -1051,6 +1051,10 @@ impl Startup {
             }
             BlockingAction::StopAndOpen => self.choose(Choice::StopAndOpen),
             BlockingAction::Wait => self.choose(Choice::Wait),
+            BlockingAction::ChooseProject => {
+                app.open_picker();
+                app.quit_from_page();
+            }
         }
     }
 }

@@ -125,6 +125,52 @@ pub const NAMED_PARTS: [&str; 9] = [
     "lane-A2",
 ];
 
+/// The minimal header of the blocking pages and the project picker (C04
+/// `Xba2H`, as WP8's frames draw it): the app icon, the wordmark and close;
+/// no title (the window's own title is still its name).
+pub(crate) fn minimal_header(
+    theme: &crate::theme::Theme,
+    keymap: &qrec_core::keymap::Keymap,
+) -> adw::HeaderBar {
+    let header = adw::HeaderBar::new();
+    header.set_widget_name("minimal-header");
+    header.add_css_class("qrec-minimal-header");
+    let start = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    start.add_css_class("header-start");
+    start.set_valign(gtk::Align::Center);
+    let icon = gtk::Image::new();
+    icon.set_pixel_size(24);
+    icon.add_css_class("app-icon");
+    icon.set_valign(gtk::Align::Center);
+    icon.update_property(&[gtk::accessible::Property::Label("Qrec")]);
+    let show_icon = {
+        let icon = icon.downgrade();
+        move |theme: &crate::theme::Theme| {
+            if let Some(icon) = icon.upgrade() {
+                match theme.art(crate::theme::art::Art::AppIcon24) {
+                    Some(svg) => icon.set_paintable(Some(&svg)),
+                    None => icon.set_icon_name(Some("qrec-record-symbolic")),
+                }
+            }
+        }
+    };
+    show_icon(theme);
+    theme.subscribe(show_icon).detach();
+    start.append(&icon);
+    let wordmark = gtk::Label::new(Some("Qrec"));
+    wordmark.add_css_class("wordmark");
+    wordmark.add_css_class("t-wordmark");
+    // At x 44, as in the main header (12 + 24 + 8).
+    wordmark.set_margin_start(8);
+    start.append(&wordmark);
+    header.pack_start(&start);
+    header.set_title_widget(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
+    header.set_show_end_title_buttons(false);
+    header.set_show_start_title_buttons(false);
+    header.pack_end(&crate::widgets::button::close_window(keymap));
+    header
+}
+
 /// The window and its layers, before and after its regions exist.
 pub struct MainWindow {
     pub window: adw::ApplicationWindow,
@@ -245,46 +291,7 @@ impl MainWindow {
         editor.add_top_bar(&header.widget());
         editor.set_content(Some(&split));
 
-        // The blocking pages' minimal header (C04 `Xba2H`, as WP8's frames
-        // draw it): the app icon, the wordmark and close; no title (the
-        // window's own title is still the folder's name).
-        let page_header = adw::HeaderBar::new();
-        page_header.set_widget_name("minimal-header");
-        page_header.add_css_class("qrec-minimal-header");
-        let start = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        start.add_css_class("header-start");
-        start.set_valign(gtk::Align::Center);
-        let icon = gtk::Image::new();
-        icon.set_pixel_size(24);
-        icon.add_css_class("app-icon");
-        icon.set_valign(gtk::Align::Center);
-        icon.update_property(&[gtk::accessible::Property::Label("Qrec")]);
-        let show_icon = {
-            let icon = icon.downgrade();
-            move |theme: &crate::theme::Theme| {
-                if let Some(icon) = icon.upgrade() {
-                    match theme.art(crate::theme::art::Art::AppIcon24) {
-                        Some(svg) => icon.set_paintable(Some(&svg)),
-                        None => icon.set_icon_name(Some("qrec-record-symbolic")),
-                    }
-                }
-            }
-        };
-        show_icon(&ctx.theme);
-        ctx.theme.subscribe(show_icon).detach();
-        start.append(&icon);
-        let wordmark = gtk::Label::new(Some("Qrec"));
-        wordmark.add_css_class("wordmark");
-        wordmark.add_css_class("t-wordmark");
-        // At x 44, as in the main header (12 + 24 + 8).
-        wordmark.set_margin_start(8);
-        start.append(&wordmark);
-        page_header.pack_start(&start);
-        page_header.set_title_widget(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
-        page_header.set_show_end_title_buttons(false);
-        page_header.set_show_start_title_buttons(false);
-        let keymap = ctx.store.keymap();
-        page_header.pack_end(&crate::widgets::button::close_window(&keymap));
+        let page_header = minimal_header(&ctx.theme, &ctx.store.keymap());
         let page_slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
         page_slot.set_vexpand(true);
         let page_view = adw::ToolbarView::new();

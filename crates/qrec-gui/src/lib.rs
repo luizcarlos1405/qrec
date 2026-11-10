@@ -42,6 +42,7 @@ pub mod media;
 pub mod modal;
 pub mod palette;
 pub mod panel;
+pub mod picker;
 pub mod probe;
 pub mod settings;
 pub mod stage;
@@ -87,14 +88,23 @@ pub fn run(args: GuiArgs) -> Result<u8, qrec_core::CoreError> {
     app::run(args)
 }
 
-/// Works out where [`run`]'s window opens and takes an inherited
-/// `GDK_BACKEND` that names no backend whose display is here out of the
-/// environment ([`app::prepare_display`]). Changing the environment is only
-/// sound while the process has a single thread: when `qrec` opens the
+/// Works out where [`run`]'s or [`run_picker`]'s window opens and takes an
+/// inherited `GDK_BACKEND` that names no backend whose display is here out
+/// of the environment ([`app::prepare_display`]). Changing the environment
+/// is only sound while the process has a single thread: when `qrec` opens a
 /// window, `main` calls it while it still has one, after the GPU
 /// environment.
 pub fn prepare_display() {
     app::prepare_display();
+}
+
+pub use picker::PickerArgs;
+
+/// Runs the project picker (G§4.12) until it closes: 0. Picking a project
+/// replaces this process with that project's window, so what it returns
+/// then is that window's exit code. `Err` when no window can open at all.
+pub fn run_picker(args: PickerArgs) -> Result<u8, qrec_core::CoreError> {
+    picker::run(args)
 }
 
 /// What every region constructor gets (G§3.6): the shared handles of the

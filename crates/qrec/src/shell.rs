@@ -39,6 +39,7 @@ use std::sync::mpsc;
 
 use qrec_cli::{Backend, Events, Fallback, Finish, HostArgs, ProjectRequest, RouteOpts};
 use qrec_core::CoreError;
+use qrec_core::new_project::NewProjectPath;
 use qrec_core::protocol::{HelloInfo, Progress, Toast, ToastLevel};
 use qrec_core::state::HostKind;
 use qrec_shell::capture::{self, EngineOptions};
@@ -57,7 +58,7 @@ use qrec_shell::paths::{self, Env, UserDirs};
 use qrec_shell::platform::{self, Desktop};
 use qrec_shell::session::{Notifier, Session, SessionConfig, SessionEnv};
 use qrec_shell::sources::{self, Discover, LiveDevices, SourceInventory};
-use qrec_shell::{ShellError, caps, ipc};
+use qrec_shell::{ShellError, caps, ipc, projects};
 use serde_json::Value;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 
@@ -150,7 +151,9 @@ impl Shell {
     /// at once, doesn't erase the first one's); warnings also on stderr
     /// (errors only with `-q`). Without user dirs or a writable log, all of
     /// it goes to stderr.
-    fn init_gui_logging(&mut self, project: &Path) {
+    ///
+    /// `None` is the project picker, which has no project: its own log.
+    fn init_gui_logging(&mut self, project: Option<&Path>) {
         if self.logging_ready {
             return;
         }
@@ -167,12 +170,17 @@ impl Shell {
             .with_target(false)
             .with_thread_names(true)
             .with_timer(LocalTime);
-        let dir = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
         let Ok(dirs) = self.dirs() else {
             let _ = builder.with_writer(std::io::stderr).try_init();
             return;
         };
-        let log = dirs.gui_log(&dir);
+        let (log, dir) = match project {
+            Some(project) => {
+                let dir = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
+                (dirs.gui_log(&dir), dir)
+            }
+            None => (dirs.picker_log(), PathBuf::from("the project picker")),
+        };
         match paths::open_gui_log(&log, &dir, chrono::Local::now()) {
             Ok(file) => {
                 let terminal = if quiet {
@@ -288,6 +296,10 @@ impl Backend for Shell {
         qrec_shell::config_file::write_text(path, text).map_err(CoreError::io)
     }
 
+    fn make_project_folder(&mut self, path: &NewProjectPath) -> Result<PathBuf, CoreError> {
+        qrec_shell::projects::make_folder(path)
+    }
+
     fn live_hosts(&mut self) -> Result<Vec<HelloInfo>, CoreError> {
         let runtime = self.dirs()?.runtime;
         Ok(ipc::resolve::live_hosts(&runtime, ipc::HELLO_TIMEOUT))
@@ -397,18 +409,32 @@ impl Backend for Shell {
         Ok(host::main_headless(args, &mut opener))
     }
 
-    /// `qrec` without a command (docs/GUI.md G§3.2): the GUI's logging,
-    /// then the window until it closes; its exit code.
+    /// `qrec` without a command (docs/GUI.md G§3.2): `--project` opens that
+    /// folder; otherwise what opens is [`projects::bare_launch`]'s to say.
+    /// The GUI's logging, then the window until it closes; its exit code.
     fn gui(&mut self, project: &Path, explicit: bool) -> Result<u8, CoreError> {
-        self.init_gui_logging(project);
-        tracing::info!(
-            "qrec {VERSION}: the window for {} (from {})",
-            project.display(),
-            if explicit {
-                "--project"
-            } else {
-                "the current folder"
+        let opened;
+        let (project, from) = if explicit {
+            (project, "--project")
+        } else {
+            match self.bare_launch(project) {
+                projects::BareLaunch::Picker => return self.picker(Some(project)),
+                projects::BareLaunch::Open(dir) => {
+                    let here = dir == project;
+                    opened = dir;
+                    let from = if here {
+                        "the current folder"
+                    } else {
+                        "the last project"
+                    };
+                    (opened.as_path(), from)
+                }
             }
+        };
+        self.init_gui_logging(Some(project));
+        tracing::info!(
+            "qrec {VERSION}: the window for {} (from {from})",
+            project.display(),
         );
         tracing::info!("platform: {}", platform::current());
         let (verbose, _) = self.verbosity.unwrap_or((0, false));
@@ -417,6 +443,30 @@ impl Backend for Shell {
             explicit,
             verbose,
         })
+    }
+
+    /// `qrec --pick`, or `qrec` with nothing to open (G§3.2): the picker's
+    /// logging, then the picker. A project it opens replaces this process.
+    fn picker(&mut self, cwd: Option<&Path>) -> Result<u8, CoreError> {
+        self.init_gui_logging(None);
+        tracing::info!("qrec {VERSION}: the project picker");
+        let (verbose, _) = self.verbosity.unwrap_or((0, false));
+        qrec_gui::run_picker(qrec_gui::PickerArgs {
+            cwd: cwd.map(Path::to_path_buf),
+            verbose,
+        })
+    }
+}
+
+impl Shell {
+    /// What `qrec` opens in `cwd`, from the settings and the recent list;
+    /// without user dirs, the current folder (the window says what is wrong).
+    fn bare_launch(&mut self, cwd: &Path) -> projects::BareLaunch {
+        let Ok(dirs) = self.dirs() else {
+            return projects::BareLaunch::Open(cwd.to_path_buf());
+        };
+        let (config, _) = qrec_shell::config_file::read(&dirs.config_file());
+        projects::bare_launch(cwd, &config, &projects::read_recents(&dirs))
     }
 }
 

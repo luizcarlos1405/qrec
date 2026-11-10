@@ -92,8 +92,11 @@ nix run . -- --help
 
 ## The window
 
-`qrec` with no command opens the window on the current folder (`--project
-DIR` names another; an empty folder becomes a project named after it).
+`qrec` with no command opens the project in the current folder. Anywhere
+else it shows the project picker: recent projects, open a folder, or make a
+new one. Turn on `projects.open_last` to go straight to the last project
+instead. `qrec --project DIR` opens that folder (an empty one becomes a
+project named after it) and `qrec --pick` always shows the picker.
 While the window is open, `qrec …` from a terminal or a compositor bind
 talks to it instead of starting a host of its own, and both change the
 project through the same commands.
@@ -113,8 +116,8 @@ A launcher starts Qrec in `$HOME`, which isn't a project: the window says
 ## Quick start (CLI)
 
 ```sh
-mkdir my-video && cd my-video        # an empty folder becomes a project
-qrec init
+qrec create ./my-video && cd my-video
+# a bare name goes in the projects folder: qrec config set projects.folder DIR
 qrec sources list                    # screens, cameras, mics, system-audio monitors
 qrec scene layer add screen --output DP-4
 qrec scene layer add camera --device /dev/video0

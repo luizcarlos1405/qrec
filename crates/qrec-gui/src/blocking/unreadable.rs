@@ -38,7 +38,14 @@ fn project_file(ctx: &Ctx) -> String {
 
 fn content(ctx: &Ctx, kind: &BlockKind) -> Option<UnreadablePage> {
     match kind {
-        BlockKind::Unreadable { error } => Some(blocking::unreadable(error, &project_file(ctx))),
+        BlockKind::Unreadable { error } => {
+            let page = blocking::unreadable(error, &project_file(ctx));
+            Some(if crate::picker::offered() {
+                page.offering_picker()
+            } else {
+                page
+            })
+        }
         _ => None,
     }
 }

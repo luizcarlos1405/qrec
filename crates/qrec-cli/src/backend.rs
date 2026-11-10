@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use qrec_core::CoreError;
+use qrec_core::new_project::NewProjectPath;
 use qrec_core::platform::Desktop;
 use qrec_core::protocol::{HelloInfo, Progress, Toast, WireBody};
 use serde_json::Value;
@@ -212,5 +213,23 @@ pub trait Backend {
     fn gui(&mut self, project: &Path, explicit: bool) -> Result<u8, CoreError> {
         let _ = (project, explicit);
         Err(CoreError::unavailable(crate::GUI_NOT_BUILT))
+    }
+
+    /// `qrec --pick` (docs/GUI.md G§3.2): the project picker, until it
+    /// closes or a project opens; `cwd` is where a relative new-project
+    /// path starts. Default: this build has no GUI.
+    fn picker(&mut self, cwd: Option<&Path>) -> Result<u8, CoreError> {
+        let _ = cwd;
+        Err(CoreError::unavailable(crate::GUI_NOT_BUILT))
+    }
+
+    /// Makes the folder of a new project (`qrec create`, A§8.4): the last
+    /// part of `path` only. Returns the folder, canonical. Default: this
+    /// build has no shell.
+    fn make_project_folder(&mut self, path: &NewProjectPath) -> Result<PathBuf, CoreError> {
+        Err(CoreError::unavailable(format!(
+            "can't make {}: this qrec build doesn't include its shell (qrec-shell)",
+            path.dir().display()
+        )))
     }
 }

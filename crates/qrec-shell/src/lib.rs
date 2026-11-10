@@ -36,6 +36,7 @@ pub mod platform;
 #[cfg(feature = "gst")]
 pub mod player;
 pub mod proc;
+pub mod projects;
 pub mod session;
 pub mod sources;
 pub(crate) mod spawn;

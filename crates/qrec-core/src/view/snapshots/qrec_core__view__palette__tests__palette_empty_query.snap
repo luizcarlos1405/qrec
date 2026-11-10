@@ -57,6 +57,7 @@ Toggle bin                                   [B]              qrec take list --u
 Keyboard shortcuts                           [?]              qrec keys
 Command palette                              [Ctrl][K] [:]    —
 Settings                                     [Ctrl][,]        qrec config
+Open or create a project…                                     qrec --pick
 Focus next region                            [F6]             —
 Focus previous region                        [Shift][F6]      —
 Quit                                         [Ctrl][Q]        —

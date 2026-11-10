@@ -14,6 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::UserConfig;
 use crate::model::{Color, Fps};
 use crate::protocol::command::{CanvasSpec, Command, Nullable};
 use crate::state::State;
@@ -291,12 +292,64 @@ pub fn background_command(text: &str) -> Result<Command, String> {
     Ok(project_set(None, Some(color)))
 }
 
+/// Settings › Project's "All projects" group: the machine-wide settings
+/// about projects (`config.toml`, SPEC §6.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllProjectsView {
+    pub group: String,
+    pub caption: String,
+    pub open_last_label: String,
+    pub open_last_caption: String,
+    pub open_last: bool,
+    pub folder_label: String,
+    pub folder_caption: String,
+    /// The folder as people read it, or that there is none.
+    pub folder_shown: String,
+    pub folder_set: bool,
+}
+
+/// The group for `config`.
+pub fn all_projects(config: &UserConfig, home: Option<&str>) -> AllProjectsView {
+    let folder = config.projects.folder.as_deref();
+    AllProjectsView {
+        group: "All projects".to_owned(),
+        caption: "On this computer, for every project.".to_owned(),
+        open_last_label: "Open the last project on start".to_owned(),
+        open_last_caption: "Running qrec outside a project opens the last one, not the picker."
+            .to_owned(),
+        open_last: config.projects.open_last,
+        folder_label: "Projects folder".to_owned(),
+        folder_caption: "Where a new project given by name goes.".to_owned(),
+        folder_shown: folder.map_or_else(
+            || "Not set".to_owned(),
+            |folder| format::display_path(folder, "", home),
+        ),
+        folder_set: folder.is_some(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testkit;
     use crate::view::Built;
     use crate::{CoreError, ErrorCode, apply};
+
+    #[test]
+    fn all_projects_shows_the_settings() {
+        let mut config = UserConfig::default();
+        let unset = all_projects(&config, Some("/home/shrek"));
+        assert!(!unset.open_last, "off by default");
+        assert!(!unset.folder_set);
+        assert_eq!(unset.folder_shown, "Not set");
+        config.projects.open_last = true;
+        config.projects.folder = Some("/home/shrek/videos".into());
+        let set = all_projects(&config, Some("/home/shrek"));
+        assert!(set.open_last);
+        assert!(set.folder_set);
+        assert_eq!(set.folder_shown, "~/videos");
+    }
 
     #[test]
     fn only_project_opens_until_wp9() {

@@ -488,6 +488,177 @@ fn a_config_that_cant_be_used_is_reported_once_per_run() {
 
 // ------------------------------------------------------------ project commands
 
+/// `qrec create` with a path (SPEC §4.4): only the last folder is made, the
+/// project is named after it, and `--json` says where it went.
+#[test]
+fn create_with_a_path() {
+    let env = TestEnv::new();
+    let here = env.empty_dir("here");
+    let made = qrec(&env, &here, &["create", "./demo", "--json"]);
+    made.ok();
+    let dir = fs::canonicalize(&here).unwrap().join("demo");
+    assert_eq!(
+        made.only_reply(),
+        json!({"ok": true, "data": {
+            "projectDir": dir.display().to_string(),
+            "name": "demo",
+            "canvas": "1920x1080@30",
+        }})
+    );
+    for entry in ["qrec.json", "takes", ".qrec"] {
+        assert!(dir.join(entry).exists(), "{entry} is missing");
+    }
+
+    // An absolute path, the canvas and the name passed on; people get a line.
+    let elsewhere = env.empty_dir("elsewhere");
+    let target = elsewhere.join("talk");
+    let human = qrec(
+        &env,
+        &here,
+        &[
+            "create",
+            target.to_str().unwrap(),
+            "--canvas",
+            "1280x720@25",
+            "--name",
+            "The talk",
+        ],
+    );
+    human.ok();
+    let target = fs::canonicalize(&target).unwrap();
+    assert_eq!(
+        human.stdout.trim(),
+        format!(
+            "Created project \"The talk\" (1280x720 @ 25 fps) in {}",
+            target.display()
+        )
+    );
+    let status = qrec(&env, &target, &["status", "--json"]);
+    assert_eq!(status.only_reply()["data"]["project"]["name"], "The talk");
+
+    // The folder it goes in has to be there: nothing is made.
+    let missing = qrec(&env, &here, &["create", "./no/such/demo", "--json"]);
+    assert_eq!(missing.code, Some(1));
+    assert_eq!(missing.only_reply()["error"]["code"], "io");
+    assert!(!here.join("no").exists());
+}
+
+/// A name goes in `projects.folder`; with none set it is refused and nothing
+/// is made anywhere.
+#[test]
+fn create_with_a_name_needs_the_projects_folder() {
+    let env = TestEnv::new();
+    let here = env.empty_dir("here");
+    let refused = qrec(&env, &here, &["create", "demo", "--json"]);
+    assert_eq!(refused.code, Some(2));
+    let error = &refused.only_reply()["error"];
+    assert_eq!(error["code"], "usage");
+    assert!(
+        error["hint"].as_str().unwrap().contains("./demo"),
+        "{error}"
+    );
+    assert!(!here.join("demo").exists());
+
+    let projects = fs::canonicalize(env.empty_dir("projects")).unwrap();
+    qrec(
+        &env,
+        &here,
+        &[
+            "config",
+            "set",
+            "projects.folder",
+            projects.to_str().unwrap(),
+        ],
+    )
+    .ok();
+    qrec(&env, &here, &["create", "demo"]).ok();
+    assert!(projects.join("demo/qrec.json").is_file());
+    assert!(!here.join("demo").exists(), "a name ignores the cwd");
+
+    // A path doesn't use the setting.
+    qrec(&env, &here, &["create", "./local"]).ok();
+    assert!(here.join("local/qrec.json").is_file());
+    assert!(!projects.join("local").exists());
+
+    // Unset again, a name is refused again.
+    qrec(&env, &here, &["config", "set", "projects.folder", "none"]).ok();
+    let get = qrec(&env, &here, &["config", "get", "projects.folder", "--json"]);
+    assert_eq!(get.only_reply()["data"]["value"], Value::Null);
+    assert_eq!(qrec(&env, &here, &["create", "again"]).code, Some(2));
+
+    // A broken config.toml only gets in the way of a name.
+    fs::write(env.config_home().join("qrec/config.toml"), "ui = 3\n").unwrap();
+    assert_eq!(qrec(&env, &here, &["create", "again"]).code, Some(1));
+    qrec(&env, &here, &["create", "./despite"]).ok();
+}
+
+/// What `qrec create` finds at the target (#11): the folder rule decides,
+/// and nothing that was there changes.
+#[test]
+fn create_on_what_is_already_there() {
+    let env = TestEnv::new();
+    let here = env.empty_dir("here");
+
+    // An empty folder is used in place.
+    fs::create_dir(here.join("empty")).unwrap();
+    qrec(&env, &here, &["create", "./empty"]).ok();
+    assert!(here.join("empty/qrec.json").is_file());
+
+    // A project stays as it was.
+    let before = fs::read(here.join("empty/qrec.json")).unwrap();
+    let again = qrec(&env, &here, &["create", "./empty", "--json"]);
+    assert_eq!(again.code, Some(1));
+    assert_eq!(again.only_reply()["error"]["code"], "invalid");
+    assert_eq!(fs::read(here.join("empty/qrec.json")).unwrap(), before);
+
+    // Someone else's folder is not my swamp.
+    fs::create_dir(here.join("notes")).unwrap();
+    fs::write(here.join("notes/todo.txt"), "onions").unwrap();
+    let swamp = qrec(&env, &here, &["create", "./notes", "--json"]);
+    assert_eq!(swamp.code, Some(3));
+    assert_eq!(swamp.only_reply()["error"]["code"], "not_project");
+    assert_eq!(
+        fs::read_dir(here.join("notes")).unwrap().count(),
+        1,
+        "nothing was added"
+    );
+
+    // A file in the way is an error.
+    fs::write(here.join("file"), "x").unwrap();
+    let file = qrec(&env, &here, &["create", "./file", "--json"]);
+    assert_eq!(file.code, Some(1));
+    assert_eq!(file.only_reply()["error"]["code"], "io");
+
+    // A new project can go inside another one.
+    qrec(&env, &here.join("empty"), &["create", "./nested"]).ok();
+    assert!(here.join("empty/nested/qrec.json").is_file());
+}
+
+/// `--project` doesn't go with `create`, and a bad canvas makes no folder.
+#[test]
+fn create_refuses_what_makes_no_sense() {
+    let env = TestEnv::new();
+    let here = env.empty_dir("here");
+    let flag = qrec(
+        &env,
+        &here,
+        &["create", "./demo", "--project", ".", "--json"],
+    );
+    assert_eq!(flag.code, Some(2));
+    assert_eq!(flag.only_reply()["error"]["code"], "usage");
+    let canvas = qrec(
+        &env,
+        &here,
+        &["create", "./demo", "--canvas", "1920x1080@abc", "--json"],
+    );
+    assert_eq!(canvas.code, Some(2));
+    assert!(!here.join("demo").exists());
+    for target in [".", "..", "/", "./.."] {
+        let out = qrec(&env, &here, &["create", target, "--json"]);
+        assert_eq!(out.code, Some(2), "{target}: {}", out.stdout);
+    }
+}
+
 #[test]
 fn init_and_status_shapes() {
     let env = TestEnv::new();
@@ -4780,9 +4951,9 @@ fn the_design_fixture_is_the_briefs_sample_project() {
 }
 
 /// The window prints nothing on stdout: `qrec --json` alone is a usage
-/// error, one object (docs/GUI.md G§3.2). Without `--json`, `qrec` logs to
-/// its project's GUI log (appended per run, one per project) and opens the
-/// window on Wayland or X11; with no display it says so, naming both
+/// error, one object (docs/GUI.md G§3.2). Without `--json`, `qrec --project`
+/// logs to its project's GUI log (appended per run, one per project) and opens
+/// the window on Wayland or X11; with no display it says so, naming both
 /// variables, and exits 1, leaving the empty folder as it was. So it does
 /// with only a `GDK_BACKEND` (which used to take the lock ahead of a
 /// doomed `gtk::init`, GUI-19), with a `WAYLAND_DISPLAY` whose socket file
@@ -4819,8 +4990,9 @@ fn qrec_without_a_command() {
         &[("WAYLAND_DISPLAY", OsStr::new("wayland-dead"))],
         &[("DISPLAY", OsStr::new(&dead))],
     ];
+    let on = |dir: &Path| dir.to_str().unwrap().to_owned();
     for vars in runs {
-        let gui = qrec_with(&env, &a, &[], vars);
+        let gui = qrec_with(&env, &a, &["--project", &on(&a)], vars);
         assert_eq!(gui.code, Some(1), "{vars:?}: {}", gui.stderr);
         assert!(
             gui.stderr.contains("can't open the window")
@@ -4835,7 +5007,7 @@ fn qrec_without_a_command() {
             "{vars:?}: the folder stays empty: {left:?}"
         );
     }
-    qrec(&env, &b, &["-v"]);
+    qrec(&env, &b, &["-v", "--project", &on(&b)]);
     let headers = |dir: &Path| {
         fs::read_to_string(log_of(dir))
             .unwrap()
@@ -4850,6 +5022,29 @@ fn qrec_without_a_command() {
         text.contains(&format!("{} ===", fs::canonicalize(&a).unwrap().display())),
         "{text}"
     );
+
+    // No `--project`, and nothing to open here: the picker, with its own
+    // log, and the empty folder isn't made a project.
+    assert!(!dirs.picker_log().exists());
+    let picker = qrec(&env, &a, &[]);
+    assert_eq!(picker.code, Some(1), "{}", picker.stderr);
+    assert!(
+        picker.stderr.contains("can't open the window"),
+        "{}",
+        picker.stderr
+    );
+    assert!(dirs.picker_log().exists(), "the picker logs to its own");
+    assert_eq!(headers(&a), runs.len(), "not the project's log");
+    assert!(fs::read_dir(&a).unwrap().next().is_none());
+
+    // A project here opens instead (its log), and `--pick` still asks.
+    qrec(&env, &b, &["init"]).ok();
+    qrec(&env, &b, &[]);
+    assert_eq!(headers(&b), 2);
+    let size = fs::metadata(dirs.picker_log()).unwrap().len();
+    qrec(&env, &b, &["--pick"]);
+    assert_eq!(headers(&b), 2);
+    assert!(fs::metadata(dirs.picker_log()).unwrap().len() > size);
 }
 
 /// An X11 display name (`:N`) no server answers at: nothing listens on

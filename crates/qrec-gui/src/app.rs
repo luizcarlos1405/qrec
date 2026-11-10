@@ -162,6 +162,7 @@ pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
     // GApplication no argv[0] to take one from. Wayland matches the window
     // by its app_id, the application's id, which this doesn't change.
     glib::set_prgname(Some(APP_ID));
+    crate::picker::set_offered(!args.explicit);
     let interrupts = signals::install(&HOST_SIGNALS).unwrap_or_else(|e| {
         tracing::warn!("signals won't be handled gracefully: {e}");
         Interrupts::new()
@@ -187,18 +188,9 @@ pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
     // Before any worker: step 3's `gst::init()` registers GStreamer's
     // fundamental types on its thread while GTK registers its own here.
     register_fundamentals();
-    // Where the window opens (Linux: Wayland or X11, nothing else; other
-    // systems have GTK's own backend). No display: nothing is touched.
+    // Where the window opens. No display: nothing is touched.
     let display = display_choice();
-    let target = if cfg!(target_os = "linux") {
-        display.log();
-        match display.target {
-            Some(target) => Some(target),
-            None => return Err(CoreError::unavailable(NO_DISPLAY)),
-        }
-    } else {
-        None
-    };
+    let target = window_target(&display)?;
     // Steps 3 and 4 now, while GTK starts: the lock and the socket come
     // first. Only on Wayland, whose socket answered: the display is there
     // (should GTK still fail on it, the lock was taken all the same).
@@ -206,28 +198,7 @@ pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
     if early {
         start_workers(&startup);
     }
-    // Exactly that backend: a Wayland session never opens the window on
-    // its X server, an X11 one never tries Wayland.
-    if let Some(target) = target {
-        gtk::gdk::set_allowed_backends(target.backend());
-    }
-    if let Err(e) = gtk::init() {
-        return Err(CoreError::unavailable(open_failed(
-            target,
-            &display.env,
-            &e.to_string(),
-        )));
-    }
-    if let Some(opened) = gtk::gdk::Display::default() {
-        tracing::info!(
-            "the window's display: {} {}",
-            opened.type_().name(),
-            opened.name()
-        );
-    }
-    if let Err(e) = adw::init() {
-        return Err(CoreError::unavailable(format!("libadwaita: {e}")));
-    }
+    init_toolkit(target, &display)?;
     if wanted && !early {
         start_workers(&startup);
     }
@@ -253,12 +224,88 @@ pub fn run(args: GuiArgs) -> Result<u8, CoreError> {
     Ok(EXIT_CODE.with(Cell::get))
 }
 
+/// Where a window opens (Linux: Wayland or X11, nothing else; other systems
+/// have GTK's own backend, `None`), logged. No display is an error, before
+/// anything is touched. The project's window and the picker both ask.
+pub(crate) fn window_target(display: &DisplayChoice) -> Result<Option<GdkTarget>, CoreError> {
+    if !cfg!(target_os = "linux") {
+        return Ok(None);
+    }
+    display.log();
+    match display.target {
+        Some(target) => Ok(Some(target)),
+        None => Err(CoreError::unavailable(NO_DISPLAY)),
+    }
+}
+
+/// GTK and libadwaita on this thread, through exactly `target`'s backend: a
+/// Wayland session never opens the window on its X server, an X11 one never
+/// tries Wayland. When GTK can't connect, the error says where it tried and
+/// what else there is.
+pub(crate) fn init_toolkit(
+    target: Option<GdkTarget>,
+    display: &DisplayChoice,
+) -> Result<(), CoreError> {
+    if let Some(target) = target {
+        gtk::gdk::set_allowed_backends(target.backend());
+    }
+    if let Err(e) = gtk::init() {
+        return Err(CoreError::unavailable(open_failed(
+            target,
+            &display.env,
+            &e.to_string(),
+        )));
+    }
+    if let Some(opened) = gtk::gdk::Display::default() {
+        tracing::info!(
+            "the window's display: {} {}",
+            opened.type_().name(),
+            opened.name()
+        );
+    }
+    if let Err(e) = adw::init() {
+        return Err(CoreError::unavailable(format!("libadwaita: {e}")));
+    }
+    Ok(())
+}
+
+/// What every window needs before its first widget: the resources, the
+/// fonts, then the theme's providers and the icons (G§3.3 step 2, G§3.14).
+pub(crate) fn install_look(theme: &Theme) {
+    register_resources();
+    if let Some(dir) = crate::theme::fonts::font_dir() {
+        for warning in crate::theme::fonts::register(&dir) {
+            tracing::warn!("{warning}");
+        }
+    }
+    let resolved = crate::theme::fonts::resolve();
+    if crate::theme::fonts::all_resolved(&resolved) {
+        tracing::info!("fonts: the three bundled families resolve");
+    } else {
+        tracing::warn!("fonts: not every bundled family resolves: {resolved:?}");
+    }
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::IconTheme::for_display(&display).add_resource_path(ICONS);
+        // The window's icon (X11's `_NET_WM_ICON`, a Wayland compositor's
+        // xdg-toplevel-icon) is the app icon, whose hicolor sizes are in
+        // the GResource too (build.rs): it resolves when Qrec isn't
+        // installed (GUI-08).
+        gtk::Window::set_default_icon_name(APP_ID);
+        theme.install(&display);
+        tracing::info!(
+            "theme {} at scale {} before the first frame",
+            crate::theme::css_name(theme.id()),
+            theme.scale()
+        );
+    }
+}
+
 /// GTK `startup`: GTK's settings. Font rendering is GTK's manual mode
 /// (`theme::fonts::configure_rendering`); test mode turns animations (but
 /// with its `animations` flag) and the cursor blink off (G§8.4). The fonts,
 /// the theme providers and the icon theme come with the window
 /// (`activate`).
-fn on_startup() {
+pub(crate) fn on_startup() {
     let Some(settings) = gtk::Settings::default() else {
         return;
     };
@@ -318,34 +365,7 @@ fn activate(app: &adw::Application, startup: Startup) {
         ui.scale,
         MotionPolicy::from_settings(ui.reduced_motion),
     );
-    register_resources();
-    // The fonts first (before any widget the window shows), then the
-    // theme's providers and the icons (G§3.3 step 2, G§3.14).
-    if let Some(dir) = crate::theme::fonts::font_dir() {
-        for warning in crate::theme::fonts::register(&dir) {
-            tracing::warn!("{warning}");
-        }
-    }
-    let resolved = crate::theme::fonts::resolve();
-    if crate::theme::fonts::all_resolved(&resolved) {
-        tracing::info!("fonts: the three bundled families resolve");
-    } else {
-        tracing::warn!("fonts: not every bundled family resolves: {resolved:?}");
-    }
-    if let Some(display) = gtk::gdk::Display::default() {
-        gtk::IconTheme::for_display(&display).add_resource_path(ICONS);
-        // The window's icon (X11's `_NET_WM_ICON`, a Wayland compositor's
-        // xdg-toplevel-icon) is the app icon, whose hicolor sizes are in
-        // the GResource too (build.rs): it resolves when Qrec isn't
-        // installed (GUI-08).
-        gtk::Window::set_default_icon_name(APP_ID);
-        theme.install(&display);
-        tracing::info!(
-            "theme {} at scale {} before the first frame",
-            crate::theme::css_name(theme.id()),
-            theme.scale()
-        );
-    }
+    install_look(&theme);
     let window = MainWindow::new(app, &name);
     // `.reduced-motion` follows the motion policy, also when it changes
     // live (WP10's switch, G§3.14).
@@ -567,6 +587,7 @@ impl App {
             qrec_core::view::blocking::BlockingAction::StopAndOpen,
             qrec_core::view::blocking::BlockingAction::Wait,
             qrec_core::view::blocking::BlockingAction::Quit,
+            qrec_core::view::blocking::BlockingAction::ChooseProject,
         ] {
             let weak = Rc::downgrade(self);
             actions.register(
@@ -580,6 +601,15 @@ impl App {
         }
         let weak = Rc::downgrade(self);
         actions.register(
+            crate::picker::OPEN_ACTION,
+            Rc::new(move || {
+                if let Some(app) = weak.upgrade() {
+                    app.open_picker();
+                }
+            }),
+        );
+        let weak = Rc::downgrade(self);
+        actions.register(
             "app.cancel-export-and-quit",
             Rc::new(move || {
                 if let Some(app) = weak.upgrade() {
@@ -590,6 +620,18 @@ impl App {
         );
     }
 
+    /// "Open or create a project…": the picker in a process of its own, so
+    /// this window and what it is doing carry on; a project it opens gets
+    /// its own window.
+    pub fn open_picker(&self) {
+        if let Err(message) = crate::picker::spawn() {
+            self.ctx.store.notify(
+                Notice::new(ToastLevel::Error, "Couldn't open the project picker")
+                    .with_body(message),
+            );
+        }
+    }
+
     /// The window's scale factor (the preview's size cap, step 5).
     pub fn scale_factor(&self) -> i32 {
         self.window.window.scale_factor()
@@ -598,9 +640,23 @@ impl App {
     /// The Session opened (step 8 is the media hub's).
     pub fn on_opened(self: &Rc<Self>) {
         tracing::info!("the project is open");
+        self.remember_project();
         if testctl::mode().on {
             log_regions_when_mapped(self);
         }
+    }
+
+    /// The project goes first in the recent list, now that it really opened
+    /// (on `qrec-gui-io`: no file I/O on the GTK thread, R1).
+    fn remember_project(&self) {
+        let prepared = self.startup.prepared();
+        let Some(dirs) = prepared.dirs.clone() else {
+            return;
+        };
+        let dir = prepared.dir.clone();
+        self.ctx.media.run_io(move || {
+            qrec_shell::projects::note_opened(&dirs, &dir, Utc::now());
+        });
     }
 
     /// After every snapshot: the close sequence waits for Idle.
@@ -1066,7 +1122,7 @@ pub fn prepare_display() {
 }
 
 /// [`prepare_display`]'s choice, else (it didn't run) the process's now.
-fn display_choice() -> DisplayChoice {
+pub(crate) fn display_choice() -> DisplayChoice {
     PREPARED
         .get()
         .cloned()

@@ -149,6 +149,16 @@ impl UserDirs {
         self.state.join(format!("gui-{}.log", &digest[..12]))
     }
 
+    /// `state/picker.log`: the project picker's log; it has no project yet.
+    pub fn picker_log(&self) -> PathBuf {
+        self.state.join("picker.log")
+    }
+
+    /// `state/recent-projects.json`: the projects the window opened (A§9.10).
+    pub fn recent_projects(&self) -> PathBuf {
+        self.state.join("recent-projects.json")
+    }
+
     /// `cache/capabilities.json`: detected ffmpeg encoders and VA-API support.
     pub fn capabilities_cache(&self) -> PathBuf {
         self.cache.join("capabilities.json")

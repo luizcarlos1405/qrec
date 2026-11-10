@@ -52,6 +52,7 @@ pub fn action_id(action: BlockingAction) -> &'static str {
         BlockingAction::StopAndOpen => "blocking.stop-and-open",
         BlockingAction::Wait => "blocking.wait",
         BlockingAction::Quit => "blocking.quit",
+        BlockingAction::ChooseProject => "blocking.choose-project",
     }
 }
 

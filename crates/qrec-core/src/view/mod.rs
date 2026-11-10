@@ -37,6 +37,7 @@ pub mod meter;
 pub mod notices;
 pub mod palette;
 pub mod panel;
+pub mod picker;
 pub mod preferences;
 pub mod ruler;
 pub mod settings;

@@ -616,13 +616,22 @@ pub struct KeylessAction {
 
 /// The palette's actions without a key: "Clear undo history" (D-19), after
 /// Redo. The core asks for its confirmation (SPEC §11's modal).
-pub const KEYLESS: &[KeylessAction] = &[KeylessAction {
-    id: "history.clear",
-    group: "Edit",
-    label: "Clear undo history",
-    cli: Some("qrec history clear --yes"),
-    after: "history.redo",
-}];
+pub const KEYLESS: &[KeylessAction] = &[
+    KeylessAction {
+        id: "history.clear",
+        group: "Edit",
+        label: "Clear undo history",
+        cli: Some("qrec history clear --yes"),
+        after: "history.redo",
+    },
+    KeylessAction {
+        id: "projects.open",
+        group: "View",
+        label: "Open or create a project…",
+        cli: Some("qrec --pick"),
+        after: "settings.open",
+    },
+];
 
 fn default_bindings(errors: &mut Vec<String>) -> Vec<Binding> {
     DEFAULTS
@@ -1539,7 +1548,9 @@ pub fn action_for(id: &str, state: &State) -> Option<Action> {
             },
         }),
         "zoom.in" | "zoom.out" | "zoom.selection" | "keys.help" | "palette.open"
-        | "settings.open" | "region.next" | "region.prev" | "app.quit" => Action::Gui,
+        | "settings.open" | "region.next" | "region.prev" | "app.quit" | "projects.open" => {
+            Action::Gui
+        }
         "layer.nudge-left" => nudge_layer(state, -1, 0),
         "layer.nudge-right" => nudge_layer(state, 1, 0),
         "layer.nudge-up" => nudge_layer(state, 0, -1),
@@ -3168,7 +3179,7 @@ mod tests {
         );
         assert_eq!(
             KEYLESS.iter().map(|a| a.id).collect::<Vec<_>>(),
-            ["history.clear"]
+            ["history.clear", "projects.open"]
         );
         assert!(map.binding(KEYLESS[0].after).is_some());
         state.runtime.disk_invalid = Some("bad".into());
