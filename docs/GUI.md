@@ -135,13 +135,14 @@ The draft frames, the icons and the art were exported the same day
 
 ### G§1.3 Precedence for visual values
 
-1. The approved pen frame or component (CLAUDE.md: `qrec-gui` follows
-   `design/qrec.pen`). Read it with the pencil MCP, read-only: `Get`,
-   `GetVariables`, `Print` with `filePath
-   /home/luizcarlos1405/RSensato/Qrec/qrec/design/qrec.pen`, and only
-   after `get_app_state` shows that file as the active document (G§0.6).
-   Never call SetVariables, Insert, Update, Delete, Replace, Move,
-   Generate or Export. Otherwise use the PNG in `design/screens/`.
+1. The approved board (CLAUDE.md: `qrec-gui` follows `design/boards/`).
+   The ported boards are pen.dev's html-css export of each approved frame
+   (2026-11-10), so exact positions, sizes, paddings, fonts and token names
+   are in the HTML: read the file, or `npx htmlboard@0.9.0 shot <file>` to
+   see it. Each names its pen frame id; the node ids in this document are
+   the `data-pencil-id`s in it. `design/qrec.pen` is an archive: the pen MCP
+   isn't needed any more. The PNGs in `design/screens/` stay as the approved
+   pictures.
 2. DESIGN.md for what pen can't express: font axes, motion, real link
    underlines, contrast and focus rules, reduced motion.
 3. BRIEF for copy and sample data, except where an approved PNG differs:
@@ -3374,8 +3375,9 @@ What `qrec` shows with nothing to open (SPEC §4.4). `Shell::gui` decides: `--pr
 
 ### G§5.1 C01–C34
 
-Metrics are in DESIGN Components and in the pen component sheets (node ids
-below; read them with `Get` while `design/qrec.pen` is active).
+Metrics are in DESIGN Components and in the component sheets
+(`design/boards/01-components/`; the node ids below are their
+`data-pencil-id`s).
 
 | Component | Pen base node | Implementation | WP |
 | --- | --- | --- | --- |

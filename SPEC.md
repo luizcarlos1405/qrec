@@ -1019,14 +1019,15 @@ qrec agent-guide                      # concise usage guide for LLM agents
 ### 15.1 Process gates (must happen in this order)
 
 1. **Install the impeccable skills** (<https://impeccable.style/>) before any
-   UI work. They aren't installed yet. The pen.dev (Pencil) MCP server is
-   already connected.
-2. **Design in pen.dev.** Every screen and state below is designed in
-   `design/qrec.pen` through the Pencil MCP and reviewed by the product owner
-   **before** any GTK UI code is written.
-3. Implement GTK views from the approved designs. Design tokens come out of
-   Pencil into `crates/qrec-gui/resources/theme/*.css` as CSS variables, so
-   the code and the design share one source.
+   UI work. They aren't installed yet.
+2. **Design on htmlboard.** Every screen and state below is designed as an
+   HTML board in `design/boards/` and reviewed by the product owner
+   **before** any GTK UI code is written. (Until 2026-11-10 the designs were
+   drawn in pen.dev, `design/qrec.pen`; they were ported to boards then.)
+3. Implement GTK views from the approved designs. Design tokens live in
+   `design/tokens/qrec-tokens.json` and are generated into
+   `crates/qrec-gui/resources/theme/*.css` and `design/boards/themes.css` as
+   CSS variables, so the code and the design share one source.
 
 **Screens and states to design:**
 

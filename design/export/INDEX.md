@@ -1,5 +1,7 @@
 # design/qrec.pen, exported
 
+> Since 2026-11-10 the designs are the htmlboard boards in `../boards/` (every frame ported from `qrec.pen`, see `../README.md`). This folder keeps the icon and art exports the GUI tests read.
+
 Read-only exports of `design/qrec.pen` made through the pen.dev MCP on 2026-10-17, while the product owner had the file open. The `.pen` file is encrypted; these are the copies tools can read. Regenerate them the same way after the design changes.
 
 - `html/` (not committed, ignored): pen.dev's html-css export of a frame (no scaffold), made through the pen MCP when a tool needs exact positions, sizes, paddings, fonts and resolved colors (Swamp Night) or the icons as inline SVG (`data-icon-name`). `design/qrec.pen` is the source; read it through the pen MCP first. `crates/qrec-gui/tests/art.rs` regenerates the art from `html/artwork.html` and `tests/icons.rs` the Stop square from `html/S04.html` when those are present.
