@@ -745,6 +745,7 @@ fn command_for_op(state: &State, op: &Op) -> Option<Command> {
                     }),
                     fit: Some(if *cover { Fit::Cover } else { Fit::Contain }),
                     locked: Some(*visible && *cover),
+                    source: None,
                 },
             }
         }

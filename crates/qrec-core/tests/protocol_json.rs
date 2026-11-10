@@ -110,6 +110,9 @@ fn all_commands() -> Vec<Command> {
                 }),
                 fit: Some(Fit::Cover),
                 locked: Some(true),
+                source: Some(VideoSourceArg::Camera {
+                    device: "/dev/video2".into(),
+                }),
             },
         },
         Command::LayerOrder {

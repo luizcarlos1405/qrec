@@ -270,6 +270,7 @@ pub fn facts_needed(state: &State, cmd: &Command) -> FactsNeeded {
     match cmd {
         Command::Init { .. } => need.folder_name = true,
         Command::LayerAdd { .. } => need.video_sources = true,
+        Command::LayerSet { patch, .. } => need.video_sources = patch.source.is_some(),
         Command::SceneSave { .. }
         | Command::SceneUse { .. }
         | Command::SceneRename { .. }

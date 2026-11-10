@@ -707,5 +707,113 @@ expression: "keys_view(&resolve(\"\"))"
     "contexts": [
       "canvas"
     ]
+  },
+  {
+    "id": "scene.use-1",
+    "group": "Canvas",
+    "label": "Use scene 1",
+    "keys": [
+      "alt+1"
+    ],
+    "cli": "qrec scene use",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "scene.use-2",
+    "group": "Canvas",
+    "label": "Use scene 2",
+    "keys": [
+      "alt+2"
+    ],
+    "cli": "qrec scene use",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "scene.use-3",
+    "group": "Canvas",
+    "label": "Use scene 3",
+    "keys": [
+      "alt+3"
+    ],
+    "cli": "qrec scene use",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "scene.use-4",
+    "group": "Canvas",
+    "label": "Use scene 4",
+    "keys": [
+      "alt+4"
+    ],
+    "cli": "qrec scene use",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "scene.use-5",
+    "group": "Canvas",
+    "label": "Use scene 5",
+    "keys": [
+      "alt+5"
+    ],
+    "cli": "qrec scene use",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "scene.use-6",
+    "group": "Canvas",
+    "label": "Use scene 6",
+    "keys": [
+      "alt+6"
+    ],
+    "cli": "qrec scene use",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "scene.use-7",
+    "group": "Canvas",
+    "label": "Use scene 7",
+    "keys": [
+      "alt+7"
+    ],
+    "cli": "qrec scene use",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "scene.use-8",
+    "group": "Canvas",
+    "label": "Use scene 8",
+    "keys": [
+      "alt+8"
+    ],
+    "cli": "qrec scene use",
+    "contexts": [
+      "global"
+    ]
+  },
+  {
+    "id": "scene.use-9",
+    "group": "Canvas",
+    "label": "Use scene 9",
+    "keys": [
+      "alt+9"
+    ],
+    "cli": "qrec scene use",
+    "contexts": [
+      "global"
+    ]
   }
 ]

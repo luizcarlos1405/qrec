@@ -592,7 +592,27 @@ const DEFAULTS: &[Def] = &[
     def("layer.nudge-right-10", "Canvas", "Nudge layer right 10 px", &["shift+Right"], CLI_NUDGE_LAYER, &[Canvas]),
     def("layer.nudge-up-10", "Canvas", "Nudge layer up 10 px", &["shift+Up"], CLI_NUDGE_LAYER, &[Canvas]),
     def("layer.nudge-down-10", "Canvas", "Nudge layer down 10 px", &["shift+Down"], CLI_NUDGE_LAYER, &[Canvas]),
+    // Saved scenes (SPEC §5.6): the first nine, in Live. The palette names
+    // each by its scene and leaves out the ones no scene has.
+    def("scene.use-1", "Canvas", "Use scene 1", &["alt+1"], CLI_SCENE_USE, &[Global]),
+    def("scene.use-2", "Canvas", "Use scene 2", &["alt+2"], CLI_SCENE_USE, &[Global]),
+    def("scene.use-3", "Canvas", "Use scene 3", &["alt+3"], CLI_SCENE_USE, &[Global]),
+    def("scene.use-4", "Canvas", "Use scene 4", &["alt+4"], CLI_SCENE_USE, &[Global]),
+    def("scene.use-5", "Canvas", "Use scene 5", &["alt+5"], CLI_SCENE_USE, &[Global]),
+    def("scene.use-6", "Canvas", "Use scene 6", &["alt+6"], CLI_SCENE_USE, &[Global]),
+    def("scene.use-7", "Canvas", "Use scene 7", &["alt+7"], CLI_SCENE_USE, &[Global]),
+    def("scene.use-8", "Canvas", "Use scene 8", &["alt+8"], CLI_SCENE_USE, &[Global]),
+    def("scene.use-9", "Canvas", "Use scene 9", &["alt+9"], CLI_SCENE_USE, &[Global]),
 ];
+
+const CLI_SCENE_USE: Option<&str> = Some("qrec scene use");
+
+/// The saved scene `scene.use-N` names (N from 1), if the library has one.
+pub fn scene_for_key(id: &str, state: &State) -> Option<String> {
+    let n: usize = id.strip_prefix("scene.use-")?.parse().ok()?;
+    let scenes = state.runtime.saved_scenes.scenes();
+    scenes.get(n.checked_sub(1)?).map(|s| s.name.clone())
+}
 
 /// An action the command palette lists that no key runs (GUI D-19):
 /// [`action_for`] knows its id like a binding's, `keys.toml` doesn't.
@@ -615,6 +635,27 @@ pub const KEYLESS: &[KeylessAction] = &[
         label: "Clear undo history",
         cli: Some("qrec history clear --yes"),
         after: "history.redo",
+    },
+    KeylessAction {
+        id: "scene.save-as",
+        group: "Canvas",
+        label: "Save scene as…",
+        cli: Some("qrec scene save <name>"),
+        after: "scene.use-9",
+    },
+    KeylessAction {
+        id: "scene.save",
+        group: "Canvas",
+        label: "Save changes to the scene",
+        cli: Some("qrec scene save"),
+        after: "scene.use-9",
+    },
+    KeylessAction {
+        id: "scene.revert",
+        group: "Canvas",
+        label: "Revert scene to saved",
+        cli: Some("qrec scene use --revert"),
+        after: "scene.use-9",
     },
     KeylessAction {
         id: "projects.open",
@@ -1548,8 +1589,24 @@ pub fn action_for(id: &str, state: &State) -> Option<Action> {
             },
         }),
         "zoom.in" | "zoom.out" | "zoom.selection" | "keys.help" | "palette.open"
-        | "settings.open" | "region.next" | "region.prev" | "app.quit" | "projects.open" => {
-            Action::Gui
+        | "settings.open" | "region.next" | "region.prev" | "app.quit" | "projects.open"
+        | "scene.save-as" => Action::Gui,
+        id if id.starts_with("scene.use-") => match scene_for_key(id, state) {
+            None => Action::Unavailable("No saved scene has this key".to_owned()),
+            Some(_) if state.ui.canvas_mode != CanvasMode::Live => {
+                Action::Unavailable("Scenes switch in Live".to_owned())
+            }
+            Some(name) => run(Command::SceneUse { name: Some(name) }),
+        },
+        "scene.save" | "scene.revert" => {
+            let view = crate::scenes::view(state, None);
+            if !view.current.edited {
+                Action::Unavailable("The scene in use has no changes".to_owned())
+            } else if id == "scene.save" {
+                run(Command::SceneSave { name: None })
+            } else {
+                run(Command::SceneUse { name: None })
+            }
         }
         "layer.nudge-left" => nudge_layer(state, -1, 0),
         "layer.nudge-right" => nudge_layer(state, 1, 0),
@@ -3179,7 +3236,13 @@ mod tests {
         );
         assert_eq!(
             KEYLESS.iter().map(|a| a.id).collect::<Vec<_>>(),
-            ["history.clear", "projects.open"]
+            [
+                "history.clear",
+                "scene.save-as",
+                "scene.save",
+                "scene.revert",
+                "projects.open"
+            ]
         );
         assert!(map.binding(KEYLESS[0].after).is_some());
         state.runtime.disk_invalid = Some("bad".into());

@@ -402,6 +402,7 @@ impl Builder {
                             crop: p.crop,
                             fit: p.fit.map(Into::into),
                             locked: p.locked,
+                            source: None,
                         },
                     },
                     Msg,

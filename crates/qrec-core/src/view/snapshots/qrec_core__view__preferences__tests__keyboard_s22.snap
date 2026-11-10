@@ -66,4 +66,13 @@ Nudge layer left 10 px                   [Shift][←]               Default
 Nudge layer right 10 px                  [Shift][→]               Default
 Nudge layer up 10 px                     [Shift][↑]               Default
 Nudge layer down 10 px                   [Shift][↓]               Default
+Use scene 1                              [Alt][1]                 Default
+Use scene 2                              [Alt][2]                 Default
+Use scene 3                              [Alt][3]                 Default
+Use scene 4                              [Alt][4]                 Default
+Use scene 5                              [Alt][5]                 Default
+Use scene 6                              [Alt][6]                 Default
+Use scene 7                              [Alt][7]                 Default
+Use scene 8                              [Alt][8]                 Default
+Use scene 9                              [Alt][9]                 Default
 -- Changes are saved to ~/.config/qrec/keys.toml.

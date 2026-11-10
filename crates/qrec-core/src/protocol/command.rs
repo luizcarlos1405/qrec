@@ -762,6 +762,10 @@ pub struct LayerPatch {
     pub fit: Option<Fit>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locked: Option<bool>,
+    /// Project scene only: another screen or camera in the layer's place
+    /// (the Replace… of a source that isn't connected, SPEC §5.6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<VideoSourceArg>,
 }
 
 /// Audio track fields to change; absent fields are kept.

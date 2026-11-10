@@ -93,8 +93,59 @@ pub fn modal(
             overwrite(error, facts, "Saving the frame here overwrites it.")
         }
         Command::HistoryClear => history_clear(details),
+        Command::SceneDelete { name } => scene_delete(name, state),
+        Command::SceneSave { name: Some(name) } => scene_replace(name, state),
         _ => fallback(error),
     }
+}
+
+/// Deleting a saved scene (SPEC §5.6): outside the undo history, so it
+/// asks. The scene with what it holds, then "Delete scene".
+fn scene_delete(name: &str, state: &State) -> ModalContent {
+    let scenes = state.runtime.saved_scenes.scenes();
+    let saved = crate::scenes::find(scenes, name).map(|i| &scenes[i]);
+    let shown = saved.map_or(name, |s| s.name.as_str());
+    let list = saved
+        .map(|s| {
+            vec![(
+                s.name.clone(),
+                Some(format!(
+                    "{} · {}",
+                    counted(s.scene.layers.len() as u64, "layer", "layers"),
+                    counted(s.scene.audio.len() as u64, "audio track", "audio tracks")
+                )),
+            )]
+        })
+        .unwrap_or_default();
+    ModalContent {
+        title: "Peel off this scene?".to_owned(),
+        ..content(
+            format!("Delete the scene \u{201c}{shown}\u{201d} from this computer."),
+            Some(
+                "Every project here loses it from the scene menu. Takes recorded with it \
+                 keep their own layout, and no media is touched."
+                    .to_owned(),
+            ),
+            list,
+            "Delete scene".to_owned(),
+        )
+    }
+}
+
+/// Saving under a name a saved scene has: it is replaced.
+fn scene_replace(name: &str, state: &State) -> ModalContent {
+    let scenes = state.runtime.saved_scenes.scenes();
+    let shown = crate::scenes::find(scenes, name).map_or(name, |i| scenes[i].name.as_str());
+    content(
+        format!("Replace the saved scene \u{201c}{shown}\u{201d}?"),
+        Some(
+            "It becomes the scene the panel shows now, in every project on this computer. \
+             Takes recorded with it keep their own layout."
+                .to_owned(),
+        ),
+        Vec::new(),
+        "Replace scene".to_owned(),
+    )
 }
 
 /// The confirmation's buttons with the destructive verb `confirm`.

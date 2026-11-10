@@ -166,6 +166,10 @@ pub struct LayerRow {
     pub missing: Option<String>,
     /// D-43, or no edit target (D-06).
     pub enabled: bool,
+    /// Its source isn't connected (`error` says which): the row offers
+    /// Replace… (SPEC §5.6).
+    #[serde(default)]
+    pub not_connected: bool,
 }
 
 /// The layer rows of the scene the canvas shows; `live` gives the errors
@@ -192,6 +196,7 @@ pub fn layer_rows(state: &State, live: &LiveSources) -> Vec<LayerRow> {
             },
             missing: layer.missing.then(|| MISSING_IN_TAKE.to_owned()),
             enabled: editable,
+            not_connected: false,
         })
         .collect()
 }
@@ -1781,4 +1786,139 @@ mod tests {
         assert_eq!(add_enabled(&s07()), Err(ADD_IN_LIVE.into()));
         assert_eq!(add_enabled(&recording()), Err("Not while recording".into()));
     }
+}
+
+// ------------------------------------------------------------ saved scenes
+
+/// The scene bar under the header (SPEC §5.6, board 07-named-scenes): the
+/// saved scene in use, the menu's rows and what its actions can do.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneBar {
+    /// The saved scene in use; `None`: "No saved scene".
+    pub name: Option<String>,
+    pub edited: bool,
+    /// The project scene, for the thumbnail.
+    pub scene: Scene,
+    pub canvas: (u32, u32),
+    /// The menu's rows, in saved order.
+    pub rows: Vec<crate::scenes::SceneRow>,
+    /// Why `scenes.json` can't be read.
+    pub unreadable: Option<String>,
+    /// Switching, saving: the gates of `SceneUse` (not while recording).
+    pub enabled: Result<(), String>,
+}
+
+/// The scene bar, shown with the project scene (not in a take layout).
+pub fn scene_bar(state: &State) -> Option<SceneBar> {
+    if !matches!(
+        edit_target(&state.project, &state.ui),
+        Some(SceneTarget::Project) | None
+    ) || state.ui.canvas_mode != CanvasMode::Live
+    {
+        return None;
+    }
+    let view = crate::scenes::view(state, None);
+    let probe = Command::SceneUse { name: None };
+    Some(SceneBar {
+        name: view.current.name,
+        edited: view.current.edited,
+        scene: state.project.scene.clone(),
+        canvas: (state.project.canvas.width, state.project.canvas.height),
+        rows: view.scenes,
+        unreadable: view.unreadable,
+        enabled: enabled(state, &probe),
+    })
+}
+
+/// "DP-2 isn't connected": a Live layer whose screen or camera discovery
+/// didn't find (SPEC §5.6). `screens` and `cameras` are what it found; an
+/// empty list of screens says nothing (discovery may have failed).
+pub fn not_connected(
+    source: &VideoSource,
+    screens: &[ScreenInfo],
+    cameras: &[CameraInfo],
+) -> Option<String> {
+    match source {
+        VideoSource::Screen { output, .. } => (!screens.is_empty()
+            && !screens.iter().any(|s| &s.output == output))
+        .then(|| format!("{output} isn't connected")),
+        VideoSource::Camera { device, .. } => (!cameras.iter().any(|c| &c.device == device))
+            .then(|| format!("{device} isn't connected")),
+    }
+}
+
+/// Marks the Live rows whose source isn't connected (their error).
+pub fn mark_not_connected(
+    rows: &mut [LayerRow],
+    state: &State,
+    screens: &[ScreenInfo],
+    cameras: &[CameraInfo],
+) {
+    if state.ui.canvas_mode != CanvasMode::Live {
+        return;
+    }
+    for row in rows {
+        if let Some(layer) = state.project.scene.layer(&row.layer)
+            && let Some(why) = not_connected(&layer.source, screens, cameras)
+        {
+            row.error = Some(why);
+            row.not_connected = true;
+        }
+    }
+}
+
+/// One saved scene in the take banner's "Apply a saved scene" submenu.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplySavedItem {
+    pub name: String,
+    /// "Matches 2 of 2 layers", "Hides Main screen", "Take 5 has no DP-2 file".
+    pub detail: String,
+    /// `None` when it shares no layer with the take.
+    pub command: Option<Command>,
+}
+
+/// The saved scenes that can be applied to take `take` (board 03).
+pub fn apply_saved_items(state: &State, take: &TakeId) -> Vec<ApplySavedItem> {
+    let Some(t) = state.project.take(take) else {
+        return Vec::new();
+    };
+    state
+        .runtime
+        .saved_scenes
+        .scenes()
+        .iter()
+        .map(|saved| {
+            let (_, matched) = crate::scenes::onto_take(saved, &t.scene);
+            let hidden: Vec<&str> = t
+                .scene
+                .layers
+                .iter()
+                .filter(|l| {
+                    !saved
+                        .scene
+                        .layers
+                        .iter()
+                        .any(|s| crate::scenes::same_source(&s.source, &l.source))
+                })
+                .map(|l| l.name.as_str())
+                .collect();
+            let detail = if matched == 0 {
+                format!("Take {} has none of its sources", take.number())
+            } else if let [one] = hidden.as_slice() {
+                format!("Hides {one}")
+            } else {
+                format!("Matches {matched} of {} layers", t.scene.layers.len())
+            };
+            ApplySavedItem {
+                name: saved.name.clone(),
+                detail,
+                command: (matched > 0).then(|| Command::SceneApplySaved {
+                    name: saved.name.clone(),
+                    take: take.clone(),
+                }),
+            }
+        })
+        .collect()
 }
