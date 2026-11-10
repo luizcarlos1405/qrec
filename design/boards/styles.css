@@ -1,0 +1,126 @@
+/* Qrec on htmlboard: the Swamp Night tokens and the chrome the GTK views use
+   (DESIGN.md, Components). The tokens file is generated from design/qrec.pen. */
+@import url("../tokens/swamp-night.css");
+@import url("https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;600;700;800&family=Fraunces:opsz,wght,SOFT,WONK@9..144,600..700,50..100,1&family=JetBrains+Mono:wght@500;600&display=swap");
+
+:root {
+  color-scheme: dark;
+  --e1: 0 2px 6px var(--qrec-shadow-e1);
+  --e2: 0 8px 24px var(--qrec-shadow-e2), 0 1px 2px var(--qrec-shadow-e2-contact);
+  --e3: 0 20px 48px var(--qrec-shadow-e3);
+  --ui: var(--qrec-font-ui), "Atkinson Hyperlegible", Cantarell, sans-serif;
+  --mono: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
+  --display: var(--qrec-font-display), "Noto Serif", serif;
+}
+
+* { box-sizing: border-box; margin: 0; }
+html, body { background: var(--qrec-bg); color: var(--qrec-text); }
+body { font: 400 14px/20px var(--ui); -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+
+/* Type roles */
+.title { font: 600 16px/22px var(--ui); }
+.heading { font: 700 14px/20px var(--ui); }
+.body-strong { font-weight: 600; }
+.body-sm { font-size: 13px; line-height: 18px; }
+.caption { font-size: 12px; line-height: 16px; }
+.caption-strong { font: 600 12px/16px var(--ui); }
+.mono { font: 500 13px/18px var(--mono); }
+.mono-sm { font: 500 12px/16px var(--mono); }
+.mono-xs { font: 500 11px/14px var(--mono); }
+.display-sm { font: 600 24px/30px var(--display); letter-spacing: -0.005em; font-variation-settings: "SOFT" 50, "WONK" 1; }
+.muted { color: var(--qrec-muted); }
+.accent-text { color: var(--qrec-accent-text); }
+.record-text { color: var(--qrec-record-text); }
+.warning-text { color: var(--qrec-warning-text); }
+
+/* Icons: lucide, the set the GUI ships (crates/qrec-gui/resources/icons) */
+.ic { display: inline-block; flex: none; width: 16px; height: 16px; background: currentColor;
+  -webkit-mask: var(--i) center / contain no-repeat; mask: var(--i) center / contain no-repeat; }
+.ic.s12 { width: 12px; height: 12px; } .ic.s14 { width: 14px; height: 14px; } .ic.s20 { width: 20px; height: 20px; }
+.i-monitor { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/monitor.svg); }
+.i-monitor-x { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/monitor-x.svg); }
+.i-webcam { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/webcam.svg); }
+.i-mic { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/mic.svg); }
+.i-volume { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/volume-2.svg); }
+.i-plus { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/plus.svg); }
+.i-more { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/ellipsis-vertical.svg); }
+.i-chevron-down { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/chevron-down.svg); }
+.i-chevron-right { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/chevron-right.svg); }
+.i-check { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/check.svg); }
+.i-pencil { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/pencil.svg); }
+.i-trash { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/trash-2.svg); }
+.i-rotate { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/rotate-ccw.svg); }
+.i-save { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/save.svg); }
+.i-copy { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/copy.svg); }
+.i-alert { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/triangle-alert.svg); }
+.i-x { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/x.svg); }
+.i-scissors { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/scissors.svg); }
+.i-search { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/search.svg); }
+.i-layers { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/layers.svg); }
+.i-arrow-left-right { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/arrow-left-right.svg); }
+.i-info { --i: url(https://unpkg.com/lucide-static@0.460.0/icons/info.svg); }
+
+/* Key caps (medium; .sm in tooltips) */
+.keys { display: inline-flex; gap: 2px; }
+.kc { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 5px;
+  border-radius: var(--qrec-radius-sm); background: var(--qrec-keycap); border: 1px solid var(--qrec-border);
+  border-bottom-width: 2px; font: 600 11px/14px var(--mono); color: var(--qrec-text); }
+.kc.on-fill { background: none; border-color: var(--qrec-text-on-accent-45); color: var(--qrec-text-on-accent); }
+
+/* Buttons (medium 32, large 40) */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 32px; padding: 0 12px;
+  border-radius: var(--qrec-radius-md); font-weight: 600; white-space: nowrap; }
+.btn.lg { height: 40px; padding: 0 16px; }
+.btn.primary { background: var(--qrec-accent); color: var(--qrec-text-on-accent); }
+.btn.secondary { background: var(--qrec-raised); border: 1px solid var(--qrec-border); }
+.btn.destructive { background: var(--qrec-record); color: var(--qrec-text-on-record); }
+.btn.flat:hover, .row:hover { background: var(--qrec-hover); }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px;
+  border-radius: var(--qrec-radius-md); color: var(--qrec-text); }
+.icon-btn.md { width: 32px; height: 32px; }
+.disabled { opacity: 0.45; }
+.focus { outline: 2px solid var(--qrec-focus-ring); outline-offset: 2px; }
+
+/* Fields */
+.field { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; background: var(--qrec-field);
+  border: 1px solid var(--qrec-border-strong); border-radius: var(--qrec-radius-md); }
+.field.focused { border-color: var(--qrec-accent); box-shadow: 0 0 0 1px var(--qrec-accent); }
+.field .caret { width: 1px; height: 16px; background: var(--qrec-text); margin-left: -7px; }
+
+/* The main window: approved crops of S02 / S06 around a live panel */
+.window { position: relative; width: 1600px; height: 1000px; overflow: hidden; background: var(--qrec-bg); }
+.window > .header { position: absolute; left: 0; top: 0; }
+.window > .stage { position: absolute; left: 0; top: 48px; }
+.window > .hints { position: absolute; left: 0; bottom: 0; }
+.window > .panel { position: absolute; left: 1216px; top: 48px; height: 920px; }
+.scrim { position: absolute; inset: 0; background: var(--qrec-scrim); }
+
+/* Onion layers panel (384 wide, surface, left hairline) */
+.panel { width: 384px; height: 920px; background: var(--qrec-surface); border-left: 1px solid var(--qrec-border); position: relative; }
+.panel-head { display: flex; align-items: flex-start; justify-content: space-between; padding: 8px 16px 0; height: 48px; }
+.panel-body { padding: 0 16px; }
+.section-head { display: flex; align-items: baseline; gap: 8px; height: 32px; padding-top: 8px; margin-top: 16px; }
+.section-head .caption { color: var(--qrec-muted); }
+.add-row { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 8px; font-weight: 600; border-radius: var(--qrec-radius-md); }
+
+/* Popovers and menus (raised, lg, e2, 1 px border) */
+.popover { position: absolute; background: var(--qrec-raised); border: 1px solid var(--qrec-border);
+  border-radius: var(--qrec-radius-lg); box-shadow: var(--e2); z-index: 5; }
+.menu { padding: 6px; }
+.menu-item { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border-radius: var(--qrec-radius-md); white-space: nowrap; }
+.menu-item .grow, .grow { flex: 1; min-width: 0; }
+.menu-item.hover { background: var(--qrec-hover); }
+.menu-item.danger { color: var(--qrec-record-text); }
+.menu-sep { height: 1px; background: var(--qrec-border); margin: 6px -6px; }
+.menu-label { padding: 6px 10px 4px; font: 700 12px/16px var(--ui); color: var(--qrec-muted); }
+
+/* Toasts and modals */
+.toast { position: absolute; display: flex; gap: 12px; align-items: flex-start; padding: 14px 12px 14px 16px; width: 520px;
+  background: var(--qrec-raised); border: 1px solid var(--qrec-border); border-radius: var(--qrec-radius-lg); box-shadow: var(--e2); }
+.modal { position: absolute; width: 520px; padding: 24px; background: var(--qrec-raised); border: 1px solid var(--qrec-border);
+  border-radius: var(--qrec-radius-xl); box-shadow: var(--e3); }
+.modal-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+
+/* Notes on the board (not product UI) */
+.note { font: 500 12px/16px var(--mono); color: var(--qrec-muted); }

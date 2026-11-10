@@ -25,6 +25,18 @@ The GTK GUI is designed in pen.dev before any UI code is written ([SPEC](../SPEC
 | 10000 | Row 4: S18 at x 0 and S18b at x 8600 (the other frames in this row are later drafts) |
 | 11200 | Later drafts |
 
+## HTML boards (htmlboard)
+
+Features designed after the slice start as HTML boards in [`boards/`](boards/), shown on an [htmlboard](https://www.npmjs.com/package/htmlboard) canvas. Each board is a plain HTML file that uses the Swamp Night tokens (`tokens/swamp-night.css`). Window-sized boards keep the approved PNG crops (S02, S06) around the new parts, so only what changed is redrawn.
+
+```sh
+cd design && npx htmlboard@0.9.0 boards --root . -p 3060   # then open http://localhost:3060
+```
+
+- `boards/01-named-scenes/` is issue #3, named scenes. Its notes board lists the open questions.
+- Shared chrome lives in `boards/styles.css` and `boards/components/` (`<layer-row>`, `<audio-row>`, `<scene-panel state="…">`). `npx htmlboard@0.9.0 catalog boards` lists them.
+- The agent skills are in `.claude/skills/htmlboard*` (and `.agents/skills/`). After an htmlboard upgrade, run `npx htmlboard@<version> skills install` and bump the version above.
+
 ## Screens in the slice
 
 ### Row 1 · Record loop (y 6400)
