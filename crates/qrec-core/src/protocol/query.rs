@@ -34,4 +34,6 @@ pub enum Query {
     },
     /// The effective keymap.
     Keys,
+    /// `ScenesView`: the saved scenes and which one is in use (A§9.11).
+    Scenes,
 }

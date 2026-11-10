@@ -171,6 +171,46 @@ pub(crate) fn job(job: &Job) -> String {
     }
 }
 
+/// `qrec scene list`: the saved scenes in their order, with their `Alt`
+/// key, and which one the project uses.
+pub(crate) fn scenes(view: &qrec_core::scenes::ScenesView) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(why) = &view.unreadable {
+        lines.push(format!("scenes.json can't be read: {why}"));
+        return lines;
+    }
+    if view.scenes.is_empty() {
+        lines.push("No saved scenes. `qrec scene save <name>` saves the project scene.".to_owned());
+        return lines;
+    }
+    let table: Vec<Vec<String>> = view
+        .scenes
+        .iter()
+        .map(|s| {
+            let mark = match (s.in_use, view.current.edited) {
+                (true, true) => "in use, edited",
+                (true, false) => "in use",
+                _ => "",
+            };
+            vec![
+                s.key.map_or_else(String::new, |k| format!("Alt+{k}")),
+                s.name.clone(),
+                s.summary.clone(),
+                mark.to_owned(),
+            ]
+        })
+        .collect();
+    lines.extend(layout(
+        &["KEY", "SCENE", "SOURCES", ""],
+        &table,
+        &[Align::Left],
+    ));
+    if view.current.name.is_none() {
+        lines.push("The project scene is no saved scene.".to_owned());
+    }
+    lines
+}
+
 /// `qrec take list`.
 pub(crate) fn take_list(rows: &[TakeRow]) -> Vec<String> {
     if rows.is_empty() {

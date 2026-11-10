@@ -131,6 +131,8 @@ pub enum View {
     Record,
     /// `qrec create`: the new `Project` in `result`, and where it is.
     Create,
+    /// `Query::Scenes`: the saved scenes.
+    Scenes,
 }
 
 /// What to do about a GUI-only command (`seek`, `play`, `pause`) when no
@@ -284,7 +286,7 @@ impl Builder {
                 },
                 Msg,
             ),
-            Cmd::Scene(scene) => self.scene(scene),
+            Cmd::Scene(scene) => self.scene(scene)?,
             Cmd::Record(record) => self.record(record),
             Cmd::Take(take) => self.take(take),
             Cmd::Clip(clip) => self.clip(clip)?,
@@ -356,9 +358,9 @@ impl Builder {
         plan
     }
 
-    fn scene(&self, scene: &SceneCmd) -> ProjectPlan {
+    fn scene(&self, scene: &SceneCmd) -> Result<ProjectPlan, CoreError> {
         use View::Command as Msg;
-        match scene {
+        Ok(match scene {
             SceneCmd::Layer(LayerCmd::Add(add)) => {
                 let (source, layout) = match add {
                     LayerAddCmd::Screen(a) => (
@@ -458,6 +460,21 @@ impl Builder {
                 },
                 Msg,
             ),
+            SceneCmd::Apply(args) if args.scene.is_some() => {
+                let [take] = args.take.as_slice() else {
+                    return Err(CoreError::usage(
+                        "`qrec scene apply --scene` applies to one take: give one --take",
+                    ));
+                };
+                self.command(
+                    "scene apply",
+                    Command::SceneApplySaved {
+                        name: args.scene.clone().unwrap_or_default(),
+                        take: take.clone(),
+                    },
+                    Msg,
+                )
+            }
             SceneCmd::Apply(args) => {
                 let from = args
                     .from_take
@@ -472,7 +489,45 @@ impl Builder {
                 };
                 self.command("scene apply", Command::SceneApply { from, to }, Msg)
             }
-        }
+            SceneCmd::List => self.query("scene list", Query::Scenes, View::Scenes),
+            SceneCmd::Save(args) => self.command(
+                "scene save",
+                Command::SceneSave {
+                    name: args.name.clone(),
+                },
+                Msg,
+            ),
+            SceneCmd::Use(args) => self.command(
+                "scene use",
+                Command::SceneUse {
+                    name: if args.revert { None } else { args.name.clone() },
+                },
+                Msg,
+            ),
+            SceneCmd::Rename(args) => self.command(
+                "scene rename",
+                Command::SceneRename {
+                    name: args.name.clone(),
+                    to: args.to.clone(),
+                },
+                Msg,
+            ),
+            SceneCmd::Duplicate(args) => self.command(
+                "scene duplicate",
+                Command::SceneDuplicate {
+                    name: args.name.clone(),
+                    to: args.to.clone(),
+                },
+                Msg,
+            ),
+            SceneCmd::Rm(args) => self.command(
+                "scene rm",
+                Command::SceneDelete {
+                    name: args.name.clone(),
+                },
+                Msg,
+            ),
+        })
     }
 
     fn record(&self, record: &RecordCmd) -> ProjectPlan {

@@ -641,6 +641,30 @@ fn parsed_values_are_typed() {
             take: vec![],
             to_all_takes: true,
             from_take: Some(take("take-0001")),
+            scene: None,
+        }))
+    );
+    assert_eq!(
+        cmd("qrec scene apply --scene Interview --take take-0005"),
+        Cmd::Scene(SceneCmd::Apply(SceneApplyArgs {
+            take: vec![take("take-0005")],
+            to_all_takes: false,
+            from_take: None,
+            scene: Some("Interview".into()),
+        }))
+    );
+    assert_eq!(
+        cmd("qrec scene use --revert"),
+        Cmd::Scene(SceneCmd::Use(SceneUseArgs {
+            name: None,
+            revert: true,
+        }))
+    );
+    assert_eq!(
+        cmd("qrec scene duplicate Talk --as Other"),
+        Cmd::Scene(SceneCmd::Duplicate(SceneDuplicateArgs {
+            name: "Talk".into(),
+            to: Some("Other".into()),
         }))
     );
     assert_eq!(
@@ -967,7 +991,7 @@ fn json_usage_errors_are_one_object_on_stdout() {
         |line| serde_json::from_str::<Value>(&run(line).1).unwrap()["error"]["message"].clone();
     assert_eq!(
         message("qrec --json scene"),
-        "'qrec scene' requires a subcommand: layer, audio, apply"
+        "'qrec scene' requires a subcommand: layer, audio, apply, list, save, use, rename, duplicate, rm"
     );
     assert_eq!(
         message("qrec --json scene layer"),

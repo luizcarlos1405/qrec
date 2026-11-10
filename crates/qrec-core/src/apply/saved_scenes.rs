@@ -84,15 +84,11 @@ pub fn scene_save(state: &State, ctx: &Ctx, name: Option<String>) -> Result<Outc
         project.autocut.track.as_ref(),
     );
     let replaced = lib.find(&name);
-    let in_use = state
-        .ui
-        .scene
-        .as_deref()
-        .is_some_and(|s| s.eq_ignore_ascii_case(&name));
     let text = match replaced {
         Some(i) => {
-            // Saving changes to the scene in use needs no question.
-            if !(ctx.confirmed || cmd_has_no_name(&cmd) || in_use) {
+            // Saving changes (no name) needs no question; a name that
+            // exists does, even the one in use (the Save as dialog's rule).
+            if !(ctx.confirmed || cmd_has_no_name(&cmd)) {
                 return Err(CoreError::confirmation_required(format!(
                     "replace the saved scene {:?}",
                     lib.scenes[i].name

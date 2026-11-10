@@ -887,6 +887,77 @@ fn scene_commands_return_seqs_and_ids() {
     remove.ok();
 }
 
+/// Saved scenes (SPEC §5.6): saved on this computer, listed with the one
+/// in use, switched to in one undo step, and the library outlives projects.
+#[test]
+fn saved_scenes_round_trip_through_the_cli() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("scenes");
+    qrec(&env, &dir, &["init"]).ok();
+    for args in [
+        &["scene", "layer", "add", "screen", "--output", "FAKE-1"][..],
+        &["scene", "layer", "add", "camera", "--device", "/dev/fake0"],
+    ] {
+        qrec(&env, &dir, args).ok();
+    }
+    let empty = qrec(&env, &dir, &["scene", "list"]);
+    empty.ok();
+    assert!(empty.stdout.contains("No saved scenes"), "{}", empty.stdout);
+
+    qrec(&env, &dir, &["scene", "save", "Screen + camera"]).ok();
+    let scenes_json = env.config_home().join("qrec").join("scenes.json");
+    assert!(scenes_json.is_file(), "saved next to config.toml");
+    let list = qrec(&env, &dir, &["scene", "list", "--json"]);
+    list.ok();
+    let view = &list.reply()["data"];
+    assert_eq!(view["scenes"][0]["name"], "Screen + camera");
+    assert_eq!(view["scenes"][0]["key"], 1);
+    assert_eq!(view["current"]["name"], "Screen + camera");
+    assert_eq!(view["current"]["edited"], false);
+
+    // Camera only: a second scene, then back to the first in one step.
+    qrec(&env, &dir, &["scene", "layer", "remove", "L1"]).ok();
+    let list = qrec(&env, &dir, &["scene", "list"]);
+    assert!(list.stdout.contains("in use, edited"), "{}", list.stdout);
+    let replace = qrec(&env, &dir, &["scene", "save", "screen + CAMERA"]);
+    assert_eq!(replace.code, Some(4), "a name that exists asks first");
+    qrec(&env, &dir, &["scene", "save", "Camera only"]).ok();
+    let back = qrec(&env, &dir, &["scene", "use", "Screen + camera", "--json"]);
+    back.ok();
+    let status = qrec(&env, &dir, &["status", "--json"]);
+    let layers = &status.reply()["data"]["project"]["scene"]["layers"];
+    assert_eq!(layers.as_array().unwrap().len(), 2);
+    assert_eq!(layers[1]["id"], "L2", "the camera kept its id");
+    qrec(&env, &dir, &["undo"]).ok();
+    let list = qrec(&env, &dir, &["scene", "list", "--json"]);
+    assert_eq!(list.reply()["data"]["current"]["name"], "Camera only");
+
+    // Another project on this computer sees them.
+    let other = env.empty_dir("other");
+    qrec(&env, &other, &["init"]).ok();
+    qrec(&env, &other, &["scene", "use", "Camera only"]).ok();
+    qrec(
+        &env,
+        &other,
+        &["scene", "rename", "Camera only", "Talking head"],
+    )
+    .ok();
+    qrec(&env, &other, &["scene", "duplicate", "Talking head"]).ok();
+    let gone = qrec(&env, &other, &["scene", "rm", "Talking head"]);
+    assert_eq!(gone.code, Some(4), "deleting asks first");
+    qrec(&env, &other, &["scene", "rm", "Talking head", "--yes"]).ok();
+    let names: Vec<String> =
+        qrec(&env, &other, &["scene", "list", "--json"]).reply()["data"]["scenes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap().to_owned())
+            .collect();
+    assert_eq!(names, ["Screen + camera", "Talking head copy"]);
+    let nope = qrec(&env, &other, &["scene", "use", "Nope"]);
+    assert_eq!(nope.code, Some(7), "{}", nope.stderr);
+}
+
 #[test]
 fn clip_edits_return_seqs_and_created_ids() {
     let env = TestEnv::new();

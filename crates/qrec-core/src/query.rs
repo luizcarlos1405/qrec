@@ -28,6 +28,11 @@ pub fn query(state: &State, ctx: &Ctx, q: &Query) -> Result<Value, CoreError> {
         Query::ClipList => clip_list(state),
         Query::History { limit } => history(state, *limit),
         Query::Keys => keys(state, ctx),
+        Query::Scenes => Ok(serde_json::to_value(crate::scenes::view(
+            state,
+            ctx.facts.saved_scenes.as_ref(),
+        ))
+        .expect("views serialize")),
     }
 }
 
@@ -518,6 +523,7 @@ mod tests {
             Query::ClipList,
             Query::History { limit: Some(5) },
             Query::Keys,
+            Query::Scenes,
         ] {
             assert!(query(&s, &ctx(), &q).is_ok(), "{q:?}");
         }

@@ -13,6 +13,7 @@ use qrec_core::protocol::{
     HistoryRow, Progress, Query, RecordStartedView, StatusView, TakeFinalizedView, TakeRow, Toast,
     ToastLevel, WireBody,
 };
+use qrec_core::scenes::ScenesView;
 use qrec_core::{CoreError, ErrorCode};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -547,6 +548,13 @@ fn answer_empty(plan: &ProjectPlan, dir: &Path, ui: &mut Ui<'_>) -> u8 {
             }
         }
         View::TakeList => print_rows::<TakeRow>(ui, &[], human::take_list),
+        // Saved scenes are listed by a project's host, which reads them.
+        View::Scenes => {
+            return ui.fail(
+                &CoreError::not_project()
+                    .with_hint("saved scenes are listed from a project folder: run it in one"),
+            );
+        }
         View::ClipList => print_rows::<ClipRow>(ui, &[], human::clip_list),
         View::History => print_rows::<HistoryRow>(ui, &[], human::history),
         View::TakeShow => {
@@ -611,6 +619,7 @@ fn render(
             parse::<StatusView>(&data).map(|view| human::status(&view, &dir_text, host))
         }
         View::TakeList => parse::<Vec<TakeRow>>(&data).map(|rows| human::take_list(&rows)),
+        View::Scenes => parse::<ScenesView>(&data).map(|view| human::scenes(&view)),
         View::TakeShow => Some(human::take_show(&data)),
         View::ClipList => parse::<Vec<ClipRow>>(&data).map(|rows| human::clip_list(&rows)),
         View::History => parse::<Vec<HistoryRow>>(&data).map(|rows| human::history(&rows)),

@@ -296,7 +296,69 @@ pub enum SceneCmd {
     /// by id. `--take take-0003` resets that take to the project scene;
     /// `--from-take take-0003` makes its layout the one new takes use;
     /// `--from-take take-0003 --to-all-takes` applies it to every take.
+    /// `--scene NAME --take take-0003` applies a saved scene's layout to
+    /// that take, matching layers and tracks by source.
     Apply(SceneApplyArgs),
+    /// List the saved scenes and say which one the project uses.
+    ///
+    /// Saved scenes live in ~/.config/qrec/scenes.json and work in every
+    /// project on this computer. `Alt+1` … `Alt+9` use the first nine in the window.
+    List,
+    /// Save the project scene under a name, or save changes to the scene in use.
+    ///
+    /// A name that exists is replaced after confirmation (`--yes`). Without a
+    /// name, the project scene is saved over the saved scene it came from.
+    Save(SceneSaveArgs),
+    /// Use a saved scene: it replaces the project scene (undoable).
+    ///
+    /// Layers and tracks whose source the project scene already has keep their
+    /// ids. Takes already recorded keep their layout.
+    Use(SceneUseArgs),
+    /// Rename a saved scene.
+    Rename(SceneRenameArgs),
+    /// Copy a saved scene, as "<name> copy" unless --as names it.
+    Duplicate(SceneDuplicateArgs),
+    /// Delete a saved scene (asks first; the project and its takes are untouched).
+    Rm(SceneNameArg),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Args)]
+pub struct SceneSaveArgs {
+    /// The saved scene's name. Without it, the scene in use is updated.
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Args)]
+#[group(required = true, multiple = false)]
+pub struct SceneUseArgs {
+    /// The saved scene to use.
+    pub name: Option<String>,
+    /// Go back to the saved scene in use, dropping the changes since.
+    #[arg(long)]
+    pub revert: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Args)]
+pub struct SceneRenameArgs {
+    /// The saved scene to rename.
+    pub name: String,
+    /// The new name.
+    pub to: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Args)]
+pub struct SceneDuplicateArgs {
+    /// The saved scene to copy.
+    pub name: String,
+    /// The copy's name.
+    #[arg(long = "as", value_name = "NAME")]
+    pub to: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Args)]
+pub struct SceneNameArg {
+    /// The saved scene.
+    pub name: String,
 }
 
 /// `--take`: which scene a command edits.
@@ -491,6 +553,9 @@ pub struct SceneApplyArgs {
     /// Copy from this take's snapshot instead of the project scene; alone, it updates the project scene.
     #[arg(long, value_name = "TAKE")]
     pub from_take: Option<TakeId>,
+    /// Copy from this saved scene, matched by source, into one --take.
+    #[arg(long, value_name = "NAME", requires = "take", conflicts_with_all = ["to_all_takes", "from_take"])]
+    pub scene: Option<String>,
 }
 
 // ------------------------------------------------------------------- record

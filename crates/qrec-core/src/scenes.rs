@@ -424,6 +424,73 @@ pub fn summary(saved: &SavedScene) -> String {
     }
 }
 
+/// One saved scene as the panel's menu, the palette and `qrec scene list`
+/// show it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneRow {
+    pub name: String,
+    /// "DP-4 · Logitech C920 · 2 audio".
+    pub summary: String,
+    pub layers: usize,
+    pub audio: usize,
+    pub saved_at: DateTime<Utc>,
+    /// The scene the project uses (edited or not).
+    pub in_use: bool,
+    /// Its `Alt` digit: the first nine have one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<u8>,
+    /// Its layers and tracks, for the thumbnail (canvas px).
+    pub scene: Scene,
+}
+
+/// `Query::Scenes`: the saved scenes and which one the project uses.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ScenesView {
+    pub scenes: Vec<SceneRow>,
+    pub current: SceneStatus,
+    /// Why `scenes.json` can't be read (nothing lists or saves until then).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unreadable: Option<String>,
+}
+
+/// The view of the library: `file` when the shell just read it, else the
+/// runtime's copy.
+pub fn view(state: &crate::state::State, file: Option<&ScenesFile>) -> ScenesView {
+    let file = file.unwrap_or(&state.runtime.saved_scenes);
+    let scenes = file.scenes();
+    let project = &state.project;
+    let current = status(
+        scenes,
+        &project.scene,
+        project.autocut.track.as_ref(),
+        state.ui.scene.as_deref(),
+    );
+    let rows = scenes
+        .iter()
+        .enumerate()
+        .map(|(i, saved)| SceneRow {
+            name: saved.name.clone(),
+            summary: summary(saved),
+            layers: saved.scene.layers.len(),
+            audio: saved.scene.audio.len(),
+            saved_at: saved.saved_at,
+            in_use: current.name.as_deref() == Some(saved.name.as_str()),
+            key: u8::try_from(i + 1).ok().filter(|k| *k <= 9),
+            scene: saved.scene.clone(),
+        })
+        .collect();
+    ScenesView {
+        scenes: rows,
+        current,
+        unreadable: match file {
+            ScenesFile::Unreadable(why) => Some(why.clone()),
+            ScenesFile::Read(_) => None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
