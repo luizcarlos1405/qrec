@@ -63,7 +63,7 @@ twice).
 | json-patch | 4.2 (use its re-exported `jsonptr`) | core |
 | sha2 0.11 + hex | only through `qrec_core::hash` | core |
 | toml 1.1, toml_edit 0.25 | config and keys files | core |
-| proptest, insta, pretty_assertions | tests; core feature `testkit` exposes proptest strategies | core |
+| proptest, insta, pretty_assertions | tests; core feature `testkit` exposes proptest strategies | core; insta and proptest also the shell's and the GUI's tests |
 | gstreamer(-app/-video/-audio/-pbutils/-allocators), gstreamer-editing-services | 0.25, features ≤ `v1_24` (`gstreamer-allocators` approved after the fact, 2026-10-15) | shell (feature `gst`, default on); `gstreamer` also gui |
 | gtk4 (`gtk`), libadwaita (`adw`), pango | 0.11.5 `v4_22`, 0.9.2 `v1_9`, 0.22.9 `v1_56` (`FontMap::add_font_file` for the bundled fonts); approved 2026-10-15 (docs/GUI.md G§0.1, G§6.1). Built against GTK 4.22, libadwaita 1.9, Pango 1.57: `gtk/v4_24` and `adw/v1_10` don't build in the dev env. No `gst-plugin-gtk4` crate (a second glib): the system `gtk4paintablesink` plugin; no `glib-build-tools` (`build.rs` runs `glib-compile-resources`) | gui; gtk also qrec's tests (`gui_a11y`'s stand-in AT-SPI registry: GIO's D-Bus, WP10) |
 | ashpd | 0.13, `default-features = false`, `async-io, screencast, camera` (no tokio anywhere) | shell |
@@ -71,6 +71,8 @@ twice).
 | crossbeam-channel | 0.5 | shell, gui |
 | notify | 8 (inotify) | shell |
 | wayland-client | 0.31 (wl_output names) | shell |
+| wayland-protocols | 0.32, `client, unstable` (xdg-output, an unstable protocol: the outputs' logical geometry and names, A§8.12) | shell |
+| x11rb | 0.14, no default features, `randr` (X11 screens: the pure-Rust connection, no libxcb, A§8.12) | shell (its `testkit`'s private Xvfb too, A§11) |
 | rustix | 1.1 `process, termios` (uids, kill, process groups) | shell |
 | libc | 0.2 (`renameat2`, `SO_PEERCRED`, `prctl`, `flock`, `sigaction`, `setsid`; `clone`, `execve` and the child's steps in `spawn.rs`, A§8.7) | shell |
 | tempfile, getrandom, dirs, which, tracing, anyhow | | shell; tracing also gui and the binary, which adds tracing-subscriber; tempfile also the GUI's and the binary's tests |
@@ -326,14 +328,17 @@ pub struct Capabilities {
     pub ffmpeg: Option<FfmpegCaps>,      // None until detected; Some(..) before the first dispatch
     pub ffprobe: Option<String>,         // resolved on PATH at every detection (never cached); None: not installed
     pub vaapi: Option<VaapiCaps>,
+    pub gst_h264: Option<GstH264Caps>,   // "gstH264": GStreamer's software record encoders, from the probe child of a host that records (A§8.10); None until one asked, or when its probe failed (plans then record with x264); serde default
     pub cores: u32,
 }
+pub struct GstH264Caps { pub x264: bool /* x264enc */, pub openh264: bool /* openh264enc */ }
 pub struct FfmpegCaps { pub version: String, pub identity: String /* resolved binary path */, pub encoders: BTreeSet<String> }
 pub struct VaapiCaps {
     pub device: String,                  // effective node (A§2.1)
     pub vendor: u16,
     pub ffmpeg_h264: bool,               // the exact VA export chain encoded 2 frames (A§9.4)
     pub gst_h264_factory: Option<String>,// the va*h264enc whose device-path is this node
+    pub gst_h264_lp_factory: Option<String>, // "gstH264LpFactory": its low-power va*h264lpenc (A§8.10); serde default
 }
 
 pub struct Job { pub id: JobId, pub kind: JobKind, pub req: Option<ReqId>, pub started: DateTime<Utc> }
@@ -420,6 +425,7 @@ pub struct Facts {
     pub default_monitor: Option<AudioDeviceInfo>,   // AudioAdd system without source
     pub audio_devices: Vec<AudioDeviceInfo>,        // labels for an explicit source
     pub screens: Vec<ScreenInfo>,                   // LayerAdd screen (label, size; unknown → NotFound)
+    pub screens_unavailable: Option<String>,        // why discovery found no screens, when it said (A§8.12): the not-found hint gives it
     pub cameras: Vec<CameraInfo>,                   // LayerAdd camera
     pub out: Option<OutFacts>,                      // Export/FrameSave with --out
     pub take_files: BTreeMap<TakeId, Vec<FileFact>>,// purge confirmation: the files it deletes
@@ -429,7 +435,7 @@ pub struct Facts {
     pub player_ns: Option<u64>,                     // a relative Seek while playing: the GUI's Program player (timeline ns)
 }
 pub struct AudioDeviceInfo { pub name: String, pub description: String, pub is_monitor: bool }
-pub struct ScreenInfo { pub output: String, pub description: String, pub x: i32, pub y: i32, pub width: u32, pub height: u32, pub scale: f64 }
+pub struct ScreenInfo { pub output: String, pub description: String, pub x: i32, pub y: i32, pub width: u32, pub height: u32, pub scale: f64 } // a wl_output or an X11 RandR monitor (A§8.12)
 pub struct CameraInfo { pub device: String, pub label: String, pub modes: Vec<CameraMode> }
 pub struct CameraMode { pub width: u32, pub height: u32, pub fps: Fps, pub format: String }
 pub struct OutFacts { pub abs: String, pub exists: bool, pub bytes: Option<u64> /* lstat size when it exists */, pub id: Option<FileId> /* lstat identity when it exists: the one file a confirmed overwrite may replace (A§5.9) */, pub forbidden: Option<String> /* why: in takes/ or .qrec/ (also through a link or bind mount, A§5.9), qrec.json, a directory, a path naming a folder or not UTF-8, a name over 255 bytes or in the temp-file shape (A§8.7) */ }
@@ -439,6 +445,7 @@ pub struct FileFact { pub path: String, pub bytes: u64, pub mtime_ns: i64 }
 #[derive(Default)]
 pub struct FactsNeeded {
     pub folder_name: bool, pub audio_devices: bool, pub video_sources: bool,
+    pub screens: bool,                              // the screens alone, without the cameras' discovery (A§9.5)
     pub out: Option<String>, pub take_files: Vec<TakeId>, pub take_dirs: bool,
     pub files: Vec<String>, pub player: bool,
 }
@@ -447,7 +454,8 @@ pub struct FactsNeeded {
 `Session::dispatch` calls `facts_needed`, gathers exactly that (no `pactl`
 for a clip split), then calls `apply`. Events do the same through
 `facts_needed_for_event` before `on_event`: the last countdown tick gets
-the begin-take facts (take number, camera modes), `TakeProbed{Finalize}`
+the begin-take facts (take number, camera modes, and the screens' sizes
+when OpenH264 may record, A§9.5), `TakeProbed{Finalize}`
 the file facts an `autoRunAfterTake` autocut needs. Under
 `QREC_CAPTURE_BACKEND=fake` device facts come from the fake inventory
 (A§8.12).
@@ -1796,6 +1804,38 @@ nothing of anyone else's may be tied to it for long:
   written with `writeln!`; `BrokenPipe` exits quietly, any other write
   error (a full disk) is said on stderr and makes a run that would exit 0
   exit 1.
+- GUI start: the display (`qrec-gui`'s `app::display_target`; Linux only,
+  other systems have GTK's own backend). GDK is allowed exactly one backend
+  (`gdk::set_allowed_backends`): Wayland when `WAYLAND_SOCKET` is passed or
+  something listens on `WAYLAND_DISPLAY`'s socket (`wayland-0` by default)
+  in `XDG_RUNTIME_DIR`, which a non-blocking connect, closed at once, tells
+  (`ipc::peer::connect_nonblocking`: the socket file a compositor that died
+  left behind refuses); else X11 when `DISPLAY` names a display. A
+  `GDK_BACKEND` counts only when a backend it names has its display (the
+  first one that does, `*` for any): `GDK_BACKEND=x11` inside niri opens the
+  window on XWayland, and a `GDK_BACKEND=wayland` exported on Xorg, or a
+  dead compositor's socket, doesn't keep it from opening on X11. GDK reads
+  `GDK_BACKEND` and tries only what it names, so a value naming no display
+  here has to leave the environment: `main` calls
+  `qrec_gui::prepare_display` while it still has a single thread (it counts
+  `/proc/self/task`), right after the GPU variables (A§8.10), and the GUI
+  log has an info line saying so; the log also names the display GTK
+  opened (`GdkWaylandDisplay` or `GdkX11Display`). On Wayland the lock and
+  the socket (docs/GUI.md G§3.3 steps 3 and 4) start before `gtk::init`
+  (should GTK still fail on a socket that answered, the lock was taken all
+  the same); on X11 they wait until GTK connected, since an X11 display
+  can't be checked without connecting. With neither display the window's
+  run is `unavailable` "can't open the window: no Wayland (WAYLAND_DISPLAY)
+  or X11 (DISPLAY) display" (exit 1) before the folder is touched; when GTK
+  can't connect, the error says where it tried and what else there is
+  ("can't open the window on the Wayland display "wayland-1"
+  (WAYLAND_DISPLAY): …; GDK_BACKEND=x11 would open it on the X11 display
+  ":0" (DISPLAY)"). The project picker (`picker::run`, SPEC §4.4,
+  docs/GUI.md G§4.12) shares `app::window_target`, `app::init_toolkit` and
+  `app::install_look` with the project's window, so it opens wherever that
+  window does, X11 included. Both set GLib's program name to the app id
+  before GTK starts: GTK's X11 backend makes it both parts of `WM_CLASS`,
+  which then matches the desktop entry's `StartupWMClass`.
 - GUI start with the lock held (`host::takeover`; the window's pages drive
   it, docs/GUI.md G§3.4.3). `find_holder` takes the lock when it is free,
   else asks `hello` (2 s) on this runtime's socket, then on the one the lock
@@ -1832,7 +1872,8 @@ steps below in the child before `execve`; it allocates nothing there and
 only makes system calls). A fork copies the whole process's page tables
 while glibc holds every malloc arena's lock: in the GUI's process under GL
 one took 25–48 ms, and its main thread waited out each one (G§8.6).
-Every child: stdin null (`wl-copy`'s is the PNG it copies), its own
+Every child: stdin null (the quit's `wl-copy` gets the PNG it hands on as
+an in-memory file, `Spec::stdin_bytes`: a memfd, never a pipe), its own
 process group, stdout piped only when parsed (drained on its own thread),
 stderr appended to a log file
 (an anonymous temp file for project-less runs: `sources list`, `doctor`), and
@@ -1861,8 +1902,18 @@ renders like any other. Paths the shell reports (`ExportFinished`,
 `FrameSaved`, `OutputAppeared`, log paths in hints and `details.log`) are
 exact, or written `\xHH` byte by byte where they aren't UTF-8
 (`paths::path_text`), never with a lossy `�`.
-Timeouts: ffprobe 20 s, pactl 3 s, VA/encoder probes 10 s, `wl-copy` 5 s
-(`--type image/png`, stdin from the PNG file). ffprobe and silencedetect get
+Timeouts: ffprobe 20 s, pactl and `niri msg` 3 s, VA/encoder probes 10 s
+(the GPU probe child and the h264_vaapi check, A§8.10; ffmpeg's lists:
+`-version` and `-encoders`, also the export runner's before a VA fallback,
+A§9.3, and the doctor's `-decoders` and `-demuxers`, A§8.12), `wl-copy` 5 s
+(`--type image/png`, the PNG's bytes as copied on stdin). Copy image itself
+puts the frame on GDK's clipboard, with no helper, on Wayland, XWayland and
+Xorg alike (docs/GUI.md); `wl-copy` runs only at the window's quit, on
+Wayland (on XWayland too when no clipboard manager took the image within
+1 s), to keep serving a frame Copy image left there. The screen listings,
+which run in-process on a helper thread the caller waits for, have 2 s
+each: Wayland's and the X server's (discovery, the doctor's X server check
+and each X11 build's read, A§8.11, A§8.12). ffprobe and silencedetect get
 30 s more per GiB of input, in proportion (`-count_packets` reads the whole
 file), so small files get exactly the base. Long ffmpeg jobs have a stall
 watchdog (no `-progress` block for 60 s ⇒ kill, "ffmpeg stalled"). Kill:
@@ -1974,20 +2025,38 @@ its size, mtime, inode or change time changed (`ConfigFile`), and
 ### A§8.10 GPU safety and GStreamer init
 
 - At the very top of `main()`, before any thread or GTK/GStreamer call
-  (edition 2024 `set_var` is only sound there): resolve the effective VA node
-  (A§2.1, reading the project's `qrec.json` if `--project`/cwd has one), then
-  set `LIBVA_DRIVER_NAME` from its PCI vendor (`0x8086` ⇒ `iHD`, `0x1002` ⇒
-  `radeonsi`), overriding an inherited mismatching value (logged; `doctor`
-  reports it). Leave it alone only when an NVIDIA node is explicitly
-  configured. When an NVIDIA device exists and isn't chosen, also set
-  `__EGL_VENDOR_LIBRARY_FILENAMES` (Mesa) and `VK_DRIVER_FILES` /
-  `VK_ICD_FILENAMES` (chosen vendor) unless the user set them (GUI).
+  (edition 2024 `set_var` is only sound there): a GPU probe child does its
+  one job and exits (below); the platform is read once
+  (`platform::current()`, A§8.12), from the environment the process
+  started with; then resolve the effective VA node (A§2.1, reading the
+  project's `qrec.json` if `--project`/cwd has one) and set
+  `LIBVA_DRIVER_NAME` for that node (`gpu::libva_driver_for`, from its PCI
+  vendor and device id in sysfs): AMD's `radeonsi`; for Intel `i965` on
+  the chips only it drives (`gpu::intel_i965_only`: G45 to Haswell and Bay
+  Trail, older than Broadwell, where iHD starts, and the Cherry View and
+  Braswell Atoms, which iHD doesn't drive either; intel-vaapi-driver's own
+  lists), else `iHD` where its file is installed, else `i965` where its
+  is, else `iHD`. Pinning `iHD` on every Intel node defeated libva's own
+  fallback to i965, so VA-API never worked on the older chips.
+  `gpu::VaDrivers` finds the files of the drivers Qrec loads or keeps
+  (`<name>_drv_video.so` of `iHD`, `i965`, `radeonsi`, and `r600` when
+  inherited) where libva loads them: `LIBVA_DRIVERS_PATH`'s directories when
+  it is set, else the standard ones (NixOS's, Fedora's RPM Fusion and lib64
+  ones, Debian's multiarch one, Arch's, Gentoo's, `/usr/local`), with a
+  stat each, never opening a driver or a device. An inherited value of the
+  node's vendor stays (`iHD` or `i965`, `radeonsi` or `r600`); another
+  vendor's is overridden (logged; `doctor` reports it). Leave it alone only
+  when an NVIDIA node is explicitly configured. When an NVIDIA device
+  exists and isn't chosen, also set `__EGL_VENDOR_LIBRARY_FILENAMES` (Mesa)
+  and `VK_DRIVER_FILES` / `VK_ICD_FILENAMES` (chosen vendor) unless the user
+  set them (GUI).
   The GUI also gets `GDK_DISABLE=vulkan` (GUI H-3), so GTK renders with
   GSK GL: Mesa's Vulkan loader opens every render node, NVIDIA's included,
   while it enumerates devices, even with the driver pinned *(measured,
   docs/GUI.md G§3.13)*. A user who set `GDK_DISABLE` or `GSK_RENDERER`
   keeps both as they are, and every command notes it (`doctor` prints the
-  note).
+  note). For the window, `qrec_gui::prepare_display` comes next, still
+  single-threaded (A§8.6).
 - In the same step (`gpu::plan_gst_env`): `GST_REGISTRY_1_0` becomes
   `$XDG_CACHE_HOME/qrec/gstreamer-registry-<arch>.bin` unless the user set
   it, so other GStreamer apps never make Qrec's registry stale and the
@@ -1998,17 +2067,64 @@ its size, mtime, inode or change time changed (`ConfigFile`), and
 - `gst::init()` runs on a helper thread; the caller waits ≤ 30 s, then prints
   "GStreamer is stuck scanning plugins (a GPU driver is probably hung); see
   `qrec doctor`" and `process::exit(5)`. Never on the GTK main thread.
-- The VA H.264 element is found by enumerating `va*h264enc` factories and
+- The VA H.264 elements are found by enumerating the `va*h264enc` factories
+  and the low-power `va*h264lpenc` ones (`gpu::va_h264_kind`: Intel Arc,
+  Meteor Lake and newer expose only the low-power VDENC entrypoint) and
   matching each one's `device-path` to the node — never by name (the first
-  usable node gets plain `vah264enc`).
-- Probes that touch a render node (the h264_vaapi check, doctor) run as
-  child processes with a 10 s timeout. `main` calls
+  usable node gets plain `vah264enc` and `vah264lpenc`). gstreamer-vaapi's
+  `vaapih264enc` has no `device-path` and doesn't count. GStreamer's VA
+  plugin registers no encoder with `i965` (blocklisted for encoding unless
+  `GST_VA_ALL_DRIVERS` is set), so where the node's driver is `i965`
+  recordings use x264enc or openh264enc on the CPU (A§9.5); ffmpeg's
+  `h264_vaapi` does encode with it (below).
+- Probes that touch a render node (the h264_vaapi check, GStreamer's
+  encoders) run as child processes with a 10 s timeout. `main` calls
   `gpu::run_probe_if_requested()` before anything else: a `qrec` re-run
-  with `QREC_GPU_PROBE=va-h264-factory:<node>` (and that node's
-  `LIBVA_DRIVER_NAME`) is the probe child that finds the `va*h264enc` bound
-  to the node (`VaapiCaps::gst_h264_factory`), prints it and exits. Only Gui
-  and Headless hosts run it. Under `QREC_CAPTURE_BACKEND=fake` no render
+  with `QREC_GPU_PROBE=h264-encoders:<node>` (`h264-encoders` without a
+  node; it was `va-h264-factory:<node>`) is the probe child. It initializes
+  GStreamer, prints one JSON line and exits: `ProbeAnswer { factory,
+  lpFactory, software: { x264, openh264 }, error }`, the `va*h264enc` and
+  `va*h264lpenc` bound to the node (`VaapiCaps::gst_h264_factory`,
+  `gst_h264_lp_factory`) and whether the registry has x264enc and
+  openh264enc (looked up, never loaded: `Capabilities::gst_h264`). Its
+  stdout goes to a temp file, its stderr to the caps log. Gui and Headless
+  hosts run it (`caps::gst_probe`), under the fake backend too but without
+  a node, so no render node is probed there; the CLI doctor runs it for the
+  node's VA encoder alone (A§8.12). A cold registry costs it 0.3–0.8 s on
+  the dev machine. The child's `LIBVA_DRIVER_NAME` is
+  `gpu::child_libva_driver`'s: this process's when it fits the node's
+  vendor (`main()` pinned it), else the node's; without a node it keeps
+  this process's. One child, one driver: GStreamer's registry notes
+  `LIBVA_DRIVER_NAME` for its VA plugin, so a child and a host on two
+  drivers would each rescan the plugin and rewrite the registry Qrec's
+  processes share, and, with the registry in the capabilities' key (below),
+  probe again at every start. An NVIDIA node is never VA-probed (NVIDIA has
+  no VA-API encoder): detection leaves `vaapi` empty with a note and asks
+  GStreamer for its software encoders alone, and `run_probe_child` refuses
+  one before starting any child. Under `QREC_CAPTURE_BACKEND=fake` no render
   node is probed at all (no factory, no h264_vaapi check, none in `doctor`).
+- Capability detection (`caps::detect`, sent as `Event::Capabilities`
+  before a Session's first dispatch) is cached in
+  `$XDG_CACHE_HOME/qrec/capabilities.json`, keyed by the ffmpeg binary
+  (resolved path, size, mtime), the effective node, its vendor and PCI
+  device id, whether VA was probed, this process's `LIBVA_DRIVER_NAME` and
+  Qrec's libva driver files (each one's resolved path and mtime), so
+  installing or updating a driver checks again. GStreamer's answers have a
+  key of their own, taken after the probe: the plugin path variables and
+  the registry's size and modification time. A plugin that comes or goes
+  rewrites the registry at the next GStreamer init, and then only the probe
+  runs again; a probe that couldn't answer isn't remembered, so the next
+  host asks again. The h264_vaapi check loads the node's driver
+  (`gpu::child_libva_driver`); where it fails on an Intel node, it runs
+  again with Intel's other driver when that one is installed and drives the
+  chip (`gpu::retry_driver`; never `iHD` on the chips only `i965` drives).
+  When only the other one passes (a Broadwell to Comet Lake whose iHD
+  encodes nothing, as Debian's and Ubuntu's free build, while i965 does),
+  the file keeps the pick (`exportDriver`: the node, its PCI device id and
+  the driver), and a VA export loads it there (`gpu::export_libva_driver_for`,
+  A§9.3) while the pick is for that node and GPU and its file is installed;
+  each fresh detection makes the pick again or drops it. Recordings and
+  `main()` keep the node's driver.
 - The Nix package ships gst-plugins-bad without `nvcodec` and `qsv`, which
   hang the plugin scan on the dev machine.
 - The package (`nix build`, `flake.nix`; docs/GUI.md G§6.4) is the release
@@ -2197,6 +2313,57 @@ guard) and checks the file reads like finalization reads it.
   being read, and pushes it on with its timestamps (`videoconvert` then
   passes it through). `cast_probe` (an ignored test) reruns these
   experiments against a real portal session.
+- **X11 screen branch** (`ScreenBackend::X11`, below): the screen's part of
+  the X server's root window, `ximagesrc display-name=<DISPLAY> startx
+  starty endx endy use-damage=false show-pointer=true !
+  video/x-raw,framerate=<rate> ! capssetter (pixel-aspect-ratio=1/1) !
+  videoconvert …`, then I420 bt709 and the tee like every branch. Each
+  build that grabs a screen reads the X server's monitors and root window
+  again (`sources::x11_layout`, 2 s) and grabs at the take's rate, else the
+  live scene's (without a rate ximagesrc runs at 25 fps). The pure
+  `spec::x11_crop` makes the rectangle: ximagesrc's ends are inclusive and
+  the size is rounded down to even (an odd size fails x264enc; 2×2 at
+  least). `use-damage=false`: XDamage costs a round trip per changed
+  rectangle, grabbing the whole part every frame period doesn't. ximagesrc
+  derives a pixel aspect ratio from the X screen's millimetres (11:10 on a
+  1920×1080 screen of 508×200 mm, and such a take played stretched); its
+  caps are fixed, so a capsfilter can't change that, and a capssetter in
+  front of the rate's capsfilter hides the rate (25 fps, not-negotiated),
+  so it comes after it (capssetter is gst-plugins-good's, like ximagesrc). No
+  bridge and no keepalive: ximagesrc grabs a frame every frame period of
+  the pipeline clock, so a still screen never goes silent. A monitor the X
+  server doesn't have, one outside the root, or a layout that can't be read
+  is a `BuildError` for that source ("the X server (DISPLAY=:1) has no such
+  monitor"), never ximagesrc's silent fallback to the whole root: a take of
+  it fails naming the layer, and the live preview leaves it out, dead. A
+  screen that sends nothing, or stops, blames the X server instead of the
+  portal in its `capture_failed` and `StreamLost` messages. A hung X server
+  is lost after `STALL_LIMIT`, but the teardown then waits on ximagesrc and
+  the engine reports itself wedged; a dead one makes Xlib exit the process
+  (its default IO error handler), leaving the take to the startup recovery
+  (A§5.3, docs/RECORDING.md). The rectangle is fixed, so the branch must
+  also stop once it isn't its monitor any more, as a cast ends when its
+  output goes (`pipewiresrc on-disconnect=error`). Its **grab guard**
+  (`live::X11Guard`, a probe on ximagesrc's src pad), once failed, posts
+  one error from ximagesrc, the bus error every source failure takes
+  (`StreamLost` in a take, dead in the live status), then holds back caps
+  and ends the stream at the next buffer (EOS: ximagesrc stops grabbing),
+  so no frame of something else reaches the take; it holds a lock while it
+  posts, so the engine hears why before the EOS. Two things fail it:
+  - its own check, on every buffer and caps event, of ximagesrc's
+    `startx`, `starty`, `endx` and `endy` against the crop
+    (`spec::x11_grab_change`): when the root shrinks under the rectangle,
+    ximagesrc rewrites them to grab the whole new root, saying so only in
+    its debug log (with no new caps when the sizes match);
+  - the **RandR watch** (`live::X11Watch`, one per live pipeline with X11
+    screens: `sources::x11::watch`, on its own thread and x11rb connection)
+    reads the monitors again on the root's `ConfigureNotify` (RandR 1.5
+    sends one when a monitor is set or deleted) and on RandR's screen, CRTC
+    and output notifications, and fails the guard of a screen whose monitor
+    went away, moved or changed size (`spec::x11_monitor_change`), which
+    ximagesrc alone misses while the rectangle still fits the root. Each
+    read keeps the 2 s bound, it checks its stop flag every 200 ms, and the
+    teardown stops it.
 - **Still screens** (screencasts are damage-driven: no damage, no frames).
   Never `pipewiresrc keepalive-time`: PipeWire 1.6 stamps its keepalive
   buffer with the absolute clock time, and basesrc waits for that time
@@ -2230,17 +2397,85 @@ guard) and checks the file reads like finalization reads it.
   Still screens never stall (the keepalive); audio isn't watched (a stop
   doesn't fill it). `FakeFailure::Stall` hangs a fake source for the
   tests.
-- Encoders: `x264enc pass=qual quantizer=18 speed-preset=veryfast
-  tune=zerolatency key-int-max=<round(fps)>` (without `pass=qual` x264enc
-  records 2 Mbit/s CBR); VA: the resolved factory with `rate-control=cqp
-  qpi=18 qpp=18 qpb=18 key-int-max=<round(fps)>`.
+- Encoders, in the planner's order (`capture_plan::choose_encoder`,
+  A§9.5): VA, the node's `va*h264enc`, else its low-power `va*h264lpenc`
+  (A§8.10), with `rate-control=cqp qpi=18 qpp=18 qpb=18
+  key-int-max=<round(fps)>`, pinned by `device-path` under the node rules
+  (never an NVIDIA node nobody configured); else `x264enc pass=qual
+  quantizer=18 speed-preset=veryfast tune=zerolatency
+  key-int-max=<round(fps)>` (without `pass=qual` x264enc records 2 Mbit/s
+  CBR); else, where GStreamer has openh264enc and not x264enc (stock
+  Fedora's gst-plugins-ugly has no x264enc), `openh264enc
+  rate-control=quality qp-min=22 qp-max=22 bitrate=100000000 complexity=low
+  gop-size=<round(fps)> multi-thread=4 slice-mode=n-slices num-slices=4
+  usage-type=camera enable-frame-skip=false` *(measured; the figures are in
+  `capture_plan.rs`'s `OPENH264_*` doc comments)*: `rate-control=off`
+  ignores the QPs and encodes at QP 26; with the QP pinned the bitrate
+  moves the output by 3 %
+  at most; medium and high complexity cost 12–18 % more time for the same
+  quality; one thread encodes a 2560×1440 screen at 45 fps, four at 76 fps
+  for 13 % more CPU a frame; `usage-type=screen` is five times slower; a
+  skipped frame would leave a gap in the CFR file. At QP 22 a screen's text
+  stays as sharp as the source in about 4 Mbit/s, where x264's CRF 18
+  rings. OpenH264 records Constrained Baseline and encodes at most
+  9,437,184 pixels a frame (36,864 macroblocks: 4096×2304, whatever the
+  shape), failing a larger one when the stream starts with a bare
+  not-negotiated error, so the plan refuses it up front (A§9.5). VA
+  encoders take NV12, x264enc and openh264enc I420.
 - Cameras: the closest mode ≥ canvas fps, preferring the largest raw/MJPEG
   size (rule in `capture_plan`, applied by the engine from `CameraInfo.modes`).
+- **Screen backend** (`capture::ScreenBackend`, in `EngineOptions` next to
+  the capture `Backend`): `Portal` (the compositor's outputs, recorded
+  through the ScreenCast portal), `X11 { display }` (the X server's RandR
+  monitors, each recorded as its part of the root window, above) or `None`
+  (no display: no screens to discover; a screen layer a project already has
+  still goes to the portal, which a headless session may reach).
+  `ScreenBackend::from_env`: `QREC_SCREEN_BACKEND=portal|x11` wins (`x11`
+  only with a non-empty `DISPLAY`: without one it is ignored with a
+  warning, so `None` always means there is no display; `auto`, empty or
+  unset: the session decides); else a Wayland session (the platform's,
+  A§8.12) is `Portal` whatever `DISPLAY` says, since XWayland only shows X
+  clients, never the desktop; a non-empty `DISPLAY` is `X11`; anything else
+  `None`. Discovery (`sources::discover_screens`), the facts' hook and
+  `LiveDevices` use the session's, and the real backend's screens follow
+  it. On X11 `missing_casts` asks for nothing, so a take never awaits the
+  portal, and no `PortalWorker`, restore token, cast grace or S24 comes up:
+  adding the screen layer is the consent (the owner's decision on issue
+  #9). Under the portal, and without a display, nothing changed.
 - Portal: one ScreenCast session per screen layer, `persist_mode = 2`, restore
-  tokens in `<state>/portal-tokens.json` (0600) keyed by output name and
-  matched to streams by position and size; every process that talks to the
-  portal first registers the app id `com.rsensato.qrec` (host Registry,
-  xdg-desktop-portal ≥ 1.19).
+  tokens in `<state>/portal-tokens.json` (0600) keyed by output name; every
+  process that talks to the portal first registers the app id
+  `com.rsensato.qrec` (host Registry, xdg-desktop-portal ≥ 1.19). The stream
+  shared is identified among the screens discovered for the request (the
+  pure `portal::identify`, over the stream's mapping id, position, size and
+  source type): the screen its mapping id names (KDE, COSMIC and
+  xdg-desktop-portal-hyprland 1.4.0 and later send the output's name, as
+  xdg-desktop-portal-wlr's main branch does, though none of its 0.8
+  releases); else the only screen with its position and size; else, when
+  it has no position, the only screen with its size, either way round. A
+  logical size matches within a pixel on each side (compositors round,
+  floor or ceil it against the xdg-output ratio `sources` lists, A§8.12);
+  pixels match exactly (xdph and COSMIC send the buffer's). A mapping id
+  that names no known screen identifies nothing, since its position may be
+  a placeholder; only a UUID-shaped id (GNOME's, in remote-desktop
+  sessions) counts as no id. A window or region stream, a position without
+  a size, a geometry two screens share (mirrors) and an empty screen list
+  identify nothing either. On Hyprland (the platform's desktop) positions
+  are placeholders, 0,0 for every monitor, so a stream without a mapping id
+  (xdph before 1.4.0, the 1.3 line most distributions ship) is the one
+  screen of its size or none; xdph's size is the buffer's, in the panel's
+  own orientation, hence either way round. `portal::file_token` keeps the
+  portal's new token under the identified output only, never under a
+  guess. A stream nothing identifies is still shared for that request, with
+  a warning in the log that names its facts and the screens, but its token
+  isn't kept and the requested output's goes, so the dialog shows again
+  next time. The requested output's token also goes when another monitor
+  was shared (that take fails "the screen-share dialog picked X, not Y;
+  pick Y next time"): xdg-desktop-portal 1.20 hands the same token back on
+  a restore, so a token filed under the wrong output would restore that
+  monitor on every take without ever showing the dialog. On niri nothing
+  changed: no mapping id, real positions, its logical position and size
+  identify the screen. Which backend sends what: docs/RECORDING.md.
 - `QREC_CAPTURE_BACKEND=fake`: `videotestsrc is-live=true` /
   `audiotestsrc is-live=true` (a tone with periodic silence), never touches the
   portal, and fakes discovery: screens `FAKE-1`, `FAKE-2` (1280×720), camera
@@ -2256,13 +2491,106 @@ guard) and checks the file reads like finalization reads it.
 pub struct SourceInventory { pub screens: Vec<ScreenInfo>, pub cameras: Vec<CameraInfo>,
                              pub mics: Vec<AudioDeviceInfo>, pub monitors: Vec<AudioDeviceInfo>,
                              pub default_mic: Option<String>, pub default_monitor: Option<String>,
-                             pub warnings: Vec<String> /* what couldn't be discovered; omitted when empty */ }
-pub struct DoctorReport { pub checks: Vec<Check>, pub niri_snippet: String, pub va: Option<VaReport> }
-pub struct Check { pub id: String, pub required: bool, pub ok: bool, pub detail: String, pub hint: Option<String> }
+                             pub screen_backend: ScreenBackendKind, // how screens are listed and recorded; portal under the fake backend
+                             pub warnings: Vec<String> /* "<kind>: why" (screens, cameras, audio); omitted when empty */ }
+pub enum ScreenBackendKind { Portal, X11, None }   // "portal" | "x11" | "none": the session's ScreenBackend (A§8.11) without its display; absent reads as portal
+pub struct HostPlatform { pub session: SessionType /* wayland | x11 | unknown */, pub desktop: Desktop /* niri, gnome, kde, sway, hyprland, …, another's own name, unknown */,
+                          pub distro: DistroFamily /* debian, ubuntu, fedora, arch, suse, nixos, alpine, void, gentoo, unknown */,
+                          pub sandbox: Sandbox /* none | flatpak | snap */, pub nix_shell: bool }
+pub struct DoctorReport { pub checks: Vec<Check>, pub features_off: Vec<FeatureOff>, pub platform: HostPlatform,
+                          pub screen_backend: ScreenBackendKind, pub session: String /* the session line */,
+                          pub shortcuts: GlobalSnippet /* A§9.7 */, pub niri_snippet: String /* deprecated, one more release */,
+                          pub va: Option<VaReport> }
+pub struct Check { pub id: String, pub required: bool /* needed_for has App */, pub needed_for: Vec<Feature>, pub ok: bool,
+                   pub detail: String, pub hint: Option<String>, pub fix: Option<Hint> /* omitted when absent */ }
+pub enum Feature { App, Screens, Cameras, Audio, Recording, ExportMp4, ExportWebm, ExportAv1 } // "app", "screens", …, "export.mp4", "export.webm", "export.av1"
+pub struct FeatureOff { pub feature: Feature, pub checks: Vec<String>, pub message: String /* "Screen capture is off: …" */ }
+pub struct Hint { pub packages: Vec<String>, pub command: Option<String>, pub note: Option<String> } // platform::install_hint
+pub struct VaReport { pub nodes: Vec<RenderNode> /* path, vendor, vendorName, deviceId, driver */, pub device: Option<String>,
+                      pub origin: Option<String>, pub vendor: Option<u16>, pub device_id: Option<u16>,
+                      pub expected_driver: Option<String>, pub libva_driver_name: Option<String>, pub driver_dirs: Vec<String>,
+                      pub driver_file: Option<String>, pub installed_drivers: Vec<String>, pub ffmpeg_h264: Option<bool>,
+                      pub gst_encoders: Vec<String>, pub gst_factory: Option<String>, pub export_driver: Option<String>,
+                      pub startup: Vec<String>, pub note: Option<String> }
 ```
 
-Screens from `wl_output` v4 `name`/`description` + geometry within 2 s
-(fallback `niri msg --json outputs`); cameras via GStreamer's DeviceMonitor
+**Platform** (`qrec_core::platform`, pure): `detect` turns a
+`PlatformEnv` (the variables in `ENV_KEYS`, the os-release text, whether
+`/.flatpak-info` exists and whether qrec's executable lies under `$SNAP`)
+into a `HostPlatform`. The session: a Wayland display (`WAYLAND_DISPLAY`,
+`WAYLAND_SOCKET`), or a login that says Wayland (`XDG_SESSION_TYPE`), is
+never X11, since an X display there is XWayland, which shows only X
+clients; then `DISPLAY`, then a login that says x11; else unknown. The
+desktop: a compositor's IPC socket first (`NIRI_SOCKET`,
+`HYPRLAND_INSTANCE_SIGNATURE`, `SWAYSOCK`, `I3SOCK`), so `NIRI_SOCKET`
+beats `XDG_CURRENT_DESKTOP`; then the first of `XDG_CURRENT_DESKTOP`,
+`XDG_SESSION_DESKTOP` and `DESKTOP_SESSION` that names anything decides,
+by its first known entry (`ubuntu:GNOME` is GNOME), else its first. The
+family: os-release's `ID`, then `ID_LIKE` in order (Mint is Ubuntu, Rocky
+is Fedora). The sandbox: Flatpak when `/.flatpak-info` exists, Snap only
+when qrec's own executable lies under `$SNAP` (classic snaps such as VS
+Code, IDEs and terminals leak a bare `SNAP` into what they start); and
+`nixShell` is `IN_NIX_SHELL`. The shell reads all of it once
+(`qrec_shell::platform::current()`: the environment, `/etc/os-release`
+else `/usr/lib/os-release`, `/.flatpak-info`, its own executable's path
+compared with `$SNAP` as given and with symlinks resolved) before any
+thread starts (A§8.10), opening no device; the headless host's and the
+GUI's logs print it ("platform: session=wayland desktop=niri distro=nixos
+sandbox=none nixShell=false"). The screen backend (A§8.11), the portal's
+stream identification, the doctor and its install hints, and the global
+shortcuts' snippet (A§9.7) follow it.
+
+**Screens** come from the session's `ScreenBackend` (A§8.11,
+`sources::discover_screens`), sorted left to right, and fill the same
+`ScreenInfo` whichever found them, so the core and the project schema
+don't know which did:
+- Under the portal, `wl_output` (up to v4) and `zxdg_output_manager_v1`
+  (up to v3, each output's `zxdg_output_v1`), read without blocking past
+  one 2 s deadline, in two syncs (the globals, then both objects' events).
+  A screen's position is xdg-output's logical position, else wl_output's
+  (wlroots sends 0,0 for every output there); its width and height are the
+  current mode's pixels, rotated with the output; its scale takes them to
+  xdg-output's logical size, else it is wl_output's whole number (sway
+  sends 2 for 1.25 and for 1.5). The scale is one that `pixels ÷ scale`
+  rounds back to the logical size on both sides, as the portal's match
+  compares them (A§8.11), preferring a multiple of 1/120 (fractional
+  scaling's steps) so 1.25 reads 1.25; wlroots floors the logical size
+  (1366×768 at 1.25 is 1092×614), which no multiple of 1/120 gives back,
+  and there the ratio does (1.2509); when no single scale fits both sides,
+  the longer side's ratio, exact on that side and within a pixel on the
+  other. The name and description are wl_output's (v4), else xdg-output's
+  (v2), so an output whose wl_output is older (the sway of Debian 12 and
+  Ubuntu 22.04, older KWin and Mutter) still has a name; else, for the
+  description, make, model and name. An output with no name from either
+  makes the listing fall back to `niri msg --json outputs`, and when both
+  fail the error is the compositor's, with niri's only on niri (the
+  platform's desktop). The human `qrec sources list` shows a scale in two
+  decimals at most; `--json` keeps the exact ratio.
+- On X11, the X server's RandR monitors, through x11rb's pure-Rust
+  connection (`sources/x11.rs`: no libxcb, no C library, no GStreamer) on a
+  helper thread the caller waits for at most 2 s (`X11_TIMEOUT`); the
+  thread's TCP connect (a `host:N` display) and every wait on the
+  connection end at the same deadline, so a stopped server leaves no thread
+  behind. RandR 1.5 `GetMonitors` (the active ones) gives each monitor's
+  name and rectangle; before 1.5, or when that lists nothing, the lit CRTCs
+  (`GetScreenResourcesCurrent`, `GetCrtcInfo`: RandR 1.3) named after their
+  first output; without RandR, or with nothing lit, the root window as
+  `screen`. RandR's automatic monitor of a split output (`screen` on Xvfb)
+  is listed next to the ones set on it. The description is the first
+  output's EDID monitor name, else its PNP manufacturer ID, joined to the
+  name as Wayland's are, so a monitor without an EDID is just its name.
+  Screens are clipped to the root, a repeated name is left out, and the
+  scale is 1 (X11 has no per-monitor scale). Errors read "X11
+  (DISPLAY=:1): …", a display nothing
+  listens on "can't connect: no X server listens there"; `niri msg` never
+  runs on X11. `sources::x11_layout` reads the monitors with the root
+  window's size (`GetGeometry`, current on a connection kept open) for the
+  capture engine, and `sources::x11_server` the RandR version too, for the
+  doctor.
+- Without a display, none: "no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY)
+  display".
+
+Cameras via GStreamer's DeviceMonitor
 (`Video/Source`, no capture; without GStreamer, or when it fails,
 `/sys/class/video4linux`: names, no modes); audio via `pactl --format=json`
 (mics are `alsa_input.*` only; monitors are `*.monitor`; other inputs such
@@ -2271,14 +2599,157 @@ audio facts, so a `--source` naming one keeps its description; a `(null)`
 description falls back to the device's properties). One parser,
 `sources::parse_pactl_audio`, gives every host its audio facts (the GUI's
 `SharedSources` and the CLI's and headless hosts' `SystemSources` agree).
-`doctor` checks
-every SPEC §3.3 item (+ `pactl`, `gst.h264parse`, a ScreenCast portal ≥ v4
-that captures monitors, and the optional `portal.registry`), prints a hint
-per failure and the niri bind snippet (SPEC §10.2); exit 5 when a required
-check fails; the GUI's "The swamp is missing something" screen renders the
-same report.
-Under `QREC_CAPTURE_BACKEND=fake` the portal, sound-server and real-source
-element checks are optional and `videotestsrc`/`audiotestsrc` required.
+
+**Why nothing was found.** `warnings` say what discovery couldn't do, as
+`"<kind>: why"`. The human `sources list` prints a kind's reason under it
+when it found none of that kind ("none found: no Wayland (WAYLAND_DISPLAY)
+or X11 (DISPLAY) display" under Screens, pactl's error under Mics and
+System audio; `--json` has them all). Every `Sources` (the GUI's cache, the
+CLI's and the headless host's system sources, the fake inventory) puts the
+screens' one in `Facts.screens_unavailable` (A§4.2), so `LayerAdd`'s
+not-found hint without any screen known is "no screens were detected:
+<why>" (the old hint when nobody said why). The GUI's cache logs a
+discovery's warnings at warn the first time, at debug when a refresh
+repeats them. `screenBackend` is what the first run's caption follows
+(docs/GUI.md; `sources::session_screen_backend` knows it from the
+environment before discovery ends): on X11 screens ask no permission.
+
+**`doctor`** (`doctor::run`, SPEC §3.3) checks each runtime dependency,
+says what needs it (`neededFor`; empty when it only informs) and, when it
+fails, how to fix it where Qrec runs. Only the app tier is required (`required`:
+`neededFor` has `app`): a failed app check is `missing_dependency`, exit 5,
+and one of S23's rows, the GUI's "The swamp is missing something", which
+lists those alone (Check again runs the doctor again). Any other failure
+turns off the features that need it: `featuresOff` lists each, with its
+failed checks and a line for people ("Screen capture is off: no ScreenCast
+portal: …"), which both texts print before the verdict ("Everything else
+Qrec needs is here."); the GUI logs what is off and opens the project
+(`LocalUi.doctor` keeps the whole report). The checks:
+- app: `gstreamer` (1.24 or newer, the version compared; initialized under
+  the init watchdog), `ges`, `gst.compositor`, `gst.videorate`,
+  `gst.gtk4paintablesink`, `gst.h264dec` (a software H.264 decoder: a
+  `Decoder/Video` without `Hardware` that sinks `video/x-h264`, read from
+  the registry without loading a plugin; with OpenH264's alone, a note that
+  High-profile takes may not decode), `gst.matroskademux`, `gst.flacdec`,
+  `ffmpeg`, `ffprobe`, `ffmpeg.decoders` (h264 and flac: ffmpeg's own or a
+  library's such as libopenh264, never a hardware one) and
+  `ffmpeg.demuxers` (matroska), from `ffmpeg -decoders` and `-demuxers`.
+- screens, as the session's `ScreenBackend` records them (A§8.11): under
+  the portal `gst.pipewiresrc`, `pipewire.daemon` (the `pipewire-0` socket
+  in `$PIPEWIRE_RUNTIME_DIR`, else `$XDG_RUNTIME_DIR`, looked at on the file
+  system: nothing connects) and `portal.screencast` (D-Bus, 5 s; v3 passes,
+  noting that the picker shows on every take, where v4 remembers the
+  choice; a portal that can't capture monitors fails), with
+  `portal.registry`, which informs. On X11 `gst.ximagesrc` and `x11.randr`:
+  the X server connected within 2 s through discovery's code, its RandR
+  version (asked up to x11rb's 1.6) and the screens discovery lists
+  ("RandR 1.6: 3 screens (VIRT-L, screen, VIRT-R)"). A server Qrec can't
+  reach turns screens off with discovery's own warning ("X11 (DISPLAY=:0):
+  can't connect: …"), so the doctor, `sources list` and the first run say
+  the same; without RandR, or before 1.3, the whole X screen records as
+  one, which only informs. No portal is asked on X11 (KDE's registers
+  ScreenCast there and can't capture) and no PipeWire socket looked for.
+  Without a display, a `display` check turns screens off ("no Wayland
+  (WAYLAND_DISPLAY) or X11 (DISPLAY) display").
+- cameras: `gst.v4l2src`. Audio: `gst.pulsesrc`, `pactl` (16 or newer: its
+  `--version` is read first, and an older one, without `--format=json`, is
+  said so instead of blaming the sound server) and `sound.server`, which
+  replaced `pipewire`: whichever server answered, PulseAudio or PipeWire.
+- recording: `gst.h264parse`, `gst.matroskamux`, `gst.flacenc` and the
+  encoder that records (A§9.5): the VA encoder bound to the node, else
+  x264enc, else openh264enc. `gst.x264enc` or `gst.openh264enc` is needed
+  only when its encoder is the one that records; otherwise it informs, a
+  missing one saying what records instead, and with no encoder at all both
+  are needed. `gst.vah264enc` informs: which VA encoder records, or what
+  would give GStreamer one on the node's GPU, and what records on the CPU
+  meanwhile. The CLI doctor asks the probe child for the node's VA encoder
+  (A§8.10; the same Intel/AMD-only rule as the h264_vaapi check); the GUI's
+  doctor doesn't probe (its host does) and counts the first full VA
+  encoder GStreamer lists, else its first low-power one, on an Intel or
+  AMD node.
+- exports: `ffmpeg.pcm_s16le` (all three formats), `ffmpeg.aac` (MP4),
+  `ffmpeg.libvpx-vp9` (WebM), `ffmpeg.libopus` (WebM and AV1),
+  `ffmpeg.libsvtav1` (AV1) and, for MP4's video, the encoder the export
+  plan picks (A§9.3): h264_vaapi once the h264_vaapi check passed on the
+  node (for the GUI's unprobed doctor, an Intel or AMD node and an ffmpeg
+  that lists h264_vaapi), else `ffmpeg.libx264`, else
+  `ffmpeg.libopenh264`. Only that one is needed, the other informs, and
+  with none both are. A missing libopenh264 has no fix (it only stands in
+  for libx264; Debian's, Ubuntu's and Arch's ffmpeg have none); a missing
+  libx264 keeps its fix, the better encoder and the one an x264 preference
+  needs. The doctor reads no encoder preference.
+- `vaapi`, which informs: the VA-API report.
+
+`va` (`VaReport`): the render nodes with their PCI vendor and device ids
+(sysfs; never opened), the effective device and where it came from, the
+driver its children load (`expectedDriver`, `gpu::child_libva_driver`) and
+this process's `LIBVA_DRIVER_NAME`, libva's driver directories, the
+expected driver's file and the drivers installed (`gpu::VaDrivers`), the
+h264_vaapi check (a 10 s child, run again with Intel's other driver where
+the node's fails, as capability detection does: `exportDriver` is the one
+that passed, which exports load), GStreamer's VA encoders and the one bound
+to the node (`gstFactory`), and what `main()` changed at startup (A§8.10).
+Without an Intel or AMD node the `vaapi` and `gst.vah264enc` rows inform
+instead of failing: no render node (a virtual machine without 3D
+acceleration, or no GPU driver), or each node named (NVIDIA, which has no
+VA-API encoder; virtio-gpu, VMware or QXL, a virtual machine's GPU; another
+PCI vendor; a GPU not on PCI), with what encodes on the CPU instead. A
+configured node that isn't Intel's or AMD's keeps an informative failure
+whose hint names where it is configured (the project's
+`recording.vaapiDevice`, or `config.toml`). On Intel and AMD nodes the
+hints follow the node: Intel's i965 (`VaGpu::IntelLegacy`) on the chips
+only it drives, else iHD, or AMD's Mesa driver, with GStreamer's VA plugin
+only after them (the plugin alone once ffmpeg's h264_vaapi check encoded on
+the node, since the driver works). Where the node's driver is i965 and
+GStreamer has no VA encoder, `gst.vah264enc` says its VA plugin doesn't
+encode with i965: information on the chips only i965 drives, else with
+iHD's hint, or, where iHD is installed and the user set
+`LIBVA_DRIVER_NAME=i965`, the advice to unset it.
+
+**Install hints** (`qrec_core::platform::install_hint(need, platform)`,
+pure): a `Hint` for each `Need` a failed check has (GStreamer and its
+plugin sets, x264enc, openh264enc, an H.264 decoder, gtk4paintablesink,
+pipewiresrc, the VA plugin, ffmpeg, a full ffmpeg, pactl, the sound
+server, the PipeWire daemon, the ScreenCast portal, RandR, a VA driver by
+vendor and generation: iHD, i965, Mesa). Inside a Nix shell
+(`IN_NIX_SHELL`) what Qrec's flake ships is `nix develop`; on NixOS it is
+the Qrec Nix package, with its attribute; elsewhere it is the family's
+packages with `sudo apt install`, `sudo dnf install`, `sudo pacman -S` or
+`sudo zypper install` where their names are known (the distributions'
+package lists, October 2026: Debian 13, Ubuntu 26.04, Fedora 44, Arch,
+Tumbleweed), else a sentence naming what to install, upstream's names
+marked as upstream, and the family's package manager. Fedora's codecs come
+from RPM Fusion: gstreamer1-plugins-ugly, `sudo dnf swap ffmpeg-free
+ffmpeg --allowerasing`, intel-media-driver and mesa-va-drivers-freeworld;
+its openh264enc and H.264 decoder are gstreamer1-plugin-openh264. The
+portal's hint follows the session and the desktop: xdg-desktop-portal-gnome
+on niri and GNOME, -kde on KDE, -cosmic on COSMIC; -wlr on sway, river,
+wayfire and labwc, with a screen chooser, a `portals.conf` line,
+`dbus-update-activation-environment` and `XDPW_PERSIST_MODE=permanent`;
+-hyprland, with the picker's restore-token box; an X11 session needs none.
+The sound server and the PipeWire daemon are started, not installed
+(`services.pipewire.enable` on NixOS, `systemctl --user enable --now
+pipewire.socket` with systemd), and RandR comes with the X server (Xvfb's
+`+extension RANDR`). A check that installing or setting something up fixes
+carries the hint whole as `fix` (absent otherwise), and `hint` is its line;
+S23 shows its command with Copy and its note as a sentence. Advice that
+installs nothing stays a line (reinstall ffmpeg, update pactl to 16,
+`LIBVA_DRIVER_NAME`).
+
+**Where it runs.** The report carries the `platform`, the `screenBackend`
+(as `sources list` says it; under the fake capture backend still the
+session's, where `sources list` says portal) and the `session` line both
+texts start with ("Session: X11 (xfce) · screens: x11 (DISPLAY=:0)"; the
+session, "no display" without one, its desktop and the backend in
+`ScreenBackend`'s words). `shortcuts` is `keymap::global_snippet` of the
+platform's desktop (SPEC §10.2, A§9.7), whose heading and text the
+doctor's text and the CLI's print; `niriSnippet`, SPEC §10.2's KDL whatever
+the desktop, stays for one more release. There is no `wl-copy` check: Copy
+image goes through GDK's clipboard, and no CLI command copies.
+Under `QREC_CAPTURE_BACKEND=fake` the screen backend's, the cameras' and
+the audio checks only inform, and `gst.videotestsrc` (screens, cameras)
+and `gst.audiotestsrc` (audio) are those features' needs; recordings count
+x264enc, else openh264enc, and MP4 exports libx264, else libopenh264.
 
 ---
 
@@ -2405,30 +2876,76 @@ pub struct StitchPlan { pub list_path: String, pub list_content: String, pub arg
   `.qrec/cache/segments/<key>.<ext>`; a mismatch fails the export. So the
   planner requires `caps.ffprobe` as well as ffmpeg and its encoders
   (`missing_dependency` before anything renders).
+- **H.264 encoder** (one per export, `Encoder::h264`): h264_vaapi on the
+  node when `ExportOptions::allow_vaapi` (set from `export_plan::vaapi_node`:
+  the verified node is the effective device and its chain works,
+  `caps.vaapi.ffmpeg_h264`) and x264 isn't asked for by name; else libx264;
+  else libopenh264 where ffmpeg lists it and not libx264
+  (`exports_with_openh264`: Fedora's ffmpeg-free; an ffmpeg whose encoders
+  weren't listed still exports with libx264). An x264 preference, the
+  project's or the config's (`prefers_x264`, A§2.1), sets
+  `ExportOptions::x264_only`: libx264 alone, as recordings are x264enc's
+  alone then. Errors are `missing_dependency`: with neither encoder, "ffmpeg
+  has no libx264 or libopenh264 encoder" (hint: a full ffmpeg build); with
+  x264 asked for by name and no libx264, a hint that says where to set
+  auto and what auto would export with (h264_vaapi on the node, else
+  libopenh264), or to install libx264, and a full ffmpeg where auto would
+  need libx264 too. libopenh264 encodes at most
+  `capture_plan::OPENH264_MAX_PIXELS` a frame (9,437,184 pixels: 4096×2304;
+  ffmpeg fails 4112×2304 at once), so a larger canvas it would encode is
+  refused up front, hinting WebM or libx264. WebM and AV1 don't change.
 - **Presets** (Draft / Standard / High; Standard is SPEC §13.1):
   - libx264: `-preset veryfast -crf 23` / `medium -crf 20` / `slow -crf 18`
   - h264_vaapi: `-rc_mode CQP -qp 26` / `22` / `19`
+  - libopenh264: `-rc_mode quality -qmin <q> -qmax <q>` at VA's QPs, 26 /
+    22 / 19 (`-rc_mode off` ignores them and encodes at QP 26), `-g 250
+    -threads 1`, no `-b:v` *(measured, OpenH264 2.6 in ffmpeg 8.1.2, on 10 s
+    of a 1920×1080 30 fps screen with still text, scrolling and cuts, a
+    480×270 camera in a corner, and on a noisy camera filling the canvas)*.
+    With the QP pinned the bitrate target changed neither a decoded frame
+    nor the size from 2 to 100 Mbit/s, only the level written in the stream
+    (5.0 at 100 Mbit/s for 1080p30; 4.0 without a target, as libx264's).
+    `-g 250` is libx264's default keyframe interval: without it OpenH264
+    writes a single IDR. `-threads 1` encodes one slice: ffmpeg's `auto`
+    encodes the same stream, and four slices were no faster on the
+    composite for 3.6 % more bits. Against libx264's presets Draft is
+    0.9 dB PSNR-Y below `veryfast -crf 23` for 22 % more bits, Standard
+    2.2 dB below `medium -crf 20` for 9 % more (QP 19 would match it for
+    37 % more) and High 1.8 dB below `slow -crf 18` for 7 % more; the noisy
+    camera costs 1.6× libx264's bits at Standard, for 2.7 dB more.
   - libvpx-vp9: `-crf 36/32/28 -b:v 0 -row-mt 1 -deadline good -cpu-used 5/4/2`
   - libsvtav1: `-preset 10/8/6 -crf 38/35/30`
-  - all H.264: `-bf 0 -profile:v high`, plus `-pix_fmt yuv420p` for
-    libx264 only (h264_vaapi takes hwupload frames; ffmpeg 8.1.2 warns the
-    option conflicts *(measured)*); keyframe at each segment start. No
+  - all H.264: `-bf 0` and `-profile:v high`, but libopenh264's
+    `constrained_baseline` (its only profile), plus `-pix_fmt yuv420p` for
+    libx264 and libopenh264 only (h264_vaapi takes hwupload frames; ffmpeg
+    8.1.2 warns the option conflicts *(measured)*); keyframe at each
+    segment start. No
     B-frames *(measured)*: with them a segment's DTS start a reorder delay
     early, except in a 1–2-frame segment (nothing to
     reorder), so after such a unit the next segment's first DTS collide in
     the stitch, ffmpeg bumps them by one tick each and the MP4's sample
     table comes out up to two frames short.
 - **VA export chain** (only when `export_plan::export_vaapi(project,
-  config, caps)` names the node: the effective encoder of A§2.1 isn't x264,
-  the verified node is the effective device, and `caps.vaapi.ffmpeg_h264`;
-  the GUI's export caption asks the same function, docs/GUI.md G§4.8):
+  config, caps)` names the node: the effective encoder of A§2.1 isn't x264
+  and `vaapi_node` names it, the verified node being the effective device
+  and `caps.vaapi.ffmpeg_h264`; the GUI's export caption asks the same
+  function, docs/GUI.md G§4.8, and says "software encode (OpenH264)" where
+  libopenh264 encodes):
   `-init_hw_device vaapi=va:<device> -filter_hw_device va … [v]format=nv12,hwupload[vv]
-  -c:v h264_vaapi -rc_mode CQP -qp <q>`, child env `LIBVA_DRIVER_NAME` per
-  A§8.10. One encoder per export: if a VA segment fails, the whole export is
-  re-planned with libx264 (different argv, different keys, nothing mixes).
+  -c:v h264_vaapi -rc_mode CQP -qp <q>`, child env `LIBVA_DRIVER_NAME` the
+  one its h264_vaapi check passed with (`gpu::export_libva_driver_for`: the
+  node's, or Intel's other driver where capability detection found only
+  that one encodes there, A§8.10). One encoder per export: if a VA segment
+  fails, the whole export is re-planned in software (`without_vaapi`:
+  different argv, different keys, nothing mixes), on libx264, else
+  libopenh264, from the encoders the runner asks `ffmpeg -encoders` for then
+  (10 s, stderr in the job's `encoders` log; an ffmpeg that can't say gets
+  libx264), and with no fallback for a canvas too large for libopenh264.
+  Its log line and failure message name the encoder it fell back to.
 - **Cache key** = `sha256(PLAN_VERSION ‖ caps.ffmpeg.identity ‖ VA device for
   VA plans ‖ argv[..len-1] joined with \0)`; identical keys in one export are
-  rendered once.
+  rendered once. The argv names the encoder, so libopenh264's segments are
+  cached apart from libx264's.
 - **Stitch:** concat demuxer list in the segments dir (file names only),
   `-c:v copy`, audio encoded once (`aac -b:a 192k` + `-movflags +faststart`
   for MP4; `libopus -b:a 128k` for WebM), `-f mp4|webm`, output last. Each
@@ -2462,15 +2979,39 @@ pub struct CapturePlan { pub take: TakeId, pub dir: String, pub log: String, pub
                          pub video: Vec<VideoRecord>, pub audio: Vec<AudioRecord> }
 pub struct VideoRecord { pub id: LayerId, pub source: VideoSource, pub file: String,
                          pub encoder: VideoEncoder, pub key_int_max: u32, pub camera_mode: Option<CameraMode> }
-pub enum VideoEncoder { Va { factory: String, qp: u32 },
-                        X264 { pass: String, quantizer: u32, speed_preset: String, tune: String } }
+pub enum VideoEncoder { Va { factory: String, qp: u32 },   // va*h264enc, else va*h264lpenc
+                        X264 { pass: String, quantizer: u32, speed_preset: String, tune: String },
+                        OpenH264 { rate_control: String, qp: u32, bitrate: u32, complexity: String, threads: u32 } } // JSON kind "openh264"
 pub struct AudioRecord { pub id: TrackId, pub device: String, pub file: String, pub sample_rate: u32 }
 ```
 
 File names: `L1-screen-DP-4.mkv`, `L2-camera-0.mkv`, `A1-mic.mka`,
 `A2-system.mka` (sanitized to `[A-Za-z0-9._-]`). Visible and hidden layers
-are both recorded (visibility is a layout choice). Encoder: `x264` ⇒ X264;
-otherwise Va when `caps.vaapi.gst_h264_factory` is known; else X264.
+are both recorded (visibility is a layout choice). Encoder
+(`choose_encoder`): the preference (`encoder_pref`, A§2.1) `x264` ⇒ X264;
+otherwise Va with the effective node's `va*h264enc`, else its low-power
+`va*h264lpenc` (`caps.vaapi.gst_h264_factory`, `gst_h264_lp_factory`, A§3; the
+node must be the configured one when one is, never an NVIDIA node nobody
+configured, and detection probes no NVIDIA node at all, A§8.10); else X264,
+unless GStreamer has openh264enc and not x264enc (`caps.gst_h264`,
+`may_record_with_openh264`): then OpenH264 with the settings of A§8.11
+(`OPENH264_*`). When nothing said which software
+encoders GStreamer has (no host that records asked yet, or its probe
+failed), the plan records with x264 as before, and a missing x264enc is
+the engine's `CaptureFailed`, `missing_dependency`, whose hint says what
+would record instead: under an x264 preference that keeps the machine from
+the VA encoder or openh264enc it has, where to set auto, or to install
+x264enc; with GStreamer known to have neither, both software encoders; a
+probe that didn't answer, the missing one or the other. A VA-API
+preference that ends up on a software encoder logs which one. OpenH264
+encodes at most `OPENH264_MAX_PIXELS` a frame (9,437,184 pixels, 36,864
+macroblocks: 4096×2304 whatever the shape; OpenH264 2.6 encodes 2304×4096,
+5120×1440 and 7680×1200 too and refuses 4112×2304), so when it may record
+a take's start asks for the screens' sizes too (`FactsNeeded::screens`,
+the screens without the cameras' discovery, A§4.2), and the plan refuses a
+screen, or a camera mode, larger than that up front: `missing_dependency`
+naming the layer and its output or device, with the hint to install
+x264enc. A size nobody knows goes ahead.
 
 ### A§9.6 GES plan (`ges_plan.rs`)
 
@@ -2591,7 +3132,27 @@ pub fn conflict_notes(map: &Keymap) -> Vec<ConflictNote>;       // Q5/S22's bann
 pub fn set_binding(keys_toml: &str, id: &str, keys: &[KeyChord]) -> Result<String, CoreError>; // one line edited (WP9)
 pub fn reset_binding(keys_toml: &str, id: &str) -> Result<String, CoreError>;               // its lines removed
 pub const KEYLESS: &[KeylessAction];                            // the palette's actions with no key: history.clear (D-19)
+pub const GLOBAL_SHORTCUTS: [GlobalShortcut; 3];                // SPEC §10.2's: { id, label, key, argv } (keymap/global.rs)
+pub fn global_snippet(desktop: &Desktop) -> GlobalSnippet;      // how to bind them on that desktop
+pub struct GlobalSnippet { pub desktop: Option<Desktop> /* None: the generic list */, pub language: String, pub file: Option<String>,
+                           pub heading: String, pub text: String, pub note: String, pub button: String, pub modifier: String }
 ```
+
+The global shortcuts (record toggle, record over, discard last: keys
+that run a Qrec command while another app has focus; Qrec grabs no keys
+itself) are data, and `global_snippet` says how to bind them where Qrec
+runs (the platform's desktop, A§8.12): niri's binds (SPEC §10.2's KDL,
+built from the same commands and checked equal), sway's `bindsym`, i3's
+with `--no-startup-id` and a comment that i3's default config binds
+`$mod+Shift+r` to restart, Hyprland's `bind` and river's `riverctl map`,
+each with its config file; the steps in GNOME Settings and KDE Plasma's
+System Settings, with each shortcut's name, command and keys; and for
+every other desktop (Xfce, Cinnamon, MATE, COSMIC, wayfire, labwc, one
+nothing names) those commands and keys, to bind in its keyboard settings.
+The modifier's key cap is `Mod` for niri, sway and i3, `Meta` on KDE,
+else `Super`. The cheat sheet's Global shortcuts group (docs/GUI.md),
+`qrec doctor`'s `shortcuts` and the agent guide (the CLI backend's
+`Backend::desktop`; the generic list without the shell) show it.
 
 Grammar `ctrl+shift+z`; shift is recorded only for letters and named keys
 (`<` is `less`). The default table is SPEC §10.2 plus Backspace for remove,
@@ -2760,7 +3321,8 @@ the last project, with `projects.open_last` on and only if it still holds
 | GUI host | `host/gui_tests.rs`: `GuiHost` with a fake `GuiPort` and Session (`ipc::testing`) and shortened `ExitRules`: no idle exit, `first` ahead of early requests, one FIFO, `fail`, a failed open, close (after what the window submitted before it; dropping autocut analyses; the grace ending a recovery hold), every window request answered once (also unhandled ones, and at once while the Session drops), `first`'s toasts only while serving, signals (the second in a child process), the `shutdown` refusal, a crash; with a real Session and no capture (a closing window's autocut cuts nothing; a signal while it opens toasts nothing); and once with a real Session on the fake capture backend (the port as its observer and notifier: `first` initializes an empty folder, a CLI take records, the window's stop is answered after its state, close); `host/takeover_tests.rs` against hosts with a fake Session, and Stop & open on a real fake-backend recording and countdown (`crates/qrec/tests/cli.rs`) |
 | Session for the GUI | `session/tests.rs`: the observer's snapshots (commands, `RecordClock`, export progress, before their replies), `reply_late` only for `Effect::Reply`, D-47 (UI commands answered while edits wait for a recovery), `RetryLive` in order with `SetLive`; `SharedSources` never discovering on the session thread once cached; `laneMute` through `.qrec/ui.json`; a relative seek while playing from the window's player (`SessionConfig::player`) and the sync's stale seek dropped (GUI G§3.10 step 3) |
 | View models | `insta` per `view` module over `testkit::design_state()` and its owner's variants (docs/GUI.md G§8.1) |
-| GUI | GTK-free logic as unit tests in `qrec-gui` (G§8.2), and its `tests/resources_fresh.rs` (the compiled GResource is `resources/` byte for byte: `build.rs` reruns only on a newer mtime, G§3.14); the nested suites in `crates/qrec/tests/gui_*.rs` (`gui_shell`, `gui_smoke`, `gui_chrome`, `gui_timeline`, `gui_stage`, `gui_panel`, `gui_bin_export`, `gui_live`, `gui_themes`, `gui_a11y`, `gui_audits`, `gui_text`; `-- --ignored`): the window in a headless sway on the design fixture, on pixman or gles2 (`QREC_TEST_WLR`), at any scale (`QREC_TEST_SCALE`), probed through its test channel and shot against the frames, failing on any GLib or GTK critical; the end-to-end smoke with the main-loop probe (docs/GUI.md G§8.4–G§8.6) |
+| GUI | GTK-free logic as unit tests in `qrec-gui` (G§8.2), and its `tests/resources_fresh.rs` (the compiled GResource is `resources/` byte for byte: `build.rs` reruns only on a newer mtime, G§3.14); the nested suites in `crates/qrec/tests/gui_*.rs` (`gui_shell`, `gui_smoke`, `gui_chrome`, `gui_timeline`, `gui_stage`, `gui_panel`, `gui_bin_export`, `gui_live`, `gui_themes`, `gui_a11y`, `gui_audits`, `gui_text`, `gui_blocking`, `gui_overlays`, `gui_picker`, `gui_x11`; `-- --ignored`): the window in a headless sway on the design fixture, on pixman or gles2 (`QREC_TEST_WLR`), at any scale (`QREC_TEST_SCALE`), or on X11 on a private Xvfb (`QREC_TEST_DISPLAY=x11`; `gui_x11` always, at scale 1 or 2), probed through its test channel and shot against the frames, failing on any GLib or GTK critical; the end-to-end smoke with the main-loop probe (docs/GUI.md G§8.4–G§8.6) |
+| X11 | `crates/qrec/tests/x11.rs` (ignored: it starts an X server): the binary with the real backend on a private Xvfb split into two RandR monitors (`VIRT-L`, `VIRT-R`), no session bus and a `niri` that tells when it runs: `sources list`, `scene layer add screen`, `doctor`, a 3 s take of one monitor (its size, rate, square pixels, no pixel of the other) and takes that lose their monitor mid-take (A§8.11) |
 
 **`qrec_core::testkit`** (feature `testkit`, also under `cfg(test)`; pure):
 `ctx(now, entropy)`, `ProjectBuilder` (`.canvas()`, `.screen_layer()`,
@@ -2779,9 +3341,18 @@ machine, so the design fixture's UTC times show as BRIEF's) for every
 spawned `qrec` (tests never touch the developer's config, tokens or
 running GUI); `.qrec()` returns a `std::process::Command`. Other inherited
 `QREC_*` variables are dropped, so a fake hook (below) applies only where a
-test sets it, and so are `DISPLAY`, `WAYLAND_DISPLAY` and `WAYLAND_SOCKET`
-(`qrec` without a command opens the window, never on the developer's
-display). Dropping a `TestEnv` SIGKILLs every process still running with
+test sets it, and so are the developer's session variables
+(`testkit::SESSION_VARS`: the displays, `GDK_BACKEND`, `XAUTHORITY`, the
+session type and desktop, the compositors' IPC sockets): `qrec` without a
+command opens the window, never on the developer's display, and nothing
+reads their desktop or asks their compositor. `testkit::x11::Xvfb` is a
+private X server for the X11 tests: Xvfb with RandR and GLX, `-nolisten
+tcp`, `-noreset` (a reset drops RandR monitors) and its own cookie, on a
+free display from 64 on, never 0 or the inherited `DISPLAY`'s, ready on
+`-displayfd` within 15 s, stopped on drop; `Xvfb::vars` gives a command its
+display once the env built it, and its connection's waits end 10 s after it
+opens, so a stuck server fails a test instead of hanging it.
+Dropping a `TestEnv` SIGKILLs every process still running with
 its `QREC_RUNTIME_DIR` (what it spawned, the hosts a `qrec record start`
 detached, their children), also after a failed test, then deletes its
 dirs. `MediaSpec { video:
@@ -2825,6 +3396,10 @@ developer exported for manual shots.
   ("GIGA-BYTE GS27QA" 2560×1440, "Dell U2720Q" 3840×2160, "Logitech C920",
   "Yeti Nano", "Built-in Audio Analog Stereo"); names, paths, modes and
   the test patterns stay.
+- `QREC_FAKE_INVENTORY=noscreens`: the plain inventory without screens,
+  whose discovery says why as it does without a display (`screens: no
+  Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display`, A§8.12); the fake
+  engine keeps its screens.
 - `QREC_FAKE_CAMERA_STALL_MS=<ms>`: that long into each take's recording,
   the fake cameras the take records stop sending frames (no error, no
   EOS: a hung camera), so `STALL_LIMIT` later the take loses them
