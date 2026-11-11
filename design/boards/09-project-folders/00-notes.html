@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <title>Project folders · notes</title>
-  <meta name="description" content="Named project folders with a default one (SPEC §4.4): the picker's folder menu and Settings' folder list. Not approved yet; the questions need your answer.">
+  <meta name="description" content="Named project folders with a default one (SPEC §4.4): the picker's folder menu and Settings' folder list. Approved on 2026-11-11.">
   <meta name="htmlboard" content="width=880">
   <link rel="stylesheet" href="../styles.css">
   <style>
@@ -23,7 +23,7 @@
 </head>
 <body>
   <h1>Project folders</h1>
-  <p class="lede">The single projects folder becomes a list of named folders, one of them the default (SPEC §4.4, §6.4). The CLI is built: <code>qrec folders [add|rename|default|rm]</code> and <code>qrec create NAME --in FOLDER</code>. Until these boards are approved, the GUI keeps the approved 08 boards and works on the default folder only.</p>
+  <p class="lede">The single projects folder becomes a list of named folders, one of them the default (SPEC §4.4, §6.4). The CLI is built: <code>qrec folders [add|rename|default|rm]</code> and <code>qrec create NAME --in FOLDER</code>. The GUI follows these boards.</p>
 
   <h2>What's on the board</h2>
   <ol>
@@ -39,9 +39,12 @@
     <li><b>Keys</b>: <code>Alt+↓</code> opens the menu from the field; in it <code>↑ ↓ Enter Esc</code>.</li>
   </ul>
 
-  <h2>Questions</h2>
-  <div class="q"><b>1. Should a chosen folder in the picker become the default?</b><span class="rec">Recommended no: the default stays put, and <i>Make default</i> is one click away in the menu.</span></div>
-  <div class="q"><b>2. Should Add folder ask for a name first?</b><span class="rec">Recommended no: the folder's own name is almost always right, and renaming is in Settings. Asking adds a dialog to every add.</span></div>
-  <div class="q"><b>3. Should rows be reorderable?</b><span class="rec">Recommended no for now: the order is the order added, and the default is what matters.</span></div>
+  <h2>Approved (2026-11-11)</h2>
+  <p>Approved as drawn, with these answers:</p>
+  <ol>
+    <li><b>The default is only ever set explicitly</b>: choosing a folder in the picker is for that project; <i>Make default</i> (menu or Settings) and <code>qrec folders default</code> change it.</li>
+    <li><b>Add folder takes the folder's own name</b> (<i>videos</i>, <i>videos 2</i> when taken); rename in Settings.</li>
+    <li><b>No reordering for now.</b> The order is the order added; the default one is marked as such.</li>
+  </ol>
 </body>
 </html>
