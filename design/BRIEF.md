@@ -147,7 +147,7 @@ With no layer selected, the inspector shows one `caption` `muted` line: "Select 
 | Seconds | 1.6 (48 px/s) | 00:01:05:00 → 00:01:26:20 | Every 2 s | Major 1 s (48 px), minor 10 frames (16 px) | Filmstrip of 128×72 thumbnails |
 | Frame | 32 (≥ 24 required) | Frames 3160 → 3192 (00:01:45:10 → 00:01:46:12) | Each frame's `FF` centered in its 32 px cell; full timecode at second boundaries | A tick at every frame boundary, taller at seconds | One thumbnail per frame, a 32×72 center crop |
 
-**Fit inset (DESIGN.md → Timeline wins).** The build uses an 8 px end inset at fit zoom: (1040 − 8) / 7391 = 0.1396 px/frame, so the playhead parked at the end is never half clipped. The mocks and the "x at fit" column in §3.3 still draw 1040 / 7391. Re-lay every fit-zoom frame in one pass, with x′ = 176 + (x − 176) × 1032 / 1040, and update the C15 Ruler/Fit ticks with it.
+**Timeline pads (DESIGN.md → Timeline wins).** The build pads the timeline with 8 px before frame 0 and 32 px after its end: (1040 − 40) / 7391 = 0.1353 px/frame at fit zoom, frame 0 at x 184. The playhead parked at either end is never half clipped, and the last clip's end edge stays clear of the lanes' overlay scrollbar. `Z` fits the selection between the same pads (S12: 0.322 px/f, c3e9 from x 184 to 1184). The mocks and the "x at fit" column in §3.3 still draw 1040 / 7391 from x 176. Re-lay every fit-zoom frame in one pass, with x′ = 184 + (x − 176) × 1000 / 1040, and update the C15 Ruler/Fit ticks with it.
 
 ### 2.7 Hint bar
 

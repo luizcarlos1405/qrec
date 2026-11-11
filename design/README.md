@@ -170,6 +170,6 @@ In this slice, `record-text` draws **Cancel [R]** (S03), the Broken chip and **P
 
 ## Known gaps
 
-- **Fit-zoom end inset.** DESIGN.md (Timeline) and BRIEF §2.6 set px/frame = (time-area width − 8) ÷ total frames, but the mocks still use 1040 ÷ 7391. A playhead parked at the end is therefore half clipped in S02, S03, S04, S05, S05b and S13. Build from the formula and don't measure clip positions off the fit-zoom mocks. Redrawing them takes one pass over `C15 Ruler/Fit` (`I8Owg`) and every fit-zoom frame.
+- **Timeline pads.** DESIGN.md (Timeline) and BRIEF §2.6 pad the timeline with 8 px before frame 0 and 32 px after its end: px/frame at fit = (time-area width − 40) ÷ total frames, and `Z` fits the selection between the same pads. The mocks still use 1040 ÷ 7391 from the time area's left edge, and S12 fills the time area with c3e9. A playhead parked at the end is therefore half clipped in S02, S03, S04, S05, S05b and S13. Build from the formula and don't measure clip positions off the fit-zoom mocks. Redrawing them takes one pass over `C15 Ruler/Fit` (`I8Owg`), every fit-zoom frame and S12.
 - **`C01 Button/Destructive flat · pressed`** (`h7trs`): its label is about 3.9:1 on `surface`, below AA. No slice screen uses it. `record` at 16% (the value `ghost-fill` already has) would reach about 4.6:1.
 - **Links:** pen.dev doesn't keep `underline`, so "Open log" (S14) and "Open full log" (S17) draw a 1 px rule under the text. GTK should use a real underline.
