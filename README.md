@@ -83,10 +83,11 @@ these frames (docs/GUI.md G§7.2)._
 ## Supported setups
 
 Qrec needs Linux with GTK 4.22 and libadwaita 1.9 or newer, GStreamer 1.24
-or newer and ffmpeg. It builds and runs from the Nix flake (below): there are
-no distribution packages or Flatpak yet. Only niri has been tested on a real
-session. "Expected to work" means the loop should (record a screen and a
-mic, edit, export), but nobody has tried it there yet.
+or newer and ffmpeg. It runs from an AppImage, which brings all of that
+along, or from the Nix flake (below): there are no distribution packages or
+Flatpak yet. Only niri has been tested on a real session. "Expected to work"
+means the loop should (record a screen and a mic, edit, export), but nobody
+has tried it there yet.
 
 | Desktop | Screens through | State |
 | --- | --- | --- |
@@ -129,8 +130,37 @@ off: …"), and the rest works.
 
 ## Install
 
-There are no releases yet. With Nix (flakes enabled), Qrec runs and installs
-straight from this repository:
+There are no releases yet. Qrec runs from an AppImage you build, or from
+the Nix flake.
+
+### The AppImage
+
+One file for x86_64 Linux, whatever the distribution's GTK (Ubuntu 24.04,
+Debian 13, Fedora and Arch were tried). It bundles GTK, GStreamer, ffmpeg,
+Mesa and the VA-API drivers, and takes from the system only the session
+(the display, the desktop portal, PipeWire or PulseAudio) and the GPU's
+kernel driver. `packaging/appimage/build.sh` builds it in docker
+(`packaging/appimage/README.md`); then:
+
+```sh
+chmod +x Qrec-0.1.0-x86_64.AppImage
+./Qrec-0.1.0-x86_64.AppImage              # the window
+./Qrec-0.1.0-x86_64.AppImage doctor       # any qrec command: the AppImage is qrec
+```
+
+It needs neither FUSE nor root: without FUSE it extracts itself to `/tmp`
+and runs from there. Its `qrec doctor` names the AppImage and gives install
+hints only for the system's parts, and the global shortcuts it and the
+cheat sheet give run the AppImage's path, so bind them again if you move the
+file. Without a GPU it can use (a VM without 3D acceleration, a container),
+the window draws with Cairo. On NixOS with `programs.appimage.binfmt`, every
+AppImage goes through `appimage-run`, which can't open this one (a DwarFS
+image, not squashfs): use the flake there.
+
+### With Nix
+
+With Nix (flakes enabled), Qrec runs and installs straight from this
+repository:
 
 ```sh
 nix run github:luizcarlos1405/qrec                # try it
@@ -143,7 +173,7 @@ can't load the system's GPU drivers, so expect the window to draw in software
 and recordings to use x264 or OpenH264 instead of VA-API (`qrec doctor` says
 which); nixGL may give it the system's OpenGL. Neither has been tried.
 
-An AppImage, an AUR package and a .deb are on the way (issue #9).
+Released AppImages, an AUR package and a .deb are on the way (issue #9).
 
 ## Build and run
 

@@ -233,33 +233,23 @@ tune_appdir() {
 	GST_PLUGIN_SYSTEM_PATH=${SHARUN_DIR}/lib/gstreamer-1.0
 	unset GST_PLUGIN_PATH GST_PLUGIN_PATH_1_0 GST_PLUGIN_SCANNER_1_0
 	EOF
-	# AppRun sources bin/*.hook before it starts Qrec. This one applies
-	# Qrec's EGL policy (qrec-shell/src/gpu.rs, A§8.10), which Qrec can't
-	# apply from inside the AppImage yet: sharun would put NVIDIA's vendor
-	# first whenever its kernel module is loaded, which Qrec then takes for
-	# the user's choice, and Qrec's own pin would take NixOS's
-	# /run/opengl-driver Mesa, a host library among the bundled ones.
-	cat > "$APPDIR/bin/50-qrec-egl.hook" <<-'EOF'
-	#!/bin/sh
-	# Qrec (packaging/appimage/build.sh), unless __EGL_VENDOR_LIBRARY_FILENAMES
-	# names a vendor: with an Intel or AMD GPU, EGL loads the bundled Mesa
-	# only, never NVIDIA's or the host's Mesa; with NVIDIA only, sharun puts
-	# the host's NVIDIA driver first; without a GPU, the bundled Mesa draws
-	# in software.
-	if [ -z "${__EGL_VENDOR_LIBRARY_FILENAMES:-}" ] \
-	        && [ -f "$APPDIR/share/glvnd/egl_vendor.d/50_mesa.json" ]; then
-	        for _qrec_vendor in /sys/class/drm/renderD*/device/vendor; do
-	                case "$(cat "$_qrec_vendor" 2>/dev/null)" in
-	                        0x8086|0x1002)
-	                                export SHARUN_NO_NVIDIA_EGL_PRIME=1
-	                                export __EGL_VENDOR_LIBRARY_FILENAMES="$APPDIR/share/glvnd/egl_vendor.d/50_mesa.json"
-	                                break
-	                                ;;
-	                esac
-	        done
-	        unset _qrec_vendor
-	fi
-	EOF
+	# No startup hook of Qrec's own: Qrec applies its GPU rules from inside
+	# the AppImage (qrec-shell/src/gpu.rs, A§8.10). It knows the bundle by
+	# $APPDIR, takes its manifests first, and replaces the EGL and Vulkan
+	# variables sharun points into it (NVIDIA's vendor first when its kernel
+	# module is loaded): with an Intel or AMD GPU, EGL loads the bundled Mesa
+	# only. Without a render node to open, the window draws with Cairo.
+	# The AppStream metadata, under the app ID, where AppImage tools and
+	# catalogs look (usr/share/metainfo, as an extracted AppImage has it),
+	# with the desktop entry it names as its launchable next to it
+	# (usr/share/applications). quick-sharun copies neither: they live in
+	# the AppDir's share/ and usr/share links to them.
+	install -Dm644 /usr/share/metainfo/com.rsensato.qrec.metainfo.xml \
+		"$APPDIR/share/metainfo/com.rsensato.qrec.metainfo.xml"
+	mkdir -p "$APPDIR/share/applications" "$APPDIR/usr/share"
+	ln -sfn ../../com.rsensato.qrec.desktop "$APPDIR/share/applications/com.rsensato.qrec.desktop"
+	ln -sfn ../../share/metainfo "$APPDIR/usr/share/metainfo"
+	ln -sfn ../../share/applications "$APPDIR/usr/share/applications"
 	# What went in, for bug reports.
 	{
 		printf 'Qrec %s, built %s\n' "$QREC_VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

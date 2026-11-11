@@ -12,13 +12,16 @@
 # runs, with the fake capture backend:
 #
 #   1. qrec --version, qrec doctor (text and JSON; with the real backend, so
-#      its VA-API probes run), qrec sources list;
+#      its VA-API probes run), which must name the AppImage and give no
+#      package manager's hint (the AppImage bundles what it would install),
+#      qrec sources list;
 #   2. qrec init, a scene (a screen, a camera, a mic), a take (record start,
 #      record stop) and an MP4 export, checked with the bundled ffprobe;
 #   3. a take started by one AppImage run and stopped by another, by a host
 #      of its own that must outlive the CLI that started it (PIP-05);
-#   4. the window on a private Xvfb: a screenshot, the GL context GTK made
-#      and its log's criticals;
+#   4. the window on a private Xvfb: a screenshot, its renderer (Cairo
+#      without a render node, GL with QREC_TEST_VA's), the GL context GTK
+#      made and its log's criticals;
 #   5. --appimage-extract-and-run.
 #
 # Results go to $QREC_APPIMAGE_DIR/test/<image>/ (summary.txt first) and the
@@ -75,6 +78,20 @@ cli() {
 	# backend skips the VA-API probes.)
 	step doctor env -u QREC_CAPTURE_BACKEND "$A" doctor
 	env -u QREC_CAPTURE_BACKEND "$A" doctor --json > "$OUT/doctor.json" 2>"$OUT/doctor-json.stderr" || :
+	# It knows the AppImage it runs from (APPIMAGE, APPDIR) and names no
+	# package manager: the AppImage bundles what one would install.
+	if grep -q "^AppImage: $A (APPDIR=/" "$OUT/doctor.txt" \
+		&& grep -q "\"appImage\":{\"dir\":\"/[^\"]*\",\"path\":\"$A\"}" "$OUT/doctor.json"; then
+		say "ok    doctor-appimage: $(grep '^AppImage: ' "$OUT/doctor.txt")"
+	else
+		say "FAIL  doctor-appimage: no AppImage line in doctor.txt, or none in doctor.json"
+	fi
+	managers=$(grep -n -w -E 'apt|apt-get|dnf|pacman|zypper|sudo' "$OUT/doctor.txt" || :)
+	if [ -z "$managers" ]; then
+		say "ok    doctor-hints: no package manager named"
+	else
+		say "FAIL  doctor-hints: $managers"
+	fi
 	step sources "$A" sources list
 }
 
@@ -125,8 +142,10 @@ window() {
 	xvfb=$!
 	sleep 2
 	cd /work/demo
-	# GDK_DEBUG=opengl: GTK logs the GL context it renders with.
-	DISPLAY=:77 GDK_DEBUG=opengl dbus-run-session -- "$A" --project /work/demo > "$OUT/gui.log" 2>&1 &
+	# GDK_DEBUG=opengl: GTK logs the GL context it renders with;
+	# GSK_DEBUG=renderer: the renderer it picked.
+	DISPLAY=:77 GDK_DEBUG=opengl GSK_DEBUG=renderer dbus-run-session -- "$A" --project /work/demo \
+		> "$OUT/gui.log" 2>&1 &
 	gui=$!
 	sleep 30
 	if kill -0 "$gui" 2>/dev/null; then
@@ -144,6 +163,26 @@ window() {
 	gl=$(grep -i -E '^ - vendor|^ - device|opengl (es )?version|using opengl backend' "$OUT/gui.log" \
 		| sort -u | tr '\n' ' ')
 	say "info  GL: ${gl:-no GL context logged}"
+	# Qrec's own log (its state folder): what it set up for the GPU.
+	cat "$HOME"/.local/state/qrec/gui-*.log > "$OUT/gui-qrec.log" 2>/dev/null || :
+	grep 'gpu: ' "$OUT/gui-qrec.log" | sed 's/^.*gpu: /info  gpu: /' >> "$OUT/summary.txt" || :
+	renderer=$(grep -o -E "Using renderer '[A-Za-z]+'" "$OUT/gui.log" | sort -u | tr '\n' ' ')
+	say "info  renderer: ${renderer:-not logged}"
+	# Without a render node the window draws with Cairo, which Qrec chose
+	# (the AppImage's Mesa has no llvmpipe), and no GL context is made; with
+	# one (QREC_TEST_VA=1), GL.
+	if ls /dev/dri/renderD* >/dev/null 2>&1; then
+		if [ -n "$gl" ] && ! grep -q 'draws with Cairo' "$OUT/gui-qrec.log"; then
+			say "ok    window-renderer: GL, with a render node"
+		else
+			say "FAIL  window-renderer: no GL context with a render node, see gui.log and gui-qrec.log"
+		fi
+	elif grep -q 'the window draws with Cairo (GDK_DISABLE=gl,vulkan)' "$OUT/gui-qrec.log" \
+		&& [ -z "$gl" ] && grep -q "Using renderer 'GskCairoRenderer'" "$OUT/gui.log"; then
+		say "ok    window-renderer: Cairo, without a render node"
+	else
+		say "FAIL  window-renderer: not Cairo without a render node, see gui.log and gui-qrec.log"
+	fi
 	criticals=$(grep -c -E 'CRITICAL|Gtk-WARNING|ERROR' "$OUT/gui.log" || :)
 	say "info  gui.log: $criticals CRITICAL/Gtk-WARNING/ERROR lines"
 	grep -E 'CRITICAL|Gtk-WARNING|ERROR' "$OUT/gui.log" | head -n 20 >> "$OUT/summary.txt" || :
@@ -217,6 +256,7 @@ host() {
 		[ -n "$devices" ] || { echo "test.sh: no Intel or AMD render node" >&2; exit 1; }
 	fi
 	mkdir -p "$work/shots"
+	failed=
 	for image do
 		name=$(printf '%s' "$image" | tr ':/' '--')$suffix
 		out=$work/test/$name
@@ -228,8 +268,16 @@ host() {
 			-v "$out:/out" -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
 			"$image" nice -n 19 sh /opt/test.sh --in-container || :
 		[ ! -f "$out/shot.png" ] || cp "$out/shot.png" "$work/shots/$name.png"
-		cat "$out/summary.txt"
+		if [ -s "$out/summary.txt" ]; then
+			cat "$out/summary.txt"
+			! grep -q '^FAIL' "$out/summary.txt" || failed="$failed $name"
+		else
+			echo "FAIL  $name wrote no summary"
+			failed="$failed $name"
+		fi
 	done
+	# A failed check fails the run (and CI).
+	[ -z "$failed" ] || { echo "test.sh: checks failed on:$failed" >&2; exit 1; }
 }
 
 if [ "${1:-}" = --in-container ]; then

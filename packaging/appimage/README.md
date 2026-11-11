@@ -62,15 +62,18 @@ Each container (`ubuntu:24.04`, `debian:13`, `fedora:latest`,
 `archlinux:latest` by default) gets the AppImage read-only and no `/dev/fuse`,
 installs only Xvfb and D-Bus, and runs `--version` and `doctor` (with the
 real backend: without a display, screens are off and everything else must
-come from the bundle), then with the fake capture backend: `sources list`;
-`init`, a scene, a take and an MP4 export checked with the bundled `ffprobe`;
-a take started by one AppImage run and stopped by another; the window on a
-private Xvfb, with a screenshot and the GL context GTK made; and
-`--appimage-extract-and-run`. Results go to
-`tmp/appimage/test/<image>/summary.txt`, screenshots to
-`tmp/appimage/shots/<image>.png`. Nothing uses the host's display, session bus
-or FUSE. With `QREC_TEST_VA=1` each container also gets the host's first Intel
-or AMD render node, never an NVIDIA one, and no other device.
+come from the bundle; the report must name the AppImage and no package
+manager), then with the fake capture backend: `sources list`; `init`, a
+scene, a take and an MP4 export checked with the bundled `ffprobe`; a take
+started by one AppImage run and stopped by another; the window on a private
+Xvfb, with a screenshot, the renderer GTK picked (Cairo without a render
+node, GL with one) and the GL context it made; and
+`--appimage-extract-and-run`: 19 checks. Results go to
+`tmp/appimage/test/<image>/summary.txt` (with Qrec's `gpu:` log lines),
+screenshots to `tmp/appimage/shots/<image>.png`. Nothing uses the host's
+display, session bus or FUSE. With `QREC_TEST_VA=1` each container also gets
+the host's first Intel or AMD render node, never an NVIDIA one, and no other
+device.
 
 On a kernel that hands AppImages to an interpreter of the host's through
 binfmt_misc (NixOS's `programs.appimage.binfmt`, which runs `appimage-run`), a
@@ -83,22 +86,29 @@ the AppImage does on a host without that handler.
 
 | Image | glibc | Result |
 | --- | --- | --- |
-| `ubuntu:24.04` (24.04.5) | 2.39 | all 16 checks pass |
-| `debian:13` | 2.41 | all 16 checks pass |
-| `fedora:latest` (45) | 2.44 | all 16 checks pass |
-| `archlinux:latest` | 2.44 | all 16 checks pass |
+| `ubuntu:24.04` (24.04.5) | 2.39 | all 19 checks pass |
+| `debian:13` | 2.41 | all 19 checks pass |
+| `fedora:latest` (45) | 2.44 | all 19 checks pass |
+| `archlinux:latest` | 2.44 | all 19 checks pass |
 
 None of them had GTK, GStreamer, libadwaita or ffmpeg installed. The window's
 log has one warning on each, that there is no accessibility bus (the containers
-run no AT-SPI); GTK drew with GLES 3.1 on Mesa's software rasterizer (Xvfb has
-no GPU). The doctor's VA-API rows fail there, since a container sees the host's
-render nodes in sysfs but gets no device node, and its hint then says to install
-iHD with apt, which the AppImage bundles. With `QREC_TEST_VA=1` on an Intel
-Arrow Lake iGPU (`8086:7d51`, i915), the doctor bound GStreamer's `vah264enc`
-to the node and ffmpeg's `h264_vaapi` check passed, both on the bundled `iHD`,
-and the bundled ffmpeg encoded 1080p with `h264_vaapi`. The fake backend
-records with x264 and exports with libx264 everywhere (Qrec skips VA-API under
-it), so the takes themselves don't show the GPU.
+run no AT-SPI). A container sees the host's render nodes in sysfs (here an
+Intel Arrow Lake iGPU and an NVIDIA GPU, NVIDIA's kernel module loaded) but
+gets no device node, so the window drew with Cairo (`GskCairoRenderer`, no GL
+context), Qrec's log saying why, and EGL went to the bundled Mesa, Vulkan to
+its `anv` (sharun's `VK_DRIVER_FILES`, the bundle's, replaced). The doctor
+named the AppImage (`AppImage: /opt/qrec.AppImage
+(APPDIR=/tmp/appimage_extracted_…)`), said `/dev/dri/renderD128 can't be
+opened: No such file or directory` in its VA-API rows, with how to give a
+container the node, and named no package manager. With `QREC_TEST_VA=1` on that
+iGPU (`8086:7d51`, i915), the doctor bound GStreamer's `vah264enc` to the node
+and ffmpeg's `h264_vaapi` check passed, both on the bundled `iHD`, and an
+earlier run had the bundled ffmpeg encode 1080p with `h264_vaapi`; the window
+kept GL then, though on softpipe: Xvfb has no DRI3, so Mesa can't draw on the
+GPU there. The fake backend records with x264 and exports with libx264
+everywhere (Qrec skips VA-API under it), so the takes themselves don't show
+the GPU.
 
 A take started by one AppImage run and stopped by another worked on all four,
 and in two more cases tried by hand: FUSE mounts, as root and as a user with
@@ -151,6 +161,7 @@ From the archive day unless said otherwise:
 | libglvnd | 1.7.0 | EGL/GL dispatch |
 | Fonts | Fraunces, Atkinson Hyperlegible Next, JetBrains Mono | `share/qrec/fonts`, where the GUI looks (`<exe>/../share/qrec/fonts`), with their OFL texts in `share/licenses/qrec-fonts` |
 | Desktop entry, icon | `com.rsensato.qrec.desktop`, its 256 px icon and `.DirIcon` at the root | the hicolor icons in `share/icons` |
+| AppStream metadata | `com.rsensato.qrec.metainfo.xml` (`data/`) | `share/metainfo`, linked from `usr/share/metainfo` |
 
 Qrec runs nothing from v4l-utils (cameras come from GStreamer, PipeWire and
 sysfs), so it isn't bundled; only the Nix wrapper's `PATH` has it.
@@ -189,12 +200,25 @@ What `build.sh` adds (`tune_appdir`):
 - `.env`: GStreamer scans the bundled plugins only (`GST_PLUGIN_SYSTEM_PATH_1_0`
   and `GST_PLUGIN_SYSTEM_PATH` set, `GST_PLUGIN_PATH`, `GST_PLUGIN_PATH_1_0` and
   `GST_PLUGIN_SCANNER_1_0` unset), as the flake's wrapper does.
-- `bin/50-qrec-egl.hook`: Qrec's EGL policy (A§8.10), which Qrec can't apply
-  from inside the AppImage yet. With an Intel or AMD render node, EGL loads the
-  bundled Mesa only, never NVIDIA's driver or the host's Mesa; with NVIDIA
-  alone, sharun's default puts the host's NVIDIA driver first; without a GPU
-  the bundled Mesa draws in software. A vendor set in
-  `__EGL_VENDOR_LIBRARY_FILENAMES` is left alone.
+- No startup hook of Qrec's: the prototype's `bin/50-qrec-egl.hook` is gone,
+  since Qrec applies its GPU rules from inside the AppImage (A§8.10). It
+  knows the AppImage by `$APPDIR` holding its executable, takes the bundle's
+  EGL and Vulkan manifests first, and replaces the
+  `__EGL_VENDOR_LIBRARY_FILENAMES` and `VK_DRIVER_FILES` that sharun points
+  into `$APPDIR`: with an Intel or AMD render node, EGL loads the bundled Mesa
+  only, never NVIDIA's driver or the host's Mesa (NixOS's
+  `/run/opengl-driver`); with NVIDIA alone, sharun's default puts the host's
+  NVIDIA driver first; without a render node it may open, the window draws
+  with Cairo (`GDK_DISABLE=gl,vulkan`). Values pointing elsewhere are the
+  user's and stay. The window's log says what it set ("gpu: …").
+- The AppStream metadata, `share/metainfo/com.rsensato.qrec.metainfo.xml`,
+  and the desktop entry it launches, a link to the root's in
+  `share/applications`, with `usr/share/metainfo` and `usr/share/applications`
+  linking to them: an extracted AppImage then has them where AppImage tools,
+  catalogs and `appstreamcli validate-tree` look (it passes). quick-sharun
+  copies neither, and pkgforge's appimagetool reads neither (it checks
+  `AppRun`, `.DirIcon` and the root's desktop entry), so it says nothing about
+  them.
 - `qrec` isn't patched. quick-sharun rewrites `/usr/share` and `/usr/lib` in
   every binary that names them, to `/tmp` links into the AppImage; in Qrec
   those are lookups of the host's (`/usr/share/zoneinfo`, the VA driver
@@ -208,10 +232,12 @@ What `build.sh` adds (`tune_appdir`):
   untested here); recordings use x264 on the CPU, since NVIDIA has no VA-API
   encoder and Qrec never probes an NVIDIA node. With an Intel or AMD GPU next
   to it, Qrec uses that one, as natively.
-- **Software rendering is softpipe.** The debloated Mesa has no LLVM, so no
-  llvmpipe: without a GPU, or where Mesa can't use the GPU that drives the
-  screens (NVIDIA-driven screens with the iGPU on), the window draws much
-  slower than with a distribution's Mesa.
+- **No llvmpipe.** The debloated Mesa has no LLVM. Without a render node Qrec
+  may open (a VM without 3D, a container), the window draws with GTK's Cairo
+  renderer instead, as Qrec's pixman GUI suites do. Where Mesa has a node but
+  can't draw on it, GL runs on softpipe, much slower than with a
+  distribution's Mesa: NVIDIA-driven screens with the iGPU on, or an X server
+  without DRI3 (Xvfb, a VNC server).
 - **AMD** gets radeonsi built without LLVM (ACO compiles its shaders) and
   without Mesa's check for newer amdgpu kernels; not tried on AMD hardware.
 - **ffmpeg has no libopenh264**: Arch builds it without. MP4 exports use
@@ -226,9 +252,6 @@ What `build.sh` adds (`tune_appdir`):
   ICU's data (32 MiB, for libxml2 and raptor2), the Vulkan drivers (51 MiB),
   x265 (21 MiB, ffmpeg's), libavcodec (20 MiB), Adwaita's icons (15 MiB) and
   GTK (13 MiB).
-- `qrec doctor`'s hints still name the host's packages for what the AppImage
-  bundles, and the global-shortcut snippets run `qrec`, not the AppImage
-  (issue #9, Phase 2).
 - The runtime says "failed to utilize FUSE during startup! Trying to extract
   and run..." on stderr each time it extracts, and sharun warns "Cannot find CA
   Certificates in host!" where there is no CA bundle.
