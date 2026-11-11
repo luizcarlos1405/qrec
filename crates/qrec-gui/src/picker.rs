@@ -31,6 +31,7 @@ use qrec_core::config::UserConfig;
 use qrec_core::error::NOT_MY_SWAMP;
 use qrec_core::keymap::{self, Keymap};
 use qrec_core::new_project;
+use qrec_core::project_folders;
 use qrec_core::recents::RecentProjects;
 use qrec_core::view::format;
 use qrec_core::view::picker::{self, FolderState, NewProjectHint, PickerRow};
@@ -237,7 +238,9 @@ struct Picker {
     keymap: Keymap,
     /// Kept for the window's life: its providers and its art.
     _theme: Theme,
+    /// The default project folder's path: where a name goes (SPEC §4.4).
     projects_folder: RefCell<Option<String>>,
+    projects: RefCell<qrec_core::config::ProjectsDefaults>,
     recents: RefCell<RecentProjects>,
     /// What each recent folder turned out to be.
     states: RefCell<BTreeMap<String, FolderState>>,
@@ -493,7 +496,8 @@ impl Picker {
             home,
             keymap,
             _theme: theme,
-            projects_folder: RefCell::new(config.projects.folder),
+            projects_folder: RefCell::new(default_path(&config.projects)),
+            projects: RefCell::new(config.projects),
             recents: RefCell::new(recents),
             states: RefCell::new(BTreeMap::new()),
             shown: RefCell::new(Vec::new()),
@@ -1008,7 +1012,8 @@ impl Picker {
         );
     }
 
-    /// Saves `projects.folder`, as Settings and `qrec config set` do.
+    /// Makes the chosen folder the default project folder (added when it
+    /// isn't one), as Settings and `qrec folders` do.
     fn set_projects_folder(self: &Rc<Self>, dir: &Path) {
         let Some(dirs) = self.dirs.clone() else {
             return self.show_new_error("Can't find where the settings live.");
@@ -1016,12 +1021,14 @@ impl Picker {
         let Some(value) = dir.to_str().map(str::to_owned) else {
             return self.show_new_error("That folder's path can't be saved in the settings.");
         };
+        let edit = project_folders::make_default_path(&self.projects.borrow(), &value);
         background(
             "the picker: the projects folder",
-            move || config_file::set(&dirs.config_file(), "projects.folder", &value),
+            move || config_file::edit_folders(&dirs.config_file(), &edit),
             |picker, saved| match saved {
                 Ok(config) => {
-                    *picker.projects_folder.borrow_mut() = config.projects.folder;
+                    *picker.projects_folder.borrow_mut() = default_path(&config.projects);
+                    *picker.projects.borrow_mut() = config.projects;
                     picker.refresh_hint();
                 }
                 Err(e) => picker.show_new_error(&format::capitalized(&e.message)),
@@ -1098,4 +1105,9 @@ fn hints(items: &[(&[&str], &str)]) -> gtk::Box {
         bar.append(&hint);
     }
     bar
+}
+
+/// The default project folder's path.
+fn default_path(projects: &qrec_core::config::ProjectsDefaults) -> Option<String> {
+    projects.default_folder().map(|f| f.path.clone())
 }

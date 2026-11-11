@@ -311,7 +311,9 @@ pub struct AllProjectsView {
 
 /// The group for `config`.
 pub fn all_projects(config: &UserConfig, home: Option<&str>) -> AllProjectsView {
-    let folder = config.projects.folder.as_deref();
+    // Until the project folders' boards are approved, the group shows the
+    // default one (SPEC §4.4).
+    let folder = config.projects.default_folder().map(|f| f.path.as_str());
     AllProjectsView {
         group: "All projects".to_owned(),
         caption: "On this computer, for every project.".to_owned(),
@@ -344,7 +346,10 @@ mod tests {
         assert!(!unset.folder_set);
         assert_eq!(unset.folder_shown, "Not set");
         config.projects.open_last = true;
-        config.projects.folder = Some("/home/shrek/videos".into());
+        config.projects.folders = vec![crate::config::ProjectFolder {
+            name: "videos".into(),
+            path: "/home/shrek/videos".into(),
+        }];
         let set = all_projects(&config, Some("/home/shrek"));
         assert!(set.open_last);
         assert!(set.folder_set);

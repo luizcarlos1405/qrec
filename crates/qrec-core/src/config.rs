@@ -160,16 +160,88 @@ impl Default for UiDefaults {
 }
 
 /// `[projects]`: where new projects go and what `qrec` opens by itself.
+/// The project folders are edited with [`crate::project_folders`], not
+/// [`set`]: they are a list, and the default must name one of them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(try_from = "RawProjects")]
 pub struct ProjectsDefaults {
-    /// The folder a new project given by name goes in (an absolute path).
-    /// Unset by default: a bare name is refused, a path still works
-    /// ([`crate::new_project`]).
-    pub folder: Option<String>,
+    /// The name of the folder a new project given by name goes in when no
+    /// other is chosen. `None` with folders listed means the first one
+    /// ([`ProjectsDefaults::default_folder`]); the edits always write it.
+    pub default_folder: Option<String>,
     /// `qrec` outside a project opens the last project instead of the
     /// project picker. Off by default.
     pub open_last: bool,
+    /// The named project folders (`[[projects.folders]]`), in the order
+    /// they were added. None by default: a bare name is refused, a path
+    /// still works ([`crate::new_project`]).
+    pub folders: Vec<ProjectFolder>,
+}
+
+/// One `[[projects.folders]]`: a named folder new projects can go in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectFolder {
+    /// What it is called: `qrec create demo --in <name>`.
+    pub name: String,
+    /// The folder, absolute.
+    pub path: String,
+}
+
+impl ProjectsDefaults {
+    /// The folder a name goes in when none is chosen: the one
+    /// `default_folder` names, else the first.
+    pub fn default_folder(&self) -> Option<&ProjectFolder> {
+        self.default_folder
+            .as_deref()
+            .and_then(|name| self.find(name))
+            .or_else(|| self.folders.first())
+    }
+
+    /// The folder called `name`, ignoring case (no two names differ only
+    /// in case).
+    pub fn find(&self, name: &str) -> Option<&ProjectFolder> {
+        let name = name.trim();
+        self.folders
+            .iter()
+            .find(|f| f.name.to_lowercase() == name.to_lowercase())
+    }
+}
+
+/// `[projects]` as the file spells it, with the single `folder` that
+/// came before named folders (SPEC §6.4).
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct RawProjects {
+    folder: Option<String>,
+    default_folder: Option<String>,
+    open_last: bool,
+    folders: Vec<ProjectFolder>,
+}
+
+impl TryFrom<RawProjects> for ProjectsDefaults {
+    type Error = String;
+
+    fn try_from(raw: RawProjects) -> Result<Self, String> {
+        let mut projects = ProjectsDefaults {
+            default_folder: raw.default_folder,
+            open_last: raw.open_last,
+            folders: raw.folders,
+        };
+        if let Some(path) = raw.folder {
+            if !projects.folders.is_empty() || projects.default_folder.is_some() {
+                return Err(
+                    "projects.folder is the single folder from before named project \
+                     folders; remove it, the [[projects.folders]] list replaces it"
+                        .to_owned(),
+                );
+            }
+            let name = crate::project_folders::name_for_path(&path);
+            projects.default_folder = Some(name.clone());
+            projects.folders.push(ProjectFolder { name, path });
+        }
+        Ok(projects)
+    }
 }
 
 // ------------------------------------------------------------------ keys
@@ -193,8 +265,6 @@ enum Kind {
     Encoder,
     /// A render node path; `auto` unsets it.
     Device,
-    /// An absolute folder; `none` unsets it.
-    Folder,
 }
 
 /// One setting of `config.toml`.
@@ -247,7 +317,6 @@ pub const KEYS: &[ConfigKey] = &[
     key("ui.scale", Kind::Float { min: 0.5, max: 3.0 }, "a number from 0.5 to 3", "Interface scale."),
     key("ui.reduced_motion", Kind::Bool, "true or false", "Reduce animations."),
     key("ui.sounds", Kind::Bool, "true or false", "A squelch on record start and stop."),
-    key("projects.folder", Kind::Folder, "an absolute folder path, or none", "Where a new project given by name goes (`qrec create NAME`); none = give a path instead."),
     key("projects.open_last", Kind::Bool, "true or false", "`qrec` outside a project opens the last project instead of the project picker."),
 ];
 
@@ -256,6 +325,15 @@ fn find_key(key: &str) -> Option<&'static ConfigKey> {
 }
 
 fn unknown_key(key: &str) -> CoreError {
+    if key.starts_with("projects.folder") || key == "projects.default_folder" {
+        return CoreError::usage(format!(
+            "{key} is changed with `qrec folders`, not `qrec config`"
+        ))
+        .with_hint(
+            "the project folders are changed with `qrec folders` \
+                 (add, rename, default, rm), Settings › Project or the picker",
+        );
+    }
     let known: Vec<&str> = KEYS.iter().map(|k| k.key).collect();
     CoreError::usage(format!("unknown config key `{key}`"))
         .with_hint(format!("known keys: {}", known.join(", ")))
@@ -282,7 +360,7 @@ impl ConfigKey {
                 let text = value.as_str().ok_or_else(bad)?;
                 text.parse::<Fps>().map_err(|_| bad())?;
             }
-            Kind::Device | Kind::Folder => {
+            Kind::Device => {
                 if value.as_str().is_some_and(|path| !path.starts_with('/')) {
                     return Err(bad());
                 }
@@ -333,13 +411,6 @@ impl ConfigKey {
                     path.into()
                 }
             },
-            Kind::Folder => match t {
-                "none" | "" => return Ok(None),
-                path => {
-                    checked(Json::from(path))?;
-                    path.into()
-                }
-            },
         }))
     }
 }
@@ -353,6 +424,7 @@ pub fn problems(cfg: &UserConfig) -> Vec<String> {
             let value = get_json(cfg, k.key).ok()?;
             k.check(&value).err()
         })
+        .chain(crate::project_folders::problems(&cfg.projects))
         .collect()
 }
 
@@ -388,13 +460,8 @@ pub fn get(cfg: &UserConfig, key: &str) -> Result<toml::Value, CoreError> {
             Some(value) => current = value,
             None if find_key(key).is_some() => {
                 return Err(CoreError::not_found(format!("{key} is not set")).with_hint(
-                    if key == "projects.folder" {
-                        "new projects need a path until one is set: \
-                         `qrec config set projects.folder /path/to/projects`"
-                    } else {
-                        "Qrec uses the first Intel or AMD render node (never NVIDIA); set one with \
-                         `qrec config set encoder.vaapi_device /dev/dri/renderD129`"
-                    },
+                    "Qrec uses the first Intel or AMD render node (never NVIDIA); set one with \
+                     `qrec config set encoder.vaapi_device /dev/dri/renderD129`",
                 ));
             }
             None => return Err(unknown_key(key)),
@@ -640,12 +707,17 @@ mod tests {
         // Every leaf of a fully set config is in KEYS, in order, and vice versa.
         let mut cfg = UserConfig::default();
         cfg.encoder.vaapi_device = Some("/dev/dri/renderD129".into());
-        cfg.projects.folder = Some("/srv/qrec".into());
         let table = toml::Table::try_from(&cfg).unwrap();
         let mut leaves = Vec::new();
         for (section, value) in &table {
             match value.as_table() {
-                Some(inner) => leaves.extend(inner.keys().map(|k| format!("{section}.{k}"))),
+                // The project folders are a list, edited by `project_folders`.
+                Some(inner) => leaves.extend(
+                    inner
+                        .keys()
+                        .filter(|k| !(section == "projects" && k.contains("folder")))
+                        .map(|k| format!("{section}.{k}")),
+                ),
                 None => leaves.push(section.clone()),
             }
         }
@@ -657,34 +729,40 @@ mod tests {
     }
 
     #[test]
-    fn the_projects_folder_is_absolute_and_can_be_unset() {
-        let set = |text: &str, value: &str| set_text(text, "projects.folder", value);
-        let text = set("", "/srv/qrec").unwrap();
+    fn the_old_projects_folder_reads_as_the_default_folder() {
+        let cfg = parse("[projects]\nfolder = \"/srv/videos\"\nopen_last = true\n").unwrap();
+        assert!(cfg.projects.open_last);
         assert_eq!(
-            parse(&text).unwrap().projects.folder.as_deref(),
-            Some("/srv/qrec")
+            cfg.projects.folders,
+            [ProjectFolder {
+                name: "videos".into(),
+                path: "/srv/videos".into()
+            }]
         );
-        for value in ["none", ""] {
-            let unset = set(&text, value).unwrap();
-            assert_eq!(parse(&unset).unwrap().projects.folder, None, "{value:?}");
-        }
-        for bad in ["videos", "./videos", "~/videos"] {
-            let error = set("", bad).unwrap_err();
-            assert_eq!(error.code, crate::ErrorCode::Usage, "{bad}");
-            assert!(error.message.contains("absolute"), "{error:?}");
-        }
-        // By hand too: the file is checked when it is read.
+        assert_eq!(cfg.projects.default_folder().unwrap().name, "videos");
+        // Checked like a named folder.
         assert!(parse("[projects]\nfolder = \"videos\"\n").is_err());
-        let unset = get(&UserConfig::default(), "projects.folder").unwrap_err();
-        assert_eq!(unset.code, crate::ErrorCode::NotFound);
-        assert!(unset.hint.unwrap().contains("projects.folder"));
+        // Never both shapes.
+        let both = "[projects]\nfolder = \"/srv/a\"\n[[projects.folders]]\nname = \"b\"\npath = \"/srv/b\"\n";
+        assert!(parse(both).unwrap_err().message.contains("projects.folder"));
+        // Not a `qrec config set` key.
+        for key in [
+            "projects.folder",
+            "projects.folders",
+            "projects.default_folder",
+        ] {
+            let error = set_text("", key, "/srv/qrec").unwrap_err();
+            assert_eq!(error.code, crate::ErrorCode::Usage, "{key}");
+            assert!(error.hint.unwrap().contains("qrec folders"), "{key}");
+        }
     }
 
     #[test]
     fn opening_the_last_project_is_off_by_default() {
         let cfg = UserConfig::default();
         assert!(!cfg.projects.open_last);
-        assert_eq!(cfg.projects.folder, None);
+        assert!(cfg.projects.folders.is_empty());
+        assert_eq!(cfg.projects.default_folder(), None);
         let on = set_text("", "projects.open_last", "true").unwrap();
         assert!(parse(&on).unwrap().projects.open_last);
     }

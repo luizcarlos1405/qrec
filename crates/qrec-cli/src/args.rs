@@ -34,7 +34,7 @@ PROJECT FOLDER
   command exits 3 with
     \"Not my swamp: this folder isn't empty and has no qrec.json\"
   Commands that need no project work anywhere: --help, version, doctor,
-  sources list, schema, keys, agent-guide, config, completions.
+  sources list, schema, keys, agent-guide, config, folders, completions.
 
 THE WINDOW
   `qrec` with no command opens the project in the current folder. Anywhere
@@ -121,12 +121,18 @@ pub enum Cmd {
     Init(InitArgs),
     /// Make a new folder and start a project in it.
     ///
-    /// A name (no slash) goes in the projects folder, set with `qrec config set
-    /// projects.folder DIR`; with none set it is refused. A path (it has a
-    /// slash: ./demo, ../demo, /mnt/videos/demo) is used as it is. Only the
-    /// last part is made: the folder it goes in must exist. An empty folder
-    /// already there is used; one that isn't empty is refused.
+    /// A name (no slash) goes in a project folder: the one --in names, else
+    /// the default one (`qrec folders`); with none it is refused. A path (it
+    /// has a slash: ./demo, ../demo, /mnt/videos/demo) is used as it is.
+    /// Only the last part is made: the folder it goes in must exist. An
+    /// empty folder already there is used; one that isn't empty is refused.
     Create(CreateArgs),
+    /// List or change the project folders a new project's name goes in.
+    ///
+    /// Each has a name and a folder; one is the default, where `qrec create
+    /// NAME` puts a project without --in. Without a subcommand, lists them.
+    /// rm only forgets a folder: nothing on disk is touched.
+    Folders(FoldersArgs),
     /// Show a project summary; with --json the full state plus host and recording status.
     Status,
     /// Check dependencies, portal and devices; print the niri key-bind snippet.
@@ -197,7 +203,7 @@ pub enum Cmd {
     /// canvas.{width,height,fps,background}, recording.countdown_secs,
     /// autocut.{auto_run_after_take,threshold_db,min_silence_ms,padding_ms,min_keep_ms},
     /// encoder.{preference,vaapi_device}, ui.{scale,reduced_motion,sounds},
-    /// projects.{folder,open_last}.
+    /// projects.open_last. The project folders are changed with `qrec folders`.
     Config(ConfigArgs),
     /// Print the effective keymap: defaults plus ~/.config/qrec/keys.toml overrides.
     Keys,
@@ -228,9 +234,12 @@ pub struct InitArgs {
 
 #[derive(Clone, Debug, PartialEq, Args)]
 pub struct CreateArgs {
-    /// The new project: a name (goes in projects.folder) or a path (has a slash).
+    /// The new project: a name (goes in a project folder) or a path (has a slash).
     #[arg(value_name = "NAME|PATH")]
     pub target: PathBuf,
+    /// The project folder a name goes in (default: the default one; see `qrec folders`).
+    #[arg(long = "in", value_name = "FOLDER")]
+    pub in_folder: Option<String>,
     /// Canvas size and frame rate, e.g. 1920x1080@30 or 2560x1440@30000/1001 (default from config).
     #[arg(long, value_name = "WxH@FPS")]
     pub canvas: Option<String>,
@@ -977,6 +986,54 @@ pub struct ConfigSetArgs {
     /// New value, e.g. -40.
     #[arg(allow_hyphen_values = true)]
     pub value: String,
+}
+
+// ------------------------------------------------------------------ folders
+
+#[derive(Clone, Debug, PartialEq, Args)]
+pub struct FoldersArgs {
+    // Without a subcommand, the folders are listed.
+    #[command(subcommand)]
+    pub command: Option<FoldersCmd>,
+}
+
+#[derive(Clone, Debug, PartialEq, Subcommand)]
+pub enum FoldersCmd {
+    /// Add a project folder, e.g. `qrec folders add work /mnt/videos/work`.
+    ///
+    /// The path must be a folder already. The first folder added is the default.
+    Add(FoldersAddArgs),
+    /// Rename a project folder (only its name in Qrec; the folder keeps its own).
+    Rename(FoldersRenameArgs),
+    /// Make a project folder the default, where a name without --in goes.
+    Default(FoldersNameArgs),
+    /// Forget a project folder. The folder and the projects in it are untouched.
+    Rm(FoldersNameArgs),
+}
+
+#[derive(Clone, Debug, PartialEq, Args)]
+pub struct FoldersAddArgs {
+    /// What to call it, e.g. work.
+    pub name: String,
+    /// The folder, absolute or relative to the current one.
+    pub path: PathBuf,
+    /// Make it the default folder.
+    #[arg(long)]
+    pub default: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Args)]
+pub struct FoldersRenameArgs {
+    /// The folder's name now.
+    pub name: String,
+    /// Its new name.
+    pub new_name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Args)]
+pub struct FoldersNameArgs {
+    /// The folder's name.
+    pub name: String,
 }
 
 // -------------------------------------------------------------------- misc

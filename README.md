@@ -117,7 +117,8 @@ A launcher starts Qrec in `$HOME`, which isn't a project: the window says
 
 ```sh
 qrec create ./my-video && cd my-video
-# a bare name goes in the projects folder: qrec config set projects.folder DIR
+# a bare name goes in a project folder: qrec folders add videos ~/Videos, then
+# qrec create my-video (the default folder) or qrec create my-video --in videos
 qrec sources list                    # screens, cameras, mics, system-audio monitors
 qrec scene layer add screen --output DP-4
 qrec scene layer add camera --device /dev/video0

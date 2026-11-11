@@ -306,6 +306,27 @@ pub(crate) fn write_setting(
     );
 }
 
+/// Makes one change to the project folders on `qrec-gui-io`, as `qrec
+/// folders` does (`config_file::edit_folders`), then `then` like
+/// [`write_setting`].
+pub(crate) fn write_folders(
+    ctx: &Ctx,
+    edit: qrec_core::project_folders::FolderEdit,
+    then: impl FnOnce(Result<UserConfig, String>) + 'static,
+) {
+    let path = user_files().config;
+    tracing::info!("settings: config.toml project folders: {edit:?}");
+    ctx.media.run_io_then(
+        move || match path {
+            Some(path) => {
+                qrec_shell::config_file::edit_folders(&path, &edit).map_err(|e| e.message.clone())
+            }
+            None => Err("no home folder to keep config.toml in".to_owned()),
+        },
+        then,
+    );
+}
+
 /// The look `config` asks for, applied to the window at once (the theme,
 /// the UI scale, reduced motion with the system's: D-30); the settings
 /// follower sees the write too and finds nothing left to change.

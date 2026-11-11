@@ -11,6 +11,8 @@
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
+use qrec_core::new_project;
+use qrec_core::project_folders::FolderEdit;
 use qrec_core::protocol::{
     AudioPatch, AutocutOverrides, AutocutPatch, CanvasSpec, ClipScope, Command, ExportFormat,
     InsertAt, LayerPatch, MoveTo, Nullable, Quality, Query, RecordModeArg, SceneDest, SceneTarget,
@@ -37,6 +39,8 @@ pub enum Plan {
     Create {
         /// The name or path as typed (`qrec_core::new_project`).
         target: PathBuf,
+        /// `--in`: the project folder a name goes in.
+        folder: Option<String>,
         plan: Box<ProjectPlan>,
     },
 }
@@ -58,6 +62,9 @@ pub enum Local {
         key: String,
         value: String,
     },
+    /// `qrec folders`: the project folders (`None` lists them). An added
+    /// path is absolute here; the folder check is the executor's.
+    Folders(Option<FolderEdit>),
     /// The hidden `qrec host --headless`.
     Host(HostArgs),
 }
@@ -163,8 +170,16 @@ pub fn plan(cli: &Cli, cwd: Option<&Path>) -> Result<Plan, CoreError> {
                 )
                 .with_hint("give the folder as the argument: qrec create /path/to/project"));
             }
+            if args.in_folder.is_some() && new_project::is_path(args.target.as_os_str()) {
+                return Err(CoreError::usage(format!(
+                    "--in goes with a name, and {} is a path (it has a slash)",
+                    args.target.display()
+                ))
+                .with_hint("give a name to go in a project folder, or a path without --in"));
+            }
             Ok(Plan::Create {
                 target: args.target.clone(),
+                folder: args.in_folder.clone(),
                 plan: Box::new(builder.create(args)?),
             })
         }
@@ -183,11 +198,44 @@ pub fn plan(cli: &Cli, cwd: Option<&Path>) -> Result<Plan, CoreError> {
                 value: set.value.clone(),
             },
         }),
+        Cmd::Folders(args) => local(Local::Folders(match &args.command {
+            None => None,
+            Some(command) => Some(folder_edit(command, cwd)?),
+        })),
         Cmd::Host(args) => local(Local::Host(args.clone())),
         other => builder
             .project(other, cwd)
             .map(|plan| Plan::Project(Box::new(plan))),
     }
+}
+
+/// The edit a `qrec folders` subcommand asks for; an added path is made
+/// absolute against `cwd`.
+fn folder_edit(command: &FoldersCmd, cwd: Option<&Path>) -> Result<FolderEdit, CoreError> {
+    Ok(match command {
+        FoldersCmd::Add(add) => {
+            let path = absolute_from(cwd, &add.path, "the folder")?;
+            let path = path.to_str().map(str::to_owned).ok_or_else(|| {
+                CoreError::usage(format!("the path {} is not valid UTF-8", path.display()))
+                    .with_hint("project folders need a path made of UTF-8 text")
+            })?;
+            FolderEdit::Add {
+                name: add.name.clone(),
+                path,
+                make_default: add.default,
+            }
+        }
+        FoldersCmd::Rename(rename) => FolderEdit::Rename {
+            name: rename.name.clone(),
+            new_name: rename.new_name.clone(),
+        },
+        FoldersCmd::Default(one) => FolderEdit::SetDefault {
+            name: one.name.clone(),
+        },
+        FoldersCmd::Rm(one) => FolderEdit::Remove {
+            name: one.name.clone(),
+        },
+    })
 }
 
 /// Builds project plans with the global flags that shape every request.
@@ -315,6 +363,7 @@ impl Builder {
             | Cmd::AgentGuide
             | Cmd::Keys
             | Cmd::Config(_)
+            | Cmd::Folders(_)
             | Cmd::Create(_)
             | Cmd::Host(_) => {
                 return Err(CoreError::internal(

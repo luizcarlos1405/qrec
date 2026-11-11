@@ -3410,11 +3410,11 @@ What `qrec` shows with nothing to open (SPEC §4.4). `Shell::gui` decides: `--pr
 
 **Keys.** The search has the focus: typing filters, `↑` `↓` move the selection, `Enter` opens it. `Ctrl+N` New project, `Ctrl+O` Open folder, `Ctrl+Q` quits, `Esc` clears the search or leaves New project. They are fixed, not `keys.toml` bindings: no project is open to run them.
 
-**New project.** One field, a name or a path (`new_project::resolve`, A§9.10). Under it `view::picker::new_project_hint` says where it would go, from the text alone; Create follows. A link chooses `projects.folder`, which the picker is the only place to set before any project exists.
+**New project.** One field, a name or a path (`new_project::resolve`, A§9.10). Under it `view::picker::new_project_hint` says where it would go, from the text alone; Create follows. A link chooses the default project folder (`project_folders::make_default_path`: a folder already listed becomes the default, another is added as it), which the picker is the only place to set before any project exists. The folder menu beside the field (SPEC §4.4) waits for its boards.
 
 **Never a dead end.** A last project that is gone is the picker. One that can't be read is X3 with one more button, "Open another project…" (`BlockingAction::ChooseProject`): only when the window wasn't asked for with `--project` (`picker::offered`), so X3 under `--project` stays the approved frame.
 
-**Settings.** Settings › Project ends with an "All projects" group (`view::settings::all_projects`, not drawn: S18b's rows): "Open the last project on start" and "Projects folder" (Choose…, Clear), both in `config.toml`.
+**Settings.** Settings › Project ends with an "All projects" group (`view::settings::all_projects`, not drawn: S18b's rows): "Open the last project on start" and "Projects folder" (Choose…, Clear), both in `config.toml`. Until the project folders' boards are approved, the row shows the default project folder; Choose… makes the chosen folder the default (as the picker's link) and Clear forgets the default one.
 
 `gui_picker` covers each launch in a nested compositor.
 

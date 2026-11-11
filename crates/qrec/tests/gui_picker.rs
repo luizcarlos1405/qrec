@@ -139,12 +139,7 @@ fn the_picker_makes_a_new_project() {
     let projects_home = fs::canonicalize(nested.env.empty_dir("projects")).expect("the folder");
     let set = nested.cli_json(
         &elsewhere,
-        &[
-            "config",
-            "set",
-            "projects.folder",
-            projects_home.to_str().unwrap(),
-        ],
+        &["folders", "add", "videos", projects_home.to_str().unwrap()],
     );
     assert_eq!(set["ok"], true, "{set}");
     nested.launch(&elsewhere, Launch::bare_in(&elsewhere, &[]));

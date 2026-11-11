@@ -14,6 +14,7 @@ use std::str::FromStr;
 
 use qrec_core::CoreError;
 use qrec_core::config::{MAX_FILE_BYTES, UserConfig};
+use qrec_core::project_folders::FolderEdit;
 use serde_json::{Map, Value};
 
 /// The config file in Qrec's config dir.
@@ -109,13 +110,43 @@ fn to_json(text: &str, path: &Path) -> Result<Value, CoreError> {
             }
         }};
     }
+    // A list of tables (`[[projects.folders]]`, or inline `[{..}, {..}]`):
+    // an array of objects of scalars, one row per table.
+    macro_rules! row {
+        ($key:expr, $fields:expr) => {{
+            let mut row = Map::new();
+            for (field, value) in $fields {
+                let dotted = format!("{}.{field}", $key);
+                let value = value.ok_or_else(|| bad(&dotted))?;
+                row.insert(field.to_owned(), scalar!(&dotted, value)?);
+            }
+            Value::Object(row)
+        }};
+    }
     let mut root = Map::new();
     for (key, item) in doc.iter() {
         if let Some(table) = item.as_table() {
             let mut section = Map::new();
             for (inner, item) in table.iter() {
                 let dotted = format!("{key}.{inner}");
+                if let Some(list) = item.as_array_of_tables() {
+                    let mut rows = Vec::new();
+                    for table in list.iter() {
+                        rows.push(row!(&dotted, table.iter().map(|(k, v)| (k, v.as_value()))));
+                    }
+                    section.insert(inner.to_owned(), Value::Array(rows));
+                    continue;
+                }
                 let value = item.as_value().ok_or_else(|| bad(&dotted))?;
+                if let Some(array) = value.as_array() {
+                    let mut rows = Vec::new();
+                    for element in array.iter() {
+                        let table = element.as_inline_table().ok_or_else(|| bad(&dotted))?;
+                        rows.push(row!(&dotted, table.iter().map(|(k, v)| (k, Some(v)))));
+                    }
+                    section.insert(inner.to_owned(), Value::Array(rows));
+                    continue;
+                }
                 section.insert(inner.to_owned(), scalar!(&dotted, value)?);
             }
             root.insert(key.to_owned(), Value::Object(section));
@@ -135,6 +166,26 @@ fn to_json(text: &str, path: &Path) -> Result<Value, CoreError> {
         }
     }
     Ok(Value::Object(root))
+}
+
+/// `edit` with an added folder's path checked: it must be a folder (one
+/// behind a symlink is kept as it was given). The other edits pass as they are.
+pub(crate) fn checked_folder(edit: &FolderEdit) -> Result<FolderEdit, CoreError> {
+    if let FolderEdit::Add { path, .. } = edit {
+        match fs::metadata(path) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => {
+                return Err(CoreError::io(format!("{path} isn't a folder"))
+                    .with_hint("give the folder new projects should go in"));
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(CoreError::io(format!("{path} doesn't exist"))
+                    .with_hint(format!("make it first: mkdir -p {path}")));
+            }
+            Err(e) => return Err(CoreError::io(format!("can't read {path}: {e}"))),
+        }
+    }
+    Ok(edit.clone())
 }
 
 /// Validates the user config `text` read from `path` (empty: the
@@ -248,4 +299,28 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
         let _ = fs::remove_file(&tmp);
         io_err("write", e)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_folders_read_in_either_spelling() {
+        let path = Path::new("config.toml");
+        let tables = "[projects]\ndefault_folder = \"b\"\n\
+                      [[projects.folders]]\nname = \"a\"\npath = \"/srv/a\"\n\
+                      [[projects.folders]]\nname = \"b\"\npath = \"/srv/b\"\n";
+        let inline = "[projects]\ndefault_folder = \"b\"\n\
+                      folders = [{ name = \"a\", path = \"/srv/a\" }, { name = \"b\", path = \"/srv/b\" }]\n";
+        for text in [tables, inline] {
+            let cfg = load(text, path).unwrap();
+            assert_eq!(cfg, qrec_core::config::parse(text).unwrap(), "{text}");
+            assert_eq!(cfg.projects.default_folder().unwrap().path, "/srv/b");
+        }
+        // The old single folder too.
+        let old = load("[projects]\nfolder = \"/srv/v\"\n", path).unwrap();
+        assert_eq!(old.projects.default_folder().unwrap().name, "v");
+        assert!(load("[projects]\nfolders = [1]\n", path).is_err());
+    }
 }

@@ -89,6 +89,29 @@ pub fn set(path: &Path, key: &str, value: &str) -> Result<UserConfig, CoreError>
     Ok(config)
 }
 
+/// Makes one change to the project folders in `config.toml` at `path`
+/// (`qrec_core::project_folders::edit_text`, other sections as they were)
+/// and writes it like [`set`]. An added folder must be one: that is
+/// checked here. The settings the file holds now. What Settings › Project
+/// and the picker write, and what `qrec folders` writes too.
+pub fn edit_folders(
+    path: &Path,
+    edit: &qrec_core::project_folders::FolderEdit,
+) -> Result<UserConfig, CoreError> {
+    if let qrec_core::project_folders::FolderEdit::Add { path: dir, .. } = edit
+        && !Path::new(dir).is_dir()
+    {
+        return Err(CoreError::io(format!("{dir} isn't a folder")));
+    }
+    let text = read_text(path).map_err(CoreError::io)?.unwrap_or_default();
+    let (edited, _) = qrec_core::project_folders::edit_text(&text, edit)?;
+    let config = qrec_core::config::parse(&edited)?;
+    if edited != text {
+        write_text(path, &edited).map_err(CoreError::io)?;
+    }
+    Ok(config)
+}
+
 /// Writes a settings file (`config.toml`, `keys.toml`) whole: a temp file
 /// in its folder (made when missing), synced, renamed over it, the folder
 /// synced, so a crash leaves the old file or the new one, never half of

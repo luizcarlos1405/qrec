@@ -5,12 +5,13 @@
 //! rest of the page is the open project's. Content:
 //! `view::settings::all_projects`. Not drawn: S18b's patterns.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use qrec_core::config::UserConfig;
+use qrec_core::config::{ProjectsDefaults, UserConfig};
+use qrec_core::project_folders::{self, FolderEdit};
 use qrec_core::protocol::ToastLevel;
 use qrec_core::view::notices::Notice;
 use qrec_core::view::settings::all_projects;
@@ -30,6 +31,8 @@ struct Parts {
     open_last: gtk::Switch,
     folder: gtk::Label,
     clear: gtk::Button,
+    /// The project folders the file held last.
+    projects: RefCell<ProjectsDefaults>,
     /// Set while the controls follow the file (no write then).
     syncing: Cell<bool>,
 }
@@ -85,6 +88,7 @@ impl AllProjects {
             open_last,
             folder,
             clear,
+            projects: RefCell::default(),
             syncing: Cell::new(false),
         });
         parts.connect(&choose);
@@ -126,6 +130,27 @@ impl Parts {
         self.syncing.set(false);
         self.folder.set_text(&view.folder_shown);
         self.clear.set_sensitive(view.folder_set);
+        *self.projects.borrow_mut() = config.projects.clone();
+    }
+
+    /// Makes one change to the project folders, then shows the file.
+    fn edit_folders(self: &Rc<Self>, edit: FolderEdit) {
+        let weak = Rc::downgrade(self);
+        super::write_folders(&self.ctx, edit, move |written| {
+            let Some(parts) = weak.upgrade() else {
+                return;
+            };
+            match written {
+                Ok(config) => parts.show(&config),
+                Err(why) => {
+                    tracing::warn!("settings: {why}");
+                    parts.ctx.store.notify(
+                        Notice::new(ToastLevel::Error, "Couldn't save the setting").with_body(why),
+                    );
+                    parts.read();
+                }
+            }
+        });
     }
 
     /// Writes `key` = `value`, then shows the file; a failure is a toast
@@ -163,7 +188,11 @@ impl Parts {
                 let Some(parts) = weak.upgrade() else { return };
                 match result.map(|folder| folder.path()) {
                     Ok(Some(dir)) => match dir.to_str() {
-                        Some(dir) => parts.write("projects.folder", dir),
+                        Some(dir) => {
+                            let edit =
+                                project_folders::make_default_path(&parts.projects.borrow(), dir);
+                            parts.edit_folders(edit);
+                        }
                         None => tracing::warn!("settings: the folder's path isn't UTF-8"),
                     },
                     Ok(None) => tracing::warn!("settings: the picked folder has no path"),
@@ -200,7 +229,10 @@ impl Parts {
         self.clear
             .connect_clicked(guarded!("settings: clear the folder", move |_| {
                 if let Some(parts) = weak.upgrade() {
-                    parts.write("projects.folder", "none");
+                    let default = parts.projects.borrow().default_folder().cloned();
+                    if let Some(folder) = default {
+                        parts.edit_folders(FolderEdit::Remove { name: folder.name });
+                    }
                 }
             }));
     }

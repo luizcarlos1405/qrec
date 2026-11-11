@@ -2693,10 +2693,31 @@ strip leading `.` and `-`, cap at 120 bytes on a char boundary, fall back to
 what was typed into a `NewProjectPath { parent, name }` from the text alone. A
 target with a slash is a path, made absolute against `cwd` (`None`: only a
 relative one is refused, `io`). One without is a name that goes in
-`projects_folder`, `Usage` when there is none. `.`, `..`, `/` and a path ending
+`projects_folder`, `Usage` when there is none. `resolve_in(target, cwd,
+projects, chosen)` picks that folder from the project folders: the one
+`chosen` names (ignoring case; `Usage` when none is called that), else the
+default; a path ignores both. `.`, `..`, `/` and a path ending
 in `..` have no folder name to make (`Usage`). Non-UTF-8 names are kept as
 they are. The shell's `projects::make_folder` makes the last part only and
 returns a folder already there untouched, for the folder rule to judge.
+
+**Project folders** (`project_folders.rs`). `config.toml`'s
+`[[projects.folders]]` (`ProjectFolder { name, path }`) and
+`projects.default_folder` live in `config::ProjectsDefaults`;
+`default_folder()` is the one named, else the first, and `find(name)` ignores
+case. Reading the file (`config::parse`, `problems`) refuses a bad name (1 to
+40 characters, no `/` or control character), a relative path, a name or path
+twice and a default that names no folder. The single `projects.folder` of
+before deserializes (`RawProjects`, `try_from`) as one folder named after the
+path's last part and made the default; with the new keys beside it, it is
+refused. `apply(projects, FolderEdit)` makes one edit (`Add`, `Rename`,
+`SetDefault`, `Remove`) and always writes the default, so whenever there are
+folders exactly one is it (removing it makes the first one left the default);
+`edit_text` writes the result into the file's text with `toml_edit`, the list
+whole, every other section as it was, and the old key dropped. None of it is a
+`config set` key: those name `qrec folders`. `rows` is what `qrec folders`
+and the GUI list. Whether a path is a folder is checked by the shell before
+`Add`.
 
 `recents::RecentProjects` is the list behind the picker and
 `projects.open_last`: `{ projects: [{ dir, openedAt }] }`, most recent first,

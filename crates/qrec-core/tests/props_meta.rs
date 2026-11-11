@@ -1,6 +1,7 @@
 //! Properties of the meta modules (A§11): migration round trip, project
 //! validation and schema conformance of arbitrary projects, query views,
-//! the chord grammar, keymap overrides and conflicts, and config edits.
+//! the chord grammar, keymap overrides and conflicts, config edits and the
+//! project folders' edits.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -10,6 +11,7 @@ use qrec_core::config;
 use qrec_core::ctx::{AudioDeviceInfo, CameraInfo, CameraMode, ScreenInfo};
 use qrec_core::keymap::{self, KeyChord, KeyContext};
 use qrec_core::migrate::{self, Step};
+use qrec_core::project_folders;
 use qrec_core::protocol::command::{
     AudioPatch, AutocutPatch, CanvasSpec, InsertAt, LayerPatch, MoveTo, Nullable, SceneDest,
     SceneTarget, VideoSourceArg,
@@ -496,10 +498,6 @@ fn arb_setting() -> impl Strategy<Value = (&'static str, String, Value)> {
         any::<bool>().prop_map(|b| ("ui.reduced_motion", b.to_string(), json!(b))),
         any::<bool>().prop_map(|b| ("ui.sounds", b.to_string(), json!(b))),
         any::<bool>().prop_map(|b| ("projects.open_last", b.to_string(), json!(b))),
-        "[a-z]{1,8}".prop_map(|name| {
-            let path = format!("/srv/{name}");
-            ("projects.folder", path.clone(), json!(path))
-        }),
     ]
 }
 
@@ -527,6 +525,49 @@ proptest! {
         }
         let cfg_again = config::parse(&again.to_string()).unwrap();
         prop_assert_eq!(cfg_again, cfg);
+    }
+}
+
+/// One project folders edit over a few names and paths, so they clash.
+fn arb_folder_edit() -> impl Strategy<Value = project_folders::FolderEdit> {
+    use project_folders::FolderEdit;
+    let name = || select(&["a", "B", "c", "A", "work"][..]).prop_map(str::to_owned);
+    prop_oneof![
+        (name(), 0u8..4, any::<bool>()).prop_map(|(name, path, make_default)| FolderEdit::Add {
+            name,
+            path: format!("/srv/{path}"),
+            make_default,
+        }),
+        (name(), name()).prop_map(|(name, new_name)| FolderEdit::Rename { name, new_name }),
+        name().prop_map(|name| FolderEdit::SetDefault { name }),
+        name().prop_map(|name| FolderEdit::Remove { name }),
+    ]
+}
+
+proptest! {
+    /// Whatever the edits (refused ones change nothing), the file reads back
+    /// as the folders, its other settings and comments stay, and whenever
+    /// there are folders exactly one is the default, written out.
+    #[test]
+    fn project_folder_edits_keep_one_default(edits in prop::collection::vec(arb_folder_edit(), 1..12)) {
+        let mut text = COMMENTED.to_owned();
+        let before = config::parse(&text).unwrap();
+        for edit in &edits {
+            if let Ok((edited, projects)) = project_folders::edit_text(&text, edit) {
+                text = edited;
+                let cfg = config::parse(&text).unwrap();
+                prop_assert_eq!(&cfg.projects, &projects);
+                prop_assert!(config::problems(&cfg).is_empty());
+                prop_assert_eq!(cfg.projects.open_last, before.projects.open_last);
+                prop_assert_eq!(&cfg.autocut, &before.autocut);
+                let defaults = project_folders::rows(&projects).iter().filter(|r| r.default).count();
+                prop_assert_eq!(defaults, usize::from(!projects.folders.is_empty()));
+                prop_assert_eq!(projects.default_folder.is_some(), !projects.folders.is_empty());
+            }
+        }
+        for line in ["# my Qrec settings", "# speech is loud"] {
+            prop_assert!(text.contains(line), "lost {:?}:\n{}", line, text);
+        }
     }
 }
 
