@@ -46,7 +46,7 @@ use qrec_shell::capture::{self, EngineOptions};
 use qrec_shell::deps::{CaptureEngine, Deps, NoCapture, OpenOpts, os_entropy, system_clock};
 use qrec_shell::doctor::{self, DoctorOptions};
 use qrec_shell::facts::{ConfigFile, config_problem_toast};
-use qrec_shell::gpu::GpuInputs;
+use qrec_shell::gpu::{self, GpuInputs};
 use qrec_shell::host::signals::{self, HOST_SIGNALS, Interrupts};
 use qrec_shell::host::{
     self, ExitRules, HeadlessArgs, HostProgram, HostSession, Opener, RequestContext, RequestEvents,
@@ -397,6 +397,7 @@ impl Backend for Shell {
     fn host(&mut self, project: &Path, args: &HostArgs) -> Result<u8, CoreError> {
         self.init_logging(Role::Host);
         tracing::info!("platform: {}", platform::current());
+        gpu::log_startup_report();
         let mut opener = ShellOpener {
             notices: None,
             config: None,
@@ -437,6 +438,7 @@ impl Backend for Shell {
             project.display(),
         );
         tracing::info!("platform: {}", platform::current());
+        gpu::log_startup_report();
         let (verbose, _) = self.verbosity.unwrap_or((0, false));
         qrec_gui::run(qrec_gui::GuiArgs {
             project: project.to_path_buf(),
@@ -450,6 +452,7 @@ impl Backend for Shell {
     fn picker(&mut self, cwd: Option<&Path>) -> Result<u8, CoreError> {
         self.init_gui_logging(None);
         tracing::info!("qrec {VERSION}: the project picker");
+        gpu::log_startup_report();
         let (verbose, _) = self.verbosity.unwrap_or((0, false));
         qrec_gui::run_picker(qrec_gui::PickerArgs {
             cwd: cwd.map(Path::to_path_buf),

@@ -2057,6 +2057,28 @@ its size, mtime, inode or change time changed (`ConfigFile`), and
   keeps both as they are, and every command notes it (`doctor` prints the
   note). For the window, `qrec_gui::prepare_display` comes next, still
   single-threaded (A§8.6).
+- Inside an AppImage (`gpu::appimage_dir`: `$APPDIR` holds this
+  executable, so an `APPDIR` another AppImage's terminal leaked into a host
+  qrec doesn't count), the bundle's graphics manifests come first
+  (`$APPDIR/share`, before NixOS's `/run/opengl-driver/share`, whose Mesa
+  manifest names a store path: a host library among the bundled ones). An
+  inherited `__EGL_VENDOR_LIBRARY_FILENAMES` or `VK_DRIVER_FILES` with an
+  entry under `$APPDIR` is the bundle's, not the user's: sharun sets the
+  Vulkan one in every start (the bundled drivers, NVIDIA's host manifest
+  added) and the EGL one, NVIDIA's vendor first, when NVIDIA's kernel
+  module is loaded. Qrec's rule replaces them (the doctor prints the old
+  value): EGL goes to the bundled Mesa whenever the chosen node is Intel's
+  or AMD's, NVIDIA there or not, so neither NVIDIA's EGL nor the host's
+  Mesa loads; Vulkan follows the rule above. Values pointing elsewhere are
+  the user's and stay. With no render node this process may open
+  (`gpu::node_access`: access(2) for reading and writing, which opens no
+  device, NVIDIA's included; a container without `/dev/dri`, a VM without
+  3D), the window gets `GDK_DISABLE=gl,vulkan` and GTK draws with Cairo: the
+  AppImage's Mesa has no llvmpipe, and GL on its softpipe is slow. A user's
+  `GDK_DISABLE` or `GSK_RENDERER` still wins. `main()` decides all this
+  before any log exists; the host's, the window's and the picker's logs
+  print what it did once they are set up (`gpu::log_startup_report`,
+  "gpu: set GDK_DISABLE=gl,vulkan", then its notes).
 - In the same step (`gpu::plan_gst_env`): `GST_REGISTRY_1_0` becomes
   `$XDG_CACHE_HOME/qrec/gstreamer-registry-<arch>.bin` unless the user set
   it, so other GStreamer apps never make Qrec's registry stale and the

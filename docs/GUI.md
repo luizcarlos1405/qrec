@@ -234,7 +234,7 @@ requirement review's numbering; H-n are host and engine calls.
 | D-51 | **PO** A step while the program plays (`←` `→` a frame, `Shift+←` `Shift+→` 1 s, `↑` `↓` an edit point; a key or the transport's button) pauses it first and steps from the frame the picture shows, as an editor's frame step does (Resolve, Premiere): `Pause`, then one `Seek{To(f)}` to where the step lands from the player's frame (`apply::ui::seek_frame`). SPEC §10.2, DESIGN and BRIEF don't say what a step does while playing; before, a frame step barely moved (its seek landed within the sync's 2-frame tolerance of the playing player, which played on; R18's audit), and ±1 s and the edit jumps played on from where they landed (keeping that for them is the alternative). `Home`, `End`, a ruler click and the CLI's `qrec seek` still move a playing program on (the sync's once-a-second seek waits for the window's and loses to any seek that landed after the snapshot it read, G§3.10 step 3; the CLI's `--by` and `--edit` go from the player's frame). The sync leaves the playhead to the step's seek and holds the paused picture until it lands (G§3.10 step 2). | WP4 |
 | H-1 | Live preview: a `gtk4paintablesink` created on the GTK thread and handed to the engine (SPEC §5.2), composited at the preview size (≤ 960×540 × the device scale), BGRx. The RGBA appsink path stays for tests and as the picture before WP1 merges. | WP1 |
 | H-2 | Program playback: one GES timeline and pipeline per session, edited in place and committed; a second `gtk4paintablesink`. | WP1 |
-| H-3 | The GUI renders with GSK GL: `GDK_DISABLE=vulkan` is set unless the user set `GDK_DISABLE` or `GSK_RENDERER`, in which case both are left alone and doctor notes it (G§3.13). | WP0a |
+| H-3 | The GUI renders with GSK GL: `GDK_DISABLE=vulkan` is set unless the user set `GDK_DISABLE` or `GSK_RENDERER`, in which case both are left alone and doctor notes it (G§3.13). Inside an AppImage without a render node to open, `GDK_DISABLE=gl,vulkan`: Cairo. | WP0a |
 | H-4 | A GUI host keeps portal casts open for 60 s after the live pipeline stops (`EngineOptions.cast_grace`), so `Tab` back to Live doesn't re-open screencasts. | WP1 |
 | H-5 | Device facts come from a cache the GUI refreshes on a worker (`facts::SharedSources`), so `LayerAdd` and a take start never block the session thread on discovery. | WP0a |
 | H-6 | The Session calls its `StateObserver` after every assignment of its state, durable or not (`RecordClock`, export progress, `runtime.playing`, recovery, jobs), before that outcome's toasts, progress and replies (G§3.5). | WP0a |
@@ -1574,6 +1574,11 @@ time; A§8.7 rules for every child).
     Vulkan on the Intel iGPU;
   - compositor screenshots of a Vulkan-rendered window tore.
 - The existing EGL and Vulkan pins stay; `doctor` prints the note.
+- Inside an AppImage with no render node it may open (a container without
+  `/dev/dri`, a VM without 3D), `GDK_DISABLE=gl,vulkan` instead: GTK draws
+  with Cairo, as the pixman suites do, since the AppImage's Mesa has no
+  llvmpipe and GL on its softpipe is slow (A§8.10). The window's log says
+  so ("gpu: …", with the GPU variables `main()` set).
 - Nothing may start a thread before `prepare_gpu_env`, which runs first in
   `main`.
 - Check with an strace of the GUI start

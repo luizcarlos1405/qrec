@@ -19,18 +19,30 @@
 //! 3. for the GUI, when an NVIDIA device exists and isn't the chosen one,
 //!    points `__EGL_VENDOR_LIBRARY_FILENAMES` at Mesa and
 //!    `VK_DRIVER_FILES`/`VK_ICD_FILENAMES` at the chosen vendor's Vulkan
-//!    driver, unless the user set them,
+//!    driver, unless the user set them; inside an AppImage EGL goes to the
+//!    bundled Mesa whenever the chosen node is Intel's or AMD's,
 //! 4. for the GUI, sets `GDK_DISABLE=vulkan`, so GTK renders with GSK GL
 //!    (GUI H-3), unless the user set `GDK_DISABLE` or `GSK_RENDERER`: Mesa's
 //!    Vulkan loader opens every render node, NVIDIA's included, while it
-//!    enumerates devices, even with the driver pinned.
+//!    enumerates devices, even with the driver pinned. Inside an AppImage
+//!    with no render node it may open, `GDK_DISABLE=gl,vulkan`: GTK draws
+//!    with Cairo, since the bundled Mesa has no llvmpipe.
+//!
+//! Inside an AppImage (`$APPDIR` holds this executable: [`appimage_dir`])
+//! the graphics manifests come from the bundle first (`$APPDIR/share`), and
+//! an inherited `__EGL_VENDOR_LIBRARY_FILENAMES` or `VK_DRIVER_FILES` that
+//! points into `$APPDIR` is the bundle's, not the user's: sharun sets the
+//! Vulkan one in every start and the EGL one, NVIDIA's vendor first, when
+//! NVIDIA's kernel module is loaded. Qrec's rule then applies as if they
+//! were unset.
 //!
 //! The decision is pure ([`plan_gpu_env`]); applying it uses
 //! `std::env::set_var`, which is only sound while the process has a single
 //! thread (edition 2024 makes it `unsafe`). [`prepare_gpu_env`] checks
 //! `/proc/self/task` and refuses to touch the environment once another
 //! thread exists, so call it first thing in `main()`. The report is kept for
-//! `qrec doctor` ([`startup_report`]).
+//! `qrec doctor` ([`startup_report`]), and the host's and the window's logs
+//! print it once they are set up ([`log_startup_report`]).
 //!
 //! Probes that touch a render node run in a child process with a 10 s
 //! deadline ([`run_probe_child`]): the child is the `qrec` binary itself,
@@ -62,8 +74,9 @@
 //! ```
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -438,6 +451,41 @@ pub fn render_nodes() -> Vec<RenderNode> {
     scan_render_nodes(Path::new("/sys/class/drm"), Path::new("/dev/dri"))
 }
 
+/// Whether this process may open a render node's device file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeAccess {
+    pub path: String,
+    /// Why it can't ("No such file or directory (os error 2)": sysfs lists
+    /// the GPU, but a container didn't get its device); `None` when it can.
+    pub error: Option<String>,
+}
+
+/// [`NodeAccess`] for each node, by access(2) for reading and writing: a
+/// permission check, so no device is opened, NVIDIA's included (A§8.10).
+pub fn node_access(nodes: &[RenderNode]) -> Vec<NodeAccess> {
+    nodes
+        .iter()
+        .map(|node| NodeAccess {
+            path: node.path.clone(),
+            error: may_open(Path::new(&node.path)).err().map(|e| e.to_string()),
+        })
+        .collect()
+}
+
+/// access(2) with `R_OK | W_OK`.
+fn may_open(path: &Path) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    // SAFETY: access(2) reads a NUL-terminated path that outlives the call;
+    // it opens nothing.
+    if unsafe { libc::access(path.as_ptr(), libc::R_OK | libc::W_OK) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 fn parse_hex_u16(text: &str) -> Option<u16> {
     let digits = text
         .strip_prefix("0x")
@@ -547,12 +595,30 @@ pub struct GpuEnvInputs<'a> {
     /// The libva driver the chosen node needs ([`libva_driver_for`]: its
     /// vendor and generation, and the driver files).
     pub va_driver: Option<&'a str>,
+    /// The AppImage's folder when Qrec runs from one ([`appimage_dir`]).
+    pub appdir: Option<&'a str>,
+    /// Whether this process may open each of `nodes` ([`node_access`]).
+    pub access: &'a [NodeAccess],
 }
+
+/// The GUI's `GDK_DISABLE`: Vulkan off (GSK GL), and GL too (Cairo).
+const GDK_DISABLE_VULKAN: &str = "vulkan";
+const GDK_DISABLE_GL_VULKAN: &str = "gl,vulkan";
 
 /// Decides which variables to set (pure; A§8.10).
 pub fn plan_gpu_env(inputs: &GpuEnvInputs<'_>) -> GpuEnvPlan {
     let mut plan = GpuEnvPlan::default();
     let inherited = |key: &str| (inputs.env)(key).filter(|v| !v.is_empty());
+    // Inside an AppImage a value that points into it is the bundle's
+    // (sharun's), which Qrec's rule replaces; any other is the user's.
+    let bundles = |value: &str| {
+        inputs.appdir.is_some_and(|dir| {
+            value
+                .split(':')
+                .any(|entry| Path::new(entry).starts_with(dir))
+        })
+    };
+    let users = |key: &str| inherited(key).filter(|value| !bundles(value));
     match inputs.choice {
         None => plan.notes.push(
             "no Intel or AMD render node: VA-API stays off, LIBVA_DRIVER_NAME untouched".into(),
@@ -601,24 +667,35 @@ pub fn plan_gpu_env(inputs: &GpuEnvInputs<'_>) -> GpuEnvPlan {
 
     let nvidia_present = inputs.nodes.iter().any(|n| n.vendor == Some(VENDOR_NVIDIA));
     let chosen_vendor = inputs.choice.and_then(|c| c.vendor);
-    let pin_away_from_nvidia = inputs.for_gui
-        && nvidia_present
-        && matches!(chosen_vendor, Some(VENDOR_INTEL | VENDOR_AMD));
-    if pin_away_from_nvidia {
-        if inherited(EGL_VENDOR_FILES).is_some() {
+    let on_intel_or_amd =
+        inputs.for_gui && matches!(chosen_vendor, Some(VENDOR_INTEL | VENDOR_AMD));
+    // EGL away from NVIDIA's driver; inside an AppImage always to the
+    // bundled Mesa, so neither NVIDIA's EGL nor the host's Mesa (NixOS's
+    // /run/opengl-driver) loads among the bundled libraries.
+    if on_intel_or_amd && (nvidia_present || inputs.appdir.is_some()) {
+        let previous = inherited(EGL_VENDOR_FILES);
+        if users(EGL_VENDOR_FILES).is_some() {
             plan.notes
                 .push(format!("{EGL_VENDOR_FILES} is set by the user; left alone"));
         } else if let Some(file) = &inputs.mesa_egl_vendor {
+            if previous.is_some() {
+                plan.notes.push(format!(
+                    "{EGL_VENDOR_FILES} came with the AppImage, not from the user: Qrec \
+                     pins the bundled Mesa"
+                ));
+            }
             plan.changes.push(EnvChange {
                 key: EGL_VENDOR_FILES.into(),
                 value: file.clone(),
-                previous: None,
+                previous,
             });
         } else {
             plan.notes
                 .push("Mesa's EGL vendor file wasn't found; EGL may pick the NVIDIA driver".into());
         }
-        if inherited(VK_DRIVER_FILES).is_some() || inherited(VK_ICD_FILENAMES).is_some() {
+    }
+    if on_intel_or_amd && nvidia_present {
+        if users(VK_DRIVER_FILES).is_some() || users(VK_ICD_FILENAMES).is_some() {
             plan.notes.push(format!(
                 "{VK_DRIVER_FILES}/{VK_ICD_FILENAMES} are set by the user; left alone"
             ));
@@ -627,7 +704,7 @@ pub fn plan_gpu_env(inputs: &GpuEnvInputs<'_>) -> GpuEnvPlan {
                 plan.changes.push(EnvChange {
                     key: key.into(),
                     value: file.clone(),
-                    previous: None,
+                    previous: inherited(key),
                 });
             }
         } else {
@@ -640,24 +717,52 @@ pub fn plan_gpu_env(inputs: &GpuEnvInputs<'_>) -> GpuEnvPlan {
 
     // GUI H-3: GSK GL, never Vulkan (which opens every render node while it
     // enumerates devices), unless the user chose GTK's renderer. Their
-    // choice is noted for every command, so `qrec doctor` shows it.
+    // choice is noted for every command, so `qrec doctor` shows it. Inside
+    // an AppImage with no render node to open, Cairo: the bundled Mesa has
+    // no llvmpipe, and GL on its softpipe is slow.
+    let no_node = inputs.access.iter().all(|node| node.error.is_some());
+    let cairo = inputs.for_gui && inputs.appdir.is_some() && no_node;
+    let disable = if cairo {
+        GDK_DISABLE_GL_VULKAN
+    } else {
+        GDK_DISABLE_VULKAN
+    };
     let chosen: Vec<String> = [GDK_DISABLE, GSK_RENDERER]
         .into_iter()
         .filter_map(|key| inherited(key).map(|value| format!("{key}={value}")))
         .collect();
     if !chosen.is_empty() {
         plan.notes.push(format!(
-            "{} set by the user: the Qrec window renders as it says (Qrec would set {GDK_DISABLE}=vulkan)",
+            "{} set by the user: the Qrec window renders as it says (Qrec would set {GDK_DISABLE}={disable})",
             chosen.join(" and ")
         ));
     } else if inputs.for_gui {
+        if cairo {
+            plan.notes.push(format!(
+                "{}: the window draws with Cairo ({GDK_DISABLE}={disable}), since the \
+                 AppImage's Mesa has no llvmpipe and its softpipe is slow",
+                no_render_node(inputs.access)
+            ));
+        }
         plan.changes.push(EnvChange {
             key: GDK_DISABLE.into(),
-            value: "vulkan".into(),
+            value: disable.into(),
             previous: None,
         });
     }
     plan
+}
+
+/// Why no render node draws: there is none, or each one's access error.
+fn no_render_node(access: &[NodeAccess]) -> String {
+    if access.is_empty() {
+        return "no GPU render node".to_owned();
+    }
+    let why: Vec<String> = access
+        .iter()
+        .map(|node| format!("{}: {}", node.path, node.error.as_deref().unwrap_or("?")))
+        .collect();
+    format!("no render node can be opened ({})", why.join("; "))
 }
 
 /// GStreamer's registry file ([`plan_gst_env`]).
@@ -707,10 +812,18 @@ pub fn plan_gst_env(env: &dyn Fn(&str) -> Option<String>) -> GpuEnvPlan {
     plan
 }
 
-/// Directories holding `glvnd/` and `vulkan/` data: NixOS's driver dir,
-/// `$XDG_DATA_DIRS` (default `/usr/local/share:/usr/share`) and `/etc`.
-pub fn graphics_data_dirs(xdg_data_dirs: Option<&str>) -> Vec<PathBuf> {
-    let mut dirs = vec![PathBuf::from("/run/opengl-driver/share")];
+/// Directories holding `glvnd/` and `vulkan/` data, in the order they are
+/// searched: the AppImage's own (`$APPDIR/share`) when Qrec runs from one,
+/// NixOS's driver dir, `$XDG_DATA_DIRS` (default
+/// `/usr/local/share:/usr/share`) and `/etc`, each once. Inside an AppImage
+/// the bundle's manifests win: NixOS's names its Mesa by a store path, a
+/// host library among the bundled ones.
+pub fn graphics_data_dirs(xdg_data_dirs: Option<&str>, appdir: Option<&str>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = appdir
+        .map(|dir| Path::new(dir).join("share"))
+        .into_iter()
+        .collect();
+    dirs.push(PathBuf::from("/run/opengl-driver/share"));
     let xdg = xdg_data_dirs
         .filter(|s| !s.is_empty())
         .unwrap_or("/usr/local/share:/usr/share");
@@ -720,7 +833,8 @@ pub fn graphics_data_dirs(xdg_data_dirs: Option<&str>) -> Vec<PathBuf> {
             .map(PathBuf::from),
     );
     dirs.push(PathBuf::from("/etc"));
-    dirs.dedup();
+    let mut seen = std::collections::BTreeSet::new();
+    dirs.retain(|dir| seen.insert(dir.clone()));
     dirs
 }
 
@@ -781,6 +895,8 @@ pub struct GpuInputs {
     pub config_device: Option<String>,
     /// Also pin EGL and Vulkan (the GUI).
     pub for_gui: bool,
+    /// The AppImage's folder when Qrec runs from one ([`appimage_dir`]).
+    pub appdir: Option<String>,
 }
 
 impl GpuInputs {
@@ -795,12 +911,29 @@ impl GpuInputs {
         let config_device = crate::paths::UserDirs::resolve(&env)
             .ok()
             .and_then(|dirs| config_va_device(&dirs.config_file()));
+        let exe = std::env::current_exe().ok();
         Self {
             project_device,
             config_device,
             for_gui,
+            appdir: appimage_dir(std::env::var_os("APPDIR").as_deref(), exe.as_deref()),
         }
     }
+}
+
+/// `$APPDIR` (`appdir`) when it holds this executable (`exe`): Qrec runs
+/// from that AppImage, its FUSE mount or the folder it extracted itself to.
+/// An `APPDIR` another AppImage leaked into what it starts (a terminal's)
+/// doesn't count, nor a relative one. Symlinks are resolved on both sides.
+pub fn appimage_dir(appdir: Option<&OsStr>, exe: Option<&Path>) -> Option<String> {
+    let dir = Path::new(appdir?);
+    let exe = exe?;
+    if !dir.is_absolute() {
+        return None;
+    }
+    let resolved = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+    (exe.starts_with(dir) || resolved(exe).starts_with(resolved(dir)))
+        .then(|| dir.to_string_lossy().into_owned())
 }
 
 /// The project directory a command line refers to: `--project DIR` /
@@ -935,11 +1068,39 @@ pub struct GpuReport {
     pub applied: bool,
 }
 
+impl GpuReport {
+    /// What changed and why, a line each, as `qrec doctor` and the logs
+    /// print it: "set LIBVA_DRIVER_NAME=iHD (was nvidia)", then the notes.
+    pub fn lines(&self) -> Vec<String> {
+        let mut lines: Vec<String> = self
+            .changes
+            .iter()
+            .map(|c| match &c.previous {
+                Some(previous) => format!("set {}={} (was {previous})", c.key, c.value),
+                None => format!("set {}={}", c.key, c.value),
+            })
+            .collect();
+        if !self.applied && !self.changes.is_empty() {
+            lines.push("those changes were not applied (more than one thread)".to_owned());
+        }
+        lines.extend(self.notes.iter().cloned());
+        lines
+    }
+}
+
 static STARTUP_REPORT: OnceLock<GpuReport> = OnceLock::new();
 
 /// The report of the first [`prepare_gpu_env`] call in this process.
 pub fn startup_report() -> Option<&'static GpuReport> {
     STARTUP_REPORT.get()
+}
+
+/// Logs the startup report's lines ("gpu: set GDK_DISABLE=vulkan"), for a
+/// process whose log is set up: [`prepare_gpu_env`] runs before any.
+pub fn log_startup_report() {
+    for line in startup_report().map(GpuReport::lines).unwrap_or_default() {
+        tracing::info!("gpu: {line}");
+    }
 }
 
 /// Resolves the VA device and sets the GPU variables (A§8.10).
@@ -955,7 +1116,9 @@ pub fn prepare_gpu_env(inputs: &GpuInputs) -> GpuReport {
         inputs.config_device.as_deref(),
         &nodes,
     );
-    let data_dirs = graphics_data_dirs(std::env::var("XDG_DATA_DIRS").ok().as_deref());
+    let appdir = inputs.appdir.as_deref();
+    let data_dirs = graphics_data_dirs(std::env::var("XDG_DATA_DIRS").ok().as_deref(), appdir);
+    let access = node_access(&nodes);
     let chosen_vendor = choice.as_ref().and_then(|c| c.vendor);
     let va_driver = choice
         .as_ref()
@@ -972,6 +1135,8 @@ pub fn prepare_gpu_env(inputs: &GpuInputs) -> GpuReport {
         mesa_egl_vendor: find_mesa_egl_vendor(&data_dirs),
         vulkan_icd: chosen_vendor.and_then(|v| find_vulkan_icd(&data_dirs, v)),
         va_driver,
+        appdir,
+        access: &access,
     });
     let gst = plan_gst_env(&env);
     let mut changes = plan.changes;
@@ -993,9 +1158,7 @@ pub fn prepare_gpu_env(inputs: &GpuInputs) -> GpuReport {
     {
         notes.push(format!("can't create {}: {e}", dir.display()));
     }
-    for note in &notes {
-        tracing::info!("gpu: {note}");
-    }
+    // Logged once the process has a log ([`log_startup_report`]).
     let report = GpuReport {
         nodes,
         choice,
@@ -1902,6 +2065,8 @@ mod tests {
             ),
             vulkan_icd: Some("/run/opengl-driver/share/vulkan/icd.d/intel_icd.x86_64.json".into()),
             va_driver,
+            appdir: None,
+            access: &[],
         })
     }
 
@@ -2225,12 +2390,409 @@ mod tests {
         );
         assert_eq!(find_vulkan_icd(&dirs, VENDOR_NVIDIA), None);
 
-        let dirs = graphics_data_dirs(Some("/a:relative:/b"));
+        let dirs = graphics_data_dirs(Some("/a:relative:/b"), None);
         assert_eq!(
             dirs,
             ["/run/opengl-driver/share", "/a", "/b", "/etc"].map(PathBuf::from)
         );
-        assert!(graphics_data_dirs(None).contains(&PathBuf::from("/usr/share")));
+        assert!(graphics_data_dirs(None, None).contains(&PathBuf::from("/usr/share")));
+    }
+
+    /// Inside an AppImage its own manifests come first, before NixOS's
+    /// driver dir and any host dir `XDG_DATA_DIRS` names before the
+    /// bundle's (each dir counts once): the host's Mesa never loads among
+    /// the bundled libraries. On the NixOS dev box `/run/opengl-driver`
+    /// holds a Mesa manifest, which the bundle's beats.
+    #[test]
+    fn an_appimage_finds_its_own_manifests_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let appdir = tmp.path().join("appimage_extracted_qrec1234");
+        let bundle = appdir.join("share");
+        let host = tmp.path().join("host/share");
+        for share in [&bundle, &host] {
+            fs::create_dir_all(share.join("glvnd/egl_vendor.d")).unwrap();
+            fs::create_dir_all(share.join("vulkan/icd.d")).unwrap();
+            fs::write(share.join("glvnd/egl_vendor.d/50_mesa.json"), "{}").unwrap();
+            fs::write(share.join("vulkan/icd.d/intel_icd.x86_64.json"), "{}").unwrap();
+        }
+        let appdir = appdir.to_string_lossy().into_owned();
+        let xdg = format!("{}:{}:/usr/share:/etc", host.display(), bundle.display());
+        let dirs = graphics_data_dirs(Some(&xdg), Some(&appdir));
+        assert_eq!(
+            dirs,
+            [
+                bundle.clone(),
+                PathBuf::from("/run/opengl-driver/share"),
+                host.clone(),
+                PathBuf::from("/usr/share"),
+                PathBuf::from("/etc"),
+            ]
+        );
+        assert_eq!(
+            find_mesa_egl_vendor(&dirs).unwrap(),
+            bundle
+                .join("glvnd/egl_vendor.d/50_mesa.json")
+                .to_string_lossy()
+        );
+        assert_eq!(
+            find_vulkan_icd(&dirs, VENDOR_INTEL).unwrap(),
+            bundle
+                .join("vulkan/icd.d/intel_icd.x86_64.json")
+                .to_string_lossy()
+        );
+        // Without an AppImage, NixOS's comes first, as before.
+        assert_eq!(
+            graphics_data_dirs(Some(&xdg), None)[0],
+            PathBuf::from("/run/opengl-driver/share")
+        );
+    }
+
+    /// Qrec runs from an AppImage when `$APPDIR` holds its executable, as
+    /// given or with symlinks resolved; an `APPDIR` leaked into a qrec
+    /// installed elsewhere, or a relative one, doesn't count.
+    #[test]
+    fn the_appimage_is_the_folder_that_holds_this_executable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(tmp.path()).unwrap();
+        let appdir = root.join(".mount_Qrec1a2b3c");
+        let exe = appdir.join("bin/qrec");
+        fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        fs::write(&exe, "").unwrap();
+        let dir = appdir.as_os_str();
+        assert_eq!(
+            appimage_dir(Some(dir), Some(&exe)).as_deref(),
+            Some(appdir.to_str().unwrap())
+        );
+        // Through a symlink to the mount.
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&appdir, &link).unwrap();
+        assert!(appimage_dir(Some(link.as_os_str()), Some(&exe)).is_some());
+        // A host qrec started from another AppImage's terminal.
+        let host = root.join("usr/bin/qrec");
+        fs::create_dir_all(host.parent().unwrap()).unwrap();
+        fs::write(&host, "").unwrap();
+        assert_eq!(appimage_dir(Some(dir), Some(&host)), None);
+        for odd in ["", "relative", "."] {
+            assert_eq!(
+                appimage_dir(Some(OsStr::new(odd)), Some(&exe)),
+                None,
+                "{odd:?}"
+            );
+        }
+        assert_eq!(appimage_dir(None, Some(&exe)), None);
+        assert_eq!(appimage_dir(Some(dir), None), None);
+    }
+
+    /// access(2) says whether a node's device file may be opened, without
+    /// opening it: a container that didn't get the device has none.
+    #[test]
+    fn node_access_checks_without_opening() {
+        let tmp = tempfile::tempdir().unwrap();
+        let there = tmp.path().join("renderD128");
+        fs::write(&there, "").unwrap();
+        let at = |path: &Path| RenderNode {
+            path: path.to_string_lossy().into_owned(),
+            ..node(128, Some(VENDOR_INTEL))
+        };
+        let access = node_access(&[at(&there), at(&tmp.path().join("renderD129"))]);
+        assert_eq!(access[0].error, None);
+        assert_eq!(
+            access[1].error.as_deref(),
+            Some("No such file or directory (os error 2)")
+        );
+        // Read-only: not enough to draw with (root may open anything).
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&there, fs::Permissions::from_mode(0o444)).unwrap();
+        // SAFETY: geteuid(2) has no preconditions.
+        if unsafe { libc::geteuid() } != 0 {
+            assert_eq!(
+                node_access(&[at(&there)])[0].error.as_deref(),
+                Some("Permission denied (os error 13)")
+            );
+        }
+    }
+
+    /// The GUI's plan from an AppImage (`appdir`) whose start (sharun) set
+    /// `env`, with the bundle's manifests and `access` to the nodes.
+    fn appimage_plan(
+        nodes: &[RenderNode],
+        access: &[NodeAccess],
+        vars: &[(&str, &str)],
+    ) -> GpuEnvPlan {
+        let env = |key: &str| {
+            vars.iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| (*v).to_owned())
+        };
+        let choice = effective_va_device(None, None, nodes);
+        let driver = choice
+            .as_ref()
+            .and_then(|c| node_for(&c.device, nodes))
+            .and_then(|n| libva_driver_for(n.vendor?, n.device_id, &VaDrivers::default()));
+        plan_gpu_env(&GpuEnvInputs {
+            choice: choice.as_ref(),
+            nodes,
+            for_gui: true,
+            env: &env,
+            mesa_egl_vendor: Some(format!("{APPDIR}/share/glvnd/egl_vendor.d/50_mesa.json")),
+            vulkan_icd: Some(format!("{APPDIR}/share/vulkan/icd.d/intel_icd.json")),
+            va_driver: driver,
+            appdir: Some(APPDIR),
+            access,
+        })
+    }
+
+    const APPDIR: &str = "/tmp/.mount_Qrec1a2b3c";
+
+    /// Every node there, as access(2) found it: `None` opens.
+    fn opens(nodes: &[RenderNode], error: Option<&str>) -> Vec<NodeAccess> {
+        nodes
+            .iter()
+            .map(|n| NodeAccess {
+                path: n.path.clone(),
+                error: error.map(str::to_owned),
+            })
+            .collect()
+    }
+
+    /// Inside an AppImage the values pointing into it are the bundle's:
+    /// sharun's `VK_DRIVER_FILES` (the bundled drivers, NVIDIA's host one
+    /// added) and, with NVIDIA's module loaded, its
+    /// `__EGL_VENDOR_LIBRARY_FILENAMES` (NVIDIA's vendor first). Qrec's
+    /// rule replaces them: EGL on the bundled Mesa whenever the chosen
+    /// node is Intel's or AMD's (NVIDIA there or not), Vulkan on the
+    /// chosen vendor's bundled driver when NVIDIA is there. A user's own
+    /// values, which point elsewhere, stay.
+    #[test]
+    fn an_appimage_replaces_its_own_gpu_values_and_keeps_the_users() {
+        let keys = |plan: &GpuEnvPlan| -> Vec<(String, String, Option<String>)> {
+            plan.changes
+                .iter()
+                .map(|c| (c.key.clone(), c.value.clone(), c.previous.clone()))
+                .collect()
+        };
+        let set = |key: &str, value: String, previous: Option<&str>| {
+            (key.to_owned(), value, previous.map(str::to_owned))
+        };
+        let mesa = format!("{APPDIR}/share/glvnd/egl_vendor.d/50_mesa.json");
+        let anv = format!("{APPDIR}/share/vulkan/icd.d/intel_icd.json");
+        let sharun_egl = format!("/usr/share/glvnd/egl_vendor.d/10_nvidia.json:{mesa}");
+        let sharun_vk =
+            format!("{APPDIR}/share/vulkan/icd.d:/usr/share/vulkan/icd.d/nvidia_icd.json");
+
+        // The dev box (Intel and NVIDIA, NVIDIA's module loaded).
+        let dev_box = [
+            node(128, Some(VENDOR_INTEL)),
+            node(129, Some(VENDOR_NVIDIA)),
+        ];
+        let plan = appimage_plan(
+            &dev_box,
+            &opens(&dev_box, None),
+            &[
+                (EGL_VENDOR_FILES, &sharun_egl),
+                (VK_DRIVER_FILES, &sharun_vk),
+            ],
+        );
+        assert_eq!(
+            keys(&plan),
+            [
+                set(LIBVA_DRIVER_NAME, "iHD".into(), None),
+                set(EGL_VENDOR_FILES, mesa.clone(), Some(&sharun_egl)),
+                set(VK_DRIVER_FILES, anv.clone(), Some(&sharun_vk)),
+                set(VK_ICD_FILENAMES, anv.clone(), None),
+                set(GDK_DISABLE, "vulkan".into(), None),
+            ]
+        );
+        assert_eq!(
+            plan.notes,
+            [
+                "__EGL_VENDOR_LIBRARY_FILENAMES came with the AppImage, not from the user: Qrec \
+              pins the bundled Mesa"
+            ]
+        );
+
+        // Intel alone: sharun set Vulkan only; EGL still goes to the bundled
+        // Mesa, never the host's, and Vulkan stays the bundle's.
+        let intel = [node(128, Some(VENDOR_INTEL))];
+        let bundled_vk = format!("{APPDIR}/share/vulkan/icd.d");
+        let plan = appimage_plan(
+            &intel,
+            &opens(&intel, None),
+            &[(VK_DRIVER_FILES, &bundled_vk)],
+        );
+        assert_eq!(
+            keys(&plan),
+            [
+                set(LIBVA_DRIVER_NAME, "iHD".into(), None),
+                set(EGL_VENDOR_FILES, mesa.clone(), None),
+                set(GDK_DISABLE, "vulkan".into(), None),
+            ]
+        );
+        assert!(plan.notes.is_empty(), "{plan:?}");
+
+        // The user's own values, outside the AppImage, stay.
+        let plan = appimage_plan(
+            &dev_box,
+            &opens(&dev_box, None),
+            &[
+                (
+                    EGL_VENDOR_FILES,
+                    "/usr/share/glvnd/egl_vendor.d/10_nvidia.json",
+                ),
+                (VK_ICD_FILENAMES, "/usr/share/vulkan/icd.d/nvidia_icd.json"),
+                (VK_DRIVER_FILES, &sharun_vk),
+            ],
+        );
+        assert_eq!(
+            keys(&plan),
+            [
+                set(LIBVA_DRIVER_NAME, "iHD".into(), None),
+                set(GDK_DISABLE, "vulkan".into(), None),
+            ]
+        );
+        assert_eq!(
+            plan.notes,
+            [
+                "__EGL_VENDOR_LIBRARY_FILENAMES is set by the user; left alone",
+                "VK_DRIVER_FILES/VK_ICD_FILENAMES are set by the user; left alone",
+            ]
+        );
+
+        // NVIDIA alone: no Intel or AMD node to pin to; sharun's NVIDIA-first
+        // EGL stays, so NVIDIA's driver draws.
+        let nvidia = [node(128, Some(VENDOR_NVIDIA))];
+        let plan = appimage_plan(
+            &nvidia,
+            &opens(&nvidia, None),
+            &[(EGL_VENDOR_FILES, &sharun_egl)],
+        );
+        assert_eq!(keys(&plan), [set(GDK_DISABLE, "vulkan".into(), None)]);
+
+        // A host qrec (no AppImage) takes the same values for the user's.
+        let choice = effective_va_device(None, None, &dev_box).unwrap();
+        let plan = plan_with(
+            Some(&choice),
+            &dev_box,
+            true,
+            &[
+                (EGL_VENDOR_FILES, &sharun_egl),
+                (VK_DRIVER_FILES, &sharun_vk),
+            ],
+        );
+        assert_eq!(plan.notes.len(), 2, "{plan:?}");
+        assert!(plan.changes.iter().all(|c| c.key != EGL_VENDOR_FILES));
+    }
+
+    /// Inside an AppImage with no render node it may open (a container
+    /// without `/dev/dri`, a VM without 3D, a user the node's group leaves
+    /// out), the window draws with Cairo: `GDK_DISABLE=gl,vulkan`, noted
+    /// with why. Not when one node opens, not outside an AppImage (a
+    /// distribution's Mesa has llvmpipe), never over the user's renderer.
+    #[test]
+    fn an_appimage_without_a_render_node_draws_with_cairo() {
+        let gdk = |plan: &GpuEnvPlan| -> Vec<String> {
+            plan.changes
+                .iter()
+                .filter(|c| c.key == GDK_DISABLE || c.key == GSK_RENDERER)
+                .map(|c| format!("{}={}", c.key, c.value))
+                .collect()
+        };
+        let container = [
+            node(128, Some(VENDOR_INTEL)),
+            node(129, Some(VENDOR_NVIDIA)),
+        ];
+        let missing = opens(&container, Some("No such file or directory (os error 2)"));
+        let plan = appimage_plan(&container, &missing, &[]);
+        assert_eq!(gdk(&plan), ["GDK_DISABLE=gl,vulkan"]);
+        assert_eq!(
+            plan.notes.last().unwrap(),
+            "no render node can be opened (/dev/dri/renderD128: No such file or directory \
+             (os error 2); /dev/dri/renderD129: No such file or directory (os error 2)): the \
+             window draws with Cairo (GDK_DISABLE=gl,vulkan), since the AppImage's Mesa has no \
+             llvmpipe and its softpipe is slow"
+        );
+        // No node in sysfs at all.
+        let plan = appimage_plan(&[], &[], &[]);
+        assert_eq!(gdk(&plan), ["GDK_DISABLE=gl,vulkan"]);
+        assert!(
+            plan.notes
+                .last()
+                .unwrap()
+                .starts_with("no GPU render node: ")
+        );
+        // One node opens (the container got the Intel one): GSK GL.
+        let mut one = missing.clone();
+        one[0].error = None;
+        assert_eq!(
+            gdk(&appimage_plan(&container, &one, &[])),
+            ["GDK_DISABLE=vulkan"]
+        );
+        // The user's renderer stays, and the note says what Qrec would set.
+        let plan = appimage_plan(&container, &missing, &[(GSK_RENDERER, "ngl")]);
+        assert!(gdk(&plan).is_empty(), "{plan:?}");
+        assert_eq!(
+            plan.notes.last().unwrap(),
+            "GSK_RENDERER=ngl set by the user: the Qrec window renders as it says (Qrec would \
+             set GDK_DISABLE=gl,vulkan)"
+        );
+        // A host qrec without a node keeps GL: llvmpipe draws it. The CLI
+        // and hosts draw nothing.
+        let choice = effective_va_device(None, None, &container);
+        let env = |_: &str| -> Option<String> { None };
+        let plan = |for_gui: bool, appdir: Option<&str>| {
+            plan_gpu_env(&GpuEnvInputs {
+                choice: choice.as_ref(),
+                nodes: &container,
+                for_gui,
+                env: &env,
+                mesa_egl_vendor: None,
+                vulkan_icd: None,
+                va_driver: Some(DRIVER_IHD),
+                appdir,
+                access: &missing,
+            })
+        };
+        assert_eq!(gdk(&plan(true, None)), ["GDK_DISABLE=vulkan"]);
+        assert!(gdk(&plan(false, Some(APPDIR))).is_empty());
+    }
+
+    /// The startup report as the doctor and the logs print it.
+    #[test]
+    fn the_startup_report_reads_a_line_each() {
+        let report = GpuReport {
+            nodes: Vec::new(),
+            choice: None,
+            changes: vec![
+                EnvChange {
+                    key: LIBVA_DRIVER_NAME.into(),
+                    value: "iHD".into(),
+                    previous: Some("nvidia".into()),
+                },
+                EnvChange {
+                    key: GDK_DISABLE.into(),
+                    value: "gl,vulkan".into(),
+                    previous: None,
+                },
+            ],
+            notes: vec!["no GPU render node: …".into()],
+            applied: true,
+        };
+        assert_eq!(
+            report.lines(),
+            [
+                "set LIBVA_DRIVER_NAME=iHD (was nvidia)",
+                "set GDK_DISABLE=gl,vulkan",
+                "no GPU render node: …",
+            ]
+        );
+        let unapplied = GpuReport {
+            applied: false,
+            ..report
+        };
+        assert_eq!(
+            unapplied.lines()[2],
+            "those changes were not applied (more than one thread)"
+        );
     }
 
     #[test]
@@ -2327,6 +2889,7 @@ mod tests {
             project_device: None,
             config_device: Some("/dev/null".into()),
             for_gui: false,
+            appdir: None,
         });
         assert_eq!(report.choice.as_ref().unwrap().origin, DeviceOrigin::Config);
         // No GPU variable; the GStreamer ones (step 4) aren't applied here.
