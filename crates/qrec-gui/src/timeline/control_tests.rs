@@ -7,7 +7,7 @@
 use qrec_core::protocol::command::MoveTo;
 use qrec_core::state::{RecordMode, RecordPhase};
 use qrec_core::testkit;
-use qrec_core::view::timeline::{ROWS, shown_total};
+use qrec_core::view::timeline::{ROWS, START_PAD_PX, shown_total};
 
 use super::*;
 
@@ -114,11 +114,12 @@ fn rows(x: f64) -> Press {
     press(Area::Rows, x, 30.0, Mods::default())
 }
 
-/// The design state at 48 px/s from 00:01:05:00 (S08).
+/// The design state at 48 px/s from 00:01:05:00 (S08), at the time area's
+/// left edge as the mock draws it (past the start pad).
 fn seconds() -> State {
     let mut state = testkit::design_state();
     state.ui.zoom = Some(1.6);
-    state.ui.scroll_px = 1950.0 * 1.6;
+    state.ui.scroll_px = START_PAD_PX + 1950.0 * 1.6;
     state
 }
 
@@ -425,7 +426,7 @@ fn a_trim_follows_snapping() {
 fn trim_zones_at_a_cut_and_on_narrow_clips() {
     let mut state = testkit::design_state();
     state.ui.zoom = Some(32.0);
-    state.ui.scroll_px = 3160.0 * 32.0;
+    state.ui.scroll_px = START_PAD_PX + 3160.0 * 32.0;
     let (_, view, total) = setup(&state);
     let c = cx(&state, view, total, ms(0));
     assert_eq!(c.hit(509.0, 30.0), Hit::TrimEnd(id("c2d0")));
@@ -587,12 +588,14 @@ fn zoom_to_selection_and_its_toast() {
     state.ui.selection = vec![id("c3e9")];
     vm.zoom_selection(&state, ms(0)).unwrap();
     let view = vm.shown(ms(0)).unwrap();
-    assert!((view.px_per_frame - 1040.0 / 3105.0).abs() < 1e-12);
+    // c3e9 between the pads, as fit lays out the timeline.
+    assert!((view.px_per_frame - 1000.0 / 3105.0).abs() < 1e-12);
+    assert!((view.x_of_frame(4286) - START_PAD_PX).abs() < 1e-9);
     let Some(Command::SetUi { patch }) = vm.flush(&state, ms(300)) else {
         panic!()
     };
-    assert_eq!(patch.zoom, Nullable::Set(1040.0 / 3105.0));
-    assert!((patch.scroll_px.unwrap() - 4286.0 * 1040.0 / 3105.0).abs() < 1e-9);
+    assert_eq!(patch.zoom, Nullable::Set(1000.0 / 3105.0));
+    assert!((patch.scroll_px.unwrap() - 4286.0 * 1000.0 / 3105.0).abs() < 1e-9);
 }
 
 #[test]
@@ -646,7 +649,7 @@ fn the_echo_rule() {
     longer.project.timeline.clips.push(extra);
     vm.on_state(&longer, total + 3105, ms(800));
     let fitted = vm.shown(ms(800)).unwrap();
-    assert!((fitted.px_per_frame - 1032.0 / (total + 3105) as f64).abs() < 1e-12);
+    assert!((fitted.px_per_frame - 1000.0 / (total + 3105) as f64).abs() < 1e-12);
 }
 
 #[test]
@@ -794,7 +797,7 @@ fn columns_older_than_the_readings_are_silent() {
 /// here passed with the frame's step gone from the timeline).
 #[test]
 fn fit_follows_the_ghost_between_record_clocks() {
-    use qrec_core::view::timeline::{FIT_INSET_PX, ghost, shown_playhead};
+    use qrec_core::view::timeline::{END_PAD_PX, ghost, shown_playhead};
     let mut state = testkit::design_state();
     state.project.timeline.clips.clear();
     let recording = |elapsed_ns: u64| RecordPhase::Recording {
@@ -825,7 +828,7 @@ fn fit_follows_the_ghost_between_record_clocks() {
         grew += usize::from(follow_frame(&mut vm, &clock, &state, now, false));
         let e = clock.elapsed(now, false);
         let view = vm.shown(now).unwrap();
-        let bound = view.width - FIT_INSET_PX + 1e-6;
+        let bound = view.width - END_PAD_PX + 1e-6;
         let parked = view.x_of_frame(shown_playhead(&state, e, None));
         assert!(parked <= bound, "{now:?}: the playhead at {parked}");
         let g = ghost(&state, &view, e).unwrap();

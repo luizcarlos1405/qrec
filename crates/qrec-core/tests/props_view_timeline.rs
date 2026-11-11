@@ -14,8 +14,8 @@ use qrec_core::testkit::{self, strategies};
 use qrec_core::timeline::total_frames;
 use qrec_core::view::ruler::{self, TickKind};
 use qrec_core::view::timeline::{
-    ClipLabel, Ghost, MAX_PX_PER_FRAME, TrimEdge, Viewport, clamp_zoom, clip_boxes, drop_slot,
-    ghost_columns, move_preview, trim_preview,
+    ClipLabel, Ghost, MAX_PX_PER_FRAME, START_PAD_PX, TrimEdge, Viewport, clamp_zoom, clip_boxes,
+    drop_slot, ghost_columns, move_preview, trim_preview,
 };
 use qrec_core::{ClipId, Frame, State, TakeId};
 
@@ -59,7 +59,7 @@ proptest! {
         };
         let boxes = clip_boxes(&state, &view, None);
         prop_assert_eq!(boxes.len(), state.project.timeline.clips.len());
-        prop_assert!((boxes[0].x + view.scroll_px).abs() < 1e-6);
+        prop_assert!((boxes[0].x + view.scroll_px - START_PAD_PX).abs() < 1e-6);
         for pair in boxes.windows(2) {
             let tol = 1e-9 * (1.0 + pair[0].x.abs() + pair[0].w);
             prop_assert!((pair[1].x - (pair[0].x + pair[0].w)).abs() <= tol,

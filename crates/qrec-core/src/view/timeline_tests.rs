@@ -1,5 +1,5 @@
 //! `view::timeline` on the design sample (BRIEF §3, G§4.5): the four zoom
-//! levels of the mocks with fit's 8 px inset, S12's zoom to c3e9, the
+//! levels of the mocks with the timeline's pads, S12's zoom to c3e9, the
 //! ghosts of S04, S04b and S05, S08's silences, the S10 trim and the S11
 //! move, the hit test's trim zones (D-45), the toolbar, the headers and
 //! the tooltip. Window x = time-area x + 176.
@@ -24,11 +24,12 @@ fn fit(state: &State) -> f64 {
     Viewport::fit_px_per_frame(W, shown_total(state, recording_elapsed_ns(state))).unwrap()
 }
 
-/// The design state at zoom `zoom` scrolled to frame `from`.
+/// The design state at zoom `zoom` scrolled to frame `from`, at the time
+/// area's left edge as the mocks draw it (past the start pad).
 fn zoomed(zoom: f64, from: Frame) -> State {
     let mut state = testkit::design_state();
     state.ui.zoom = Some(zoom);
-    state.ui.scroll_px = from as f64 * zoom;
+    state.ui.scroll_px = START_PAD_PX + from as f64 * zoom;
     state
 }
 
@@ -75,19 +76,20 @@ fn level(name: &str, state: &State, view: &Viewport) -> String {
 }
 
 /// The four zoom levels of the mocks on the design state (G§7 WP3
-/// acceptance): fit with the 8 px inset, seconds (S08), frame level (S09)
-/// and S12's zoom to c3e9.
+/// acceptance): fit with the pads, seconds (S08), frame level (S09) and
+/// S12's zoom to c3e9.
 #[test]
 fn the_four_zoom_levels() {
     let base = testkit::design_state();
     let fit_view = Viewport::from_state(&base, W).unwrap();
-    assert!((fit_view.px_per_frame - 1032.0 / 7391.0).abs() < 1e-12);
-    // At fit with the inset, c8a1 is 63.8 px: its label is the number.
+    assert!((fit_view.px_per_frame - 1000.0 / 7391.0).abs() < 1e-12);
+    // At fit between the pads, c8a1 is 61.8 px: its label is the number.
     let fit_boxes = clip_boxes(&base, &fit_view, None);
     assert_eq!(fit_boxes[1].label, ClipLabel::Short("1".into()));
-    assert_eq!(fit_boxes[6].label, ClipLabel::None, "c1b6 is 21.6 px");
+    assert_eq!(fit_boxes[6].label, ClipLabel::None, "c1b6 is 21 px");
+    assert_eq!(fit_boxes[0].x, START_PAD_PX, "the 8 px start pad");
     let end = fit_boxes.last().map(|b| b.x + b.w).unwrap();
-    assert!((end - (W - FIT_INSET_PX)).abs() < 1e-9, "the 8 px inset");
+    assert!((end - (W - END_PAD_PX)).abs() < 1e-9, "the 32 px end pad");
 
     let seconds = zoomed(1.6, 1950);
     let seconds_view = Viewport::from_state(&seconds, W).unwrap();
@@ -109,11 +111,12 @@ fn the_four_zoom_levels() {
     let mut selection = testkit::design_state();
     selection.ui.selection = vec![id("c3e9")];
     let to_c3e9 = zoom_to_selection(&selection, &fit_view, 7391).unwrap();
-    assert!((to_c3e9.px_per_frame - 1040.0 / 3105.0).abs() < 1e-12);
-    assert!((to_c3e9.px_per_frame - 0.33494).abs() < 1e-5);
+    assert!((to_c3e9.px_per_frame - 1000.0 / 3105.0).abs() < 1e-12);
+    assert!((to_c3e9.px_per_frame - 0.32206).abs() < 1e-5);
+    // Between the pads, as fit lays out the timeline.
     let c3e9 = clip_boxes(&selection, &to_c3e9, None).pop().unwrap();
-    assert!((c3e9.x + HEADER_WIDTH - 176.0).abs() < 1e-6);
-    assert!((c3e9.x + c3e9.w + HEADER_WIDTH - 1216.0).abs() < 1e-6);
+    assert!((c3e9.x + HEADER_WIDTH - 184.0).abs() < 1e-6);
+    assert!((c3e9.x + c3e9.w + HEADER_WIDTH - 1184.0).abs() < 1e-6);
     assert_eq!(
         zoom_readout(&to_c3e9, fit(&selection), selection.project.canvas.fps),
         "10 px/s"
@@ -193,10 +196,12 @@ fn zoom_steps_slider_and_ui_patches() {
     assert_eq!(far.scroll_for_wheel(-1.0, 0.0, total), 0.0);
     let end = far.max_scroll(total);
     assert_eq!(far.scroll_for_wheel(0.0, 1e6, total), end);
-    assert!((end - (7391.0 * 1.6 + FIT_INSET_PX - W)).abs() < 1e-9);
-    // Scrubbing stays within the timeline.
+    assert!((end - (START_PAD_PX + 7391.0 * 1.6 + END_PAD_PX - W)).abs() < 1e-9);
+    // Scrubbing stays within the timeline: the start pad is frame 0, and
+    // x 88 is 80 px past it.
     assert_eq!(far.scrub_frame(-50.0, total), 0);
-    assert_eq!(far.scrub_frame(80.0, total), 50);
+    assert_eq!(far.scrub_frame(4.0, total), 0);
+    assert_eq!(far.scrub_frame(88.0, total), 50);
     let late = Viewport {
         scroll_px: end,
         ..far
@@ -210,7 +215,12 @@ fn auto_page_and_the_shown_playhead() {
     let view = Viewport::from_state(&state, W).unwrap();
     assert_eq!(auto_page(&view, 2437, 7391), None);
     let next = auto_page(&view, 2600, 7391).unwrap();
-    assert!((next - (2600.0 * 1.6 - AUTO_PAGE_PX)).abs() < 1e-9);
+    assert!((next - (START_PAD_PX + 2600.0 * 1.6 - AUTO_PAGE_PX)).abs() < 1e-9);
+    let paged = Viewport {
+        scroll_px: next,
+        ..view
+    };
+    assert!((paged.x_of_frame(2600) - AUTO_PAGE_PX).abs() < 1e-9);
     assert_eq!(shown_playhead(&state, 0, None), 2437);
     assert_eq!(shown_playhead(&state, 0, Some(2500)), 2500);
     // Past the end (a ui.json older than the timeline): drawn at the end,
@@ -249,10 +259,10 @@ fn ghosts() {
     let s04 = recording(RecordMode::Append, 4842);
     assert_eq!(shown_total(&s04, recording_elapsed_ns(&s04)), 12_233);
     let view = Viewport::from_state(&s04, W).unwrap();
-    assert!((view.px_per_frame - 1032.0 / 12_233.0).abs() < 1e-12);
+    assert!((view.px_per_frame - 1000.0 / 12_233.0).abs() < 1e-12);
     let ghost04 = ghost(&s04, &view, recording_elapsed_ns(&s04)).unwrap();
     assert_eq!(ghost04.plate, "\u{25cf} Take 10 \u{00b7} recording");
-    assert!((ghost04.x + ghost04.w - (W - FIT_INSET_PX)).abs() < 1e-9);
+    assert!((ghost04.x + ghost04.w - (W - END_PAD_PX)).abs() < 1e-9);
     assert_eq!(
         shown_playhead(&s04, recording_elapsed_ns(&s04), None),
         12_233
@@ -488,7 +498,7 @@ fn the_s11_move() {
         ]
     );
     assert_eq!(p.starts_at, 1627);
-    assert!((p.caret_x - 1627.0 * view.px_per_frame).abs() < 1e-9);
+    assert!((p.caret_x - view.x_of_frame(1627)).abs() < 1e-9);
     assert_eq!(
         p.command,
         Some(Command::ClipMove {
@@ -499,15 +509,15 @@ fn the_s11_move() {
     // The others closed c8a1's place and left its new one open: c2d0
     // stays where it is.
     let c2d0 = p.boxes.iter().find(|b| b.clip == id("c2d0")).unwrap();
-    assert!((c2d0.x - 2084.0 * view.px_per_frame).abs() < 1e-9);
+    assert!((c2d0.x - view.x_of_frame(2084)).abs() < 1e-9);
     let c1b2 = p.boxes.iter().find(|b| b.clip == id("c1b2")).unwrap();
-    assert!((c1b2.x - 410.0 * view.px_per_frame).abs() < 1e-9);
+    assert!((c1b2.x - view.x_of_frame(410)).abs() < 1e-9);
     let ripple = p.ripple.clone().unwrap();
     assert_eq!(ripple.text, "\u{2190} 00:00:15:07");
     let TagAnchor::Center { x } = ripple.anchor else {
         panic!("{ripple:?}")
     };
-    assert!((x - (410.0 + 1627.0) / 2.0 * view.px_per_frame).abs() < 1e-9);
+    assert!((x - view.x_of((410.0 + 1627.0) / 2.0)).abs() < 1e-9);
     // To the start, and back where it was.
     let start = move_preview(&state, &view, &[id("c8a1")], -50.0).unwrap();
     assert_eq!(start.tooltip[0], "Move to the start \u{00b7} slot 1 of 10");
@@ -566,17 +576,25 @@ fn trim_zones() {
     );
     assert_eq!(hit(&boxes, 512.0), Hit::TrimStart(id("c2d1")));
 
-    // At fit: the timeline's end, and the empty row past it.
+    // At fit: the timeline's ends, and the empty pads past them.
     let fit_state = testkit::design_state();
     let fit_view = Viewport::from_state(&fit_state, W).unwrap();
     let fit_boxes = clip_boxes(&fit_state, &fit_view, None);
-    let end = W - FIT_INSET_PX;
+    let end = W - END_PAD_PX;
     assert_eq!(hit(&fit_boxes, end - 1.0), Hit::TrimEnd(id("c3e9")));
     assert_eq!(hit(&fit_boxes, end + 1.0), Hit::Empty);
+    assert_eq!(
+        hit(&fit_boxes, START_PAD_PX + 1.0),
+        Hit::TrimStart(id("c7f3"))
+    );
+    assert_eq!(hit(&fit_boxes, START_PAD_PX - 1.0), Hit::Empty);
     let mut selected = fit_state.clone();
     selected.ui.selection = vec![id("c3e9")];
     let sel_boxes = clip_boxes(&selected, &fit_view, None);
     assert_eq!(hit(&sel_boxes, end + 1.0), Hit::TrimEnd(id("c3e9")));
+    // The whole zone, a selected edge's too, is left of the lanes' overlay
+    // scrollbar's 24 px (hovered), which took the press.
+    assert!(end + TRIM_ZONE_PX <= W - 24.0);
 
     // A 5 px clip: body only, and it lends its neighbours nothing.
     let mut narrow = testkit::design_state();

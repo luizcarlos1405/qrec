@@ -12,10 +12,11 @@
 //!   ```
 //!   use qrec_core::Fps;
 //!   use qrec_core::view::ruler::{self, TickKind};
-//!   use qrec_core::view::timeline::Viewport;
+//!   use qrec_core::view::timeline::{START_PAD_PX, Viewport};
 //!
 //!   // S08: 48 px/s from 00:01:05:00; 00:01:04:00's major is 48 px left.
-//!   let view = Viewport { width: 1040.0, px_per_frame: 1.6, scroll_px: 1950.0 * 1.6, lanes_scroll_px: 0.0 };
+//!   let scroll_px = START_PAD_PX + 1950.0 * 1.6;
+//!   let view = Viewport { width: 1040.0, px_per_frame: 1.6, scroll_px, lanes_scroll_px: 0.0 };
 //!   let ticks = ruler::ticks(&view, Fps::new(30, 1), 7391);
 //!   assert!(ticks.iter().any(|t| t.x < 0.0 && t.kind == TickKind::Major));
 //!   assert!(ticks.iter().filter(|t| t.x < 0.0).all(|t| t.label.is_none()));
@@ -254,28 +255,32 @@ pub fn current_cell(viewport: &Viewport, playhead: Frame) -> Option<(f64, f64)> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::view::timeline::Viewport;
+    use crate::view::timeline::{START_PAD_PX, Viewport};
 
     fn fps30() -> Fps {
         Fps::new(30, 1)
     }
 
+    /// The view at `ppf` with `scroll_px` px of frames left of the time
+    /// area, as the mocks draw it (frame 0 at its left edge for 0, past
+    /// the start pad).
     fn at(ppf: f64, scroll_px: f64) -> Viewport {
         Viewport {
             width: 1040.0,
             px_per_frame: ppf,
-            scroll_px,
+            scroll_px: START_PAD_PX + scroll_px,
             lanes_scroll_px: 0.0,
         }
     }
 
-    /// G§4.5's checks against the mocks: fit 0.1396 → 30 s / 30 s / 10 s;
-    /// 48 px/s → 2 s / 1 s / 10 f; 10 px/s → 10 s; recording fit 0.0850 →
-    /// 1 min.
+    /// G§4.5's checks against the mocks: fit 0.1353 (between the pads; the
+    /// mocks draw 0.1407) → 30 s / 30 s / 10 s; 48 px/s → 2 s / 1 s / 10 f;
+    /// 10 px/s → 10 s (S12, and `z` to c3e9 between the pads); recording
+    /// fit 0.0850 (0.0817 between the pads) → 1 min.
     #[test]
     fn the_intervals_match_the_mocks() {
         let fps = fps30();
-        let fit = 1032.0 / 7391.0;
+        let fit = 1000.0 / 7391.0;
         assert_eq!(label_interval(fit, fps), LabelInterval::Seconds(30));
         assert_eq!(
             tick_steps(LabelInterval::Seconds(30), fps),
@@ -289,8 +294,12 @@ mod tests {
         );
         assert_eq!(label_interval(0.0850, fps), LabelInterval::Minutes(1));
         assert_eq!(
-            label_interval(1032.0 / 12_233.0, fps),
+            label_interval(1000.0 / 12_233.0, fps),
             LabelInterval::Minutes(1)
+        );
+        assert_eq!(
+            label_interval(1000.0 / 3105.0, fps),
+            LabelInterval::Seconds(10)
         );
         // The ends of the table.
         assert_eq!(label_interval(128.0, fps), LabelInterval::Frames(1));
@@ -350,7 +359,7 @@ mod tests {
 
     #[test]
     fn fit_ticks_and_the_corner() {
-        let view = at(1032.0 / 7391.0, 0.0);
+        let view = at(1000.0 / 7391.0, 0.0);
         let ticks = ticks(&view, fps30(), 7391);
         let labels: Vec<&str> = ticks.iter().filter_map(|t| t.label.as_deref()).collect();
         assert_eq!(
@@ -367,11 +376,11 @@ mod tests {
                 "00:04:00:00"
             ]
         );
-        // Majors every 30 s, minors every 10 s (41.9 px apart).
+        // Majors every 30 s, minors every 10 s (40.6 px apart).
         assert!(ticks.iter().all(|t| t.cell.is_none()));
         assert_eq!(
             ticks.iter().filter(|t| t.kind == TickKind::Minor).count(),
-            16
+            17
         );
         assert_eq!(corner(2437, fps30()), "00:01:21:07");
         let json = serde_json::to_value(&ticks[0]).unwrap();
@@ -383,7 +392,7 @@ mod tests {
 
     /// The frame a tick of `view` stands at.
     fn frame_of(view: &Viewport, tick: &Tick) -> Frame {
-        ((tick.x + view.scroll_px) / view.px_per_frame).round() as Frame
+        view.time_at_x(tick.x).round() as Frame
     }
 
     /// S12 (10 px/s, c3e9 from x 0): a 10 px tick at each label (every

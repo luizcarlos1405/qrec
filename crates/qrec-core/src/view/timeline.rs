@@ -6,12 +6,16 @@
 //!
 //! Geometry is in logical px at 100 % (D-46), relative to the time area
 //! (the timeline minus the 176 px track headers) and, vertically, to the
-//! rows below the ruler: a clip starts at `x = start × px_per_frame −
+//! rows below the ruler: a clip starts at `x = 8 + start × px_per_frame −
 //! scroll_px` and is `len × px_per_frame` wide, with no minimum.
 //!
-//! - **Fit** is `(width − 8) / total` (an empty timeline has no viewport),
-//!   so the playhead parked at the end is never half clipped (README known
-//!   gap: never measure a clip's x off a fit-zoom mock). While a take is
+//! - **Pads**: the timeline scrolls with 8 px before frame 0 and 32 px
+//!   after its end ([`START_PAD_PX`], [`END_PAD_PX`]): the playhead parked
+//!   at either end shows whole, and the last clip's end edge stays clear of
+//!   the lanes' overlay scrollbar.
+//! - **Fit** is `(width − 40) / total` (an empty timeline has no viewport),
+//!   the pads and the frames filling the time area (README known gap:
+//!   never measure a clip's x off a fit-zoom mock). While a take is
 //!   recorded the total includes the ghost ([`shown_total`]).
 //! - **Zoom** stays within `[fit, 128]` px per frame; `ui.zoom = None` is
 //!   fit, with no scroll; frame level starts at 24 px per frame.
@@ -37,8 +41,16 @@ use crate::view::{HintItem, format};
 pub const MAX_PX_PER_FRAME: f64 = 128.0;
 /// From this zoom on the timeline draws single frames (S09).
 pub const FRAME_LEVEL_PX: f64 = 24.0;
-/// Fit leaves this much room at the end: `(width − 8) / total`.
-pub const FIT_INSET_PX: f64 = 8.0;
+/// The timeline's room before frame 0, at fit and scrolled to the start:
+/// the playhead's 13 px head parked at frame 0 shows whole (it was cut in
+/// half), and the first clip's start edge is off the track headers.
+pub const START_PAD_PX: f64 = 8.0;
+/// The timeline's room after its end, at fit and scrolled to the end: the
+/// playhead's head parked there shows whole, and the last clip's end edge
+/// (its trim zone, 4 px past the edge when selected) stays left of the
+/// lanes' overlay scrollbar, which takes the right 24 px once the pointer
+/// nears it (libadwaita's; the owner couldn't trim the last take's end).
+pub const END_PAD_PX: f64 = 32.0;
 /// The track header column (C17).
 pub const HEADER_WIDTH: f64 = 176.0;
 /// A wheel notch scrolls this far (D-39).
@@ -159,15 +171,22 @@ pub struct Viewport {
 /// A little slack for float round trips (`frame_at_x(x_of_frame(f))`).
 const FRAME_EPS: f64 = 1e-6;
 
+/// The px of a time area `width` wide the frames fill at fit: all but the
+/// pads (at least 1).
+fn frames_room(width: f64) -> f64 {
+    (width - START_PAD_PX - END_PAD_PX).max(1.0)
+}
+
 impl Viewport {
     /// Fit's px per frame for `total` frames in a time area `width` wide:
-    /// `(width − 8) / total`; `None` on an empty timeline.
+    /// `(width − 40) / total`, the pads around them; `None` on an empty
+    /// timeline.
     pub fn fit_px_per_frame(width: f64, total: Frame) -> Option<f64> {
-        (total > 0).then(|| (width - FIT_INSET_PX).max(1.0) / total as f64)
+        (total > 0).then(|| frames_room(width) / total as f64)
     }
 
     /// The fit viewport of a timeline of `total` frames in a time area
-    /// `width` wide: `(width − 8) / total` px per frame, no scroll. `None`
+    /// `width` wide: `(width − 40) / total` px per frame, no scroll. `None`
     /// on an empty timeline.
     pub fn fit(width: f64, total: Frame) -> Option<Viewport> {
         Self::fit_px_per_frame(width, total).map(|px_per_frame| Viewport {
@@ -208,20 +227,20 @@ impl Viewport {
         )
     }
 
-    /// The x of frame `f`'s left edge.
+    /// The x of frame `f`'s left edge: frame 0 is 8 px in, unscrolled.
     pub fn x_of_frame(&self, f: Frame) -> f64 {
-        f as f64 * self.px_per_frame - self.scroll_px
+        self.x_of(f as f64)
     }
 
     /// The x of a fractional frame position.
     pub fn x_of(&self, frames: f64) -> f64 {
-        frames * self.px_per_frame - self.scroll_px
+        START_PAD_PX + frames * self.px_per_frame - self.scroll_px
     }
 
-    /// The fractional frame position at `x`.
+    /// The fractional frame position at `x` (negative in the start pad).
     pub fn time_at_x(&self, x: f64) -> f64 {
         if self.px_per_frame > 0.0 {
-            (x + self.scroll_px) / self.px_per_frame
+            (x - START_PAD_PX + self.scroll_px) / self.px_per_frame
         } else {
             0.0
         }
@@ -234,9 +253,9 @@ impl Viewport {
     }
 
     /// How far the view can scroll over `total` frames: the end shows with
-    /// fit's 8 px inset.
+    /// its 32 px pad.
     pub fn max_scroll(&self, total: Frame) -> f64 {
-        (total as f64 * self.px_per_frame + FIT_INSET_PX - self.width).max(0.0)
+        (START_PAD_PX + total as f64 * self.px_per_frame + END_PAD_PX - self.width).max(0.0)
     }
 
     /// The scroll kept within `[0, max_scroll]`.
@@ -257,9 +276,10 @@ impl Viewport {
     pub fn with_zoom(&self, px_per_frame: f64, anchor_x: f64, fit: f64) -> Viewport {
         let ppf = clamp_zoom(px_per_frame, fit);
         let anchor = self.time_at_x(anchor_x);
-        let scroll = anchor * ppf - anchor_x;
+        let scroll = START_PAD_PX + anchor * ppf - anchor_x;
+        // `max_scroll` at `ppf`: fit's frames fill the room between the pads.
         let max = if fit > 0.0 {
-            ((self.width - FIT_INSET_PX).max(1.0) * (ppf / fit - 1.0)).max(0.0)
+            (frames_room(self.width) * (ppf / fit - 1.0)).max(0.0)
         } else {
             f64::INFINITY
         };
@@ -400,10 +420,11 @@ pub fn can_zoom_out(viewport: &Viewport, fit: f64) -> bool {
     !is_fit(viewport.px_per_frame, fit) && viewport.px_per_frame > fit
 }
 
-/// `z` (G§4.5): the selection fills the time area exactly, no margin:
-/// `width ÷` the selection's frame span, scrolled to its start (S12: 1040 /
-/// 3105 = 0.335 px/frame). When that is past 128 px per frame, the
-/// selection is centered. `Err` with nothing selected.
+/// `z` (G§4.5): the selection fills the time area between the pads, as
+/// fit fills it with the timeline: `(width − 40) ÷` the selection's frame
+/// span, its start 8 px in (S12: 1000 / 3105 = 0.322 px/frame). When that
+/// is past 128 px per frame, the selection is centered between the pads.
+/// `Err` with nothing selected.
 pub fn zoom_to_selection(
     state: &State,
     viewport: &Viewport,
@@ -427,12 +448,15 @@ pub fn zoom_to_selection(
     };
     let fit = Viewport::fit_px_per_frame(viewport.width, total).unwrap_or(viewport.px_per_frame);
     let len = (to - from) as f64;
-    let wanted = viewport.width / len;
+    let room = frames_room(viewport.width);
+    let wanted = room / len;
     let ppf = clamp_zoom(wanted, fit);
+    // The selection's start 8 px in (`x_of(from)`), or its middle at the
+    // room's.
     let scroll = if (ppf - wanted).abs() <= wanted * 1e-12 {
         from as f64 * ppf
     } else {
-        (from as f64 + len / 2.0) * ppf - viewport.width / 2.0
+        (from as f64 + len / 2.0) * ppf - room / 2.0
     };
     Ok(Viewport {
         px_per_frame: ppf,
@@ -469,7 +493,7 @@ pub fn auto_page(viewport: &Viewport, playhead: Frame, total: Frame) -> Option<f
         return None;
     }
     let scroll = clamp_scroll(
-        playhead as f64 * viewport.px_per_frame - AUTO_PAGE_PX,
+        START_PAD_PX + playhead as f64 * viewport.px_per_frame - AUTO_PAGE_PX,
         viewport.max_scroll(total),
     );
     ((scroll - viewport.scroll_px).abs() > 0.5).then_some(scroll)

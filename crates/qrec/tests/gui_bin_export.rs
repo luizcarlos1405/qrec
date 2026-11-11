@@ -253,7 +253,14 @@ fn clip_middle(nested: &Nested, project: &Path, clip: &str, width: f64) -> f64 {
         .find(|c| c["id"] == clip)
         .unwrap_or_else(|| panic!("no {clip}: {clips:?}"));
     let middle = frames(c, "start") + frames(c, "duration") / 2.0;
-    middle * (width - qrec_core::view::timeline::FIT_INSET_PX) / total
+    fit_x(width, total, middle)
+}
+
+/// The x of `frames` in a time area `width` wide fit to `total` frames
+/// (time-area px; G§4.5's pads around them).
+fn fit_x(width: f64, total: f64, frames: f64) -> f64 {
+    qrec_core::view::timeline::Viewport::fit(width, total as u64)
+        .map_or(0.0, |view| view.x_of(frames))
 }
 
 /// A click, then `waitIdle`: the window's own export settles once its job
@@ -925,9 +932,10 @@ fn the_bin_keys_select_preview_and_insert() {
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn a_playing_bin_preview_leaves_the_program_playhead() {
     let mut nested = Nested::start(AREA, "bin-preview-playhead", Options::default());
+    // 00:01:05:00 at the time area's left edge, past the start pad.
     let ui = UiState {
         zoom: Some(1.6),
-        scroll_px: 1950.0 * 1.6,
+        scroll_px: qrec_core::view::timeline::START_PAD_PX + 1950.0 * 1.6,
         ..bin_ui()
     };
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base, Some(ui));
@@ -957,7 +965,7 @@ fn a_playing_bin_preview_leaves_the_program_playhead() {
     let ui = status(&nested, &project)["ui"].clone();
     assert_eq!(
         ui["scrollPx"].as_f64(),
-        Some(3120.0),
+        Some(3128.0),
         "the view stays: {ui}"
     );
     assert_eq!(ui["playhead"], 2437, "{ui}");
@@ -1161,8 +1169,7 @@ fn a_bin_row_drags_onto_the_timeline() {
         .fold(0.0, f64::max);
     let regions = nested.window(0).regions(&[]);
     let [tx, ty, tw, th] = regions["video-row"];
-    let boundary =
-        tx + frames(&clips[6], "start") * (tw - qrec_core::view::timeline::FIT_INSET_PX) / total;
+    let boundary = tx + fit_x(tw, total, frames(&clips[6], "start"));
     let (x, y) = center(&mut nested, "bin-take-2");
     let pointer = nested.pointer();
     pointer.move_to(x, y);
