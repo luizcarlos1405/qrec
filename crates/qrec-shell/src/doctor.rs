@@ -31,11 +31,16 @@
 //! without an Intel or AMD GPU (NVIDIA only, a virtual machine's GPU, none)
 //! has nothing to fix there: its VA-API rows say what encodes on the CPU
 //! instead, as information, and so does `gst.vah264enc` on the chips only
-//! i965 drives, which GStreamer's VA plugin doesn't encode with. The report
-//! also says where Qrec runs (`platform::current`, and the screen backend:
-//! its session line) and how to bind the global shortcuts there (SPEC
-//! §10.2, `keymap::global_snippet`: niri's KDL, sway's `bindsym`, GNOME's
-//! custom shortcuts, …).
+//! i965 drives, which GStreamer's VA plugin doesn't encode with. Before the
+//! VA-API rows ask an Intel or AMD node to encode, the node is opened and
+//! closed again: sysfs may list a GPU whose device file a container didn't
+//! get, or that this user may not open, and then the rows say that instead
+//! of naming a driver to install (an NVIDIA node is never opened). The
+//! report also says where Qrec runs (`platform::current`, and the screen
+//! backend: its session line; the AppImage it runs from, with `APPDIR`) and
+//! how to bind the global shortcuts there (SPEC §10.2,
+//! `keymap::global_snippet`: niri's KDL, sway's `bindsym`, GNOME's custom
+//! shortcuts, …, run by the AppImage's path from one).
 //!
 //! Only a failed app check is `missing_dependency` (JSON `required`, exit
 //! 5, and the GUI's "The swamp is missing something" page, which lists
@@ -46,19 +51,21 @@
 //! A failed check's hint is the fix where Qrec runs, from the core's table
 //! (`platform::install_hint` for the probe's platform): this
 //! distribution's packages and install command, the desktop's ScreenCast
-//! backend, `nix develop` in a Nix shell. The check also carries it as
-//! `fix` (packages, command, note), whose command S23 offers to copy.
+//! backend, `nix develop` in a Nix shell; inside an AppImage, no package
+//! for what it bundles. The check also carries it as `fix` (packages,
+//! command, note), whose command S23 offers to copy.
 //!
 //! Everything that touches the system goes through [`Probe`], so tests run
 //! against a fake machine.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use qrec_core::ctx::ScreenBackendKind;
-use qrec_core::keymap::{GlobalSnippet, NIRI_SNIPPET, global_snippet};
+use qrec_core::keymap::{GlobalSnippet, global_snippet};
 use qrec_core::media_argv::vaapi_check_argv;
 use qrec_core::platform::{Hint, Need, VaGpu, install_hint};
 use qrec_core::{CoreError, ErrorCode};
@@ -96,7 +103,8 @@ pub struct DoctorReport {
     /// The features a failed check turns off, in [`Feature::ALL`]'s order
     /// (never [`Feature::App`]: that is [`DoctorReport::missing`]).
     pub features_off: Vec<FeatureOff>,
-    /// Where Qrec runs.
+    /// Where Qrec runs, the AppImage it runs from included (the texts
+    /// print "AppImage: <path> (APPDIR=<dir>)" under the session line).
     pub platform: HostPlatform,
     /// How screens are listed and recorded there, which the screen checks
     /// follow: the session's `ScreenBackend`, with the same values as
@@ -225,6 +233,12 @@ pub struct VaReport {
     /// The device's PCI device id (an Intel chip's generation).
     #[serde(default)]
     pub device_id: Option<u16>,
+    /// Why the device can't be opened, when it is an Intel or AMD node
+    /// sysfs lists: its device file missing (a container or sandbox that
+    /// didn't get it) or this user's permissions. Then nothing asks it to
+    /// encode. Absent when it opens or isn't opened (NVIDIA's never is).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_error: Option<DeviceError>,
     /// The `LIBVA_DRIVER_NAME` the device's children load
     /// (`gpu::child_libva_driver`): this process's when it fits the
     /// vendor (main() pinned it), else `radeonsi` for AMD, `i965` for the
@@ -263,6 +277,59 @@ pub struct VaReport {
     /// What `main()` changed in the GPU environment at startup (A§8.10).
     pub startup: Vec<String>,
     pub note: Option<String>,
+}
+
+/// Why a render node can't be opened (`VaReport::device_error`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeviceError {
+    pub kind: DeviceErrorKind,
+    /// The system's words: "No such file or directory (os error 2)".
+    pub message: String,
+}
+
+/// What kept a render node from opening.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DeviceErrorKind {
+    /// No device file (ENOENT): sysfs lists the GPU, but a container or a
+    /// sandbox didn't get its node.
+    Missing,
+    /// EACCES or EPERM: this user may not open it.
+    Denied,
+    /// Anything else.
+    Failed,
+}
+
+impl DeviceError {
+    /// The error of opening a node.
+    pub fn of(error: &io::Error) -> Self {
+        let kind = match error.kind() {
+            io::ErrorKind::NotFound => DeviceErrorKind::Missing,
+            io::ErrorKind::PermissionDenied => DeviceErrorKind::Denied,
+            _ => DeviceErrorKind::Failed,
+        };
+        Self {
+            kind,
+            message: error.to_string(),
+        }
+    }
+
+    /// What to do about it on `device`: give the container the node, or
+    /// let the user open it.
+    fn hint(&self, device: &str) -> String {
+        match self.kind {
+            DeviceErrorKind::Missing => format!(
+                "sysfs lists this GPU but there is no {device}: give the container or sandbox \
+                 Qrec runs in that device (docker run --device {device})"
+            ),
+            DeviceErrorKind::Denied => format!(
+                "let your user open {device}: join the group that owns it (ls -l {device} shows \
+                 it, usually render), then log in again"
+            ),
+            DeviceErrorKind::Failed => format!("check {device} (ls -l {device})"),
+        }
+    }
 }
 
 /// A DRM render node (`gpu::RenderNode` with its vendor's name).
@@ -373,6 +440,9 @@ pub trait Probe {
     fn render_nodes(&self) -> Vec<gpu::RenderNode>;
     /// Libva's driver files (a stat each; nothing is opened).
     fn va_drivers(&self) -> gpu::VaDrivers;
+    /// Opens the render node `path` for reading and writing and closes it
+    /// again. Asked only for an Intel or AMD node, never NVIDIA's (A§8.10).
+    fn open_node(&self, path: &str) -> io::Result<()>;
     fn env(&self, key: &str) -> Option<String>;
     /// The h264_vaapi export chain on `device` (two frames to the null muxer).
     fn vaapi_h264(&self, device: &str, driver: Option<&str>) -> Result<(), String>;
@@ -397,40 +467,42 @@ pub fn run(opts: &DoctorOptions) -> DoctorReport {
 pub fn run_with(probe: &dyn Probe, opts: &DoctorOptions) -> DoctorReport {
     let platform = probe.platform();
     let screens = probe.screen_backend();
-    let fix = |need| install_hint(need, &platform);
+    let fix = Fix(&platform);
     let mut checks = Vec::new();
     // Asked only once GStreamer works: a stuck plugin scan isn't waited for twice.
-    let gst_va_encoders = gstreamer_checks(probe, opts, &screens, &fix, &mut checks);
+    let gst_va_encoders = gstreamer_checks(probe, opts, &screens, fix, &mut checks);
     let va = va_report(probe, opts, gst_va_encoders.clone().unwrap_or_default());
     if gst_va_encoders.is_some() {
-        encoder_checks(&va, opts, &fix, &mut checks);
+        encoder_checks(&va, opts, fix, &mut checks);
         checks.push(match probe.ges() {
             Ok(()) => ok("ges", APP, "GStreamer Editing Services"),
             Err(e) => fail_fix(
                 "ges",
                 APP,
                 format!("GStreamer Editing Services: {e}"),
-                fix(Need::Ges),
+                fix.need(Need::Ges),
             ),
         });
     }
-    ffmpeg_checks(probe, &va, opts, &fix, &mut checks);
+    ffmpeg_checks(probe, &va, opts, fix, &mut checks);
     // The fake backend captures test sources: it needs none of these.
     let real = |features: &'static [Feature]| {
         if opts.fake_backend { NOTHING } else { features }
     };
-    screen_checks(probe, &screens, real(SCREENS), &fix, &mut checks);
-    audio_checks(probe, real(AUDIO), &fix, &mut checks);
+    screen_checks(probe, &screens, real(SCREENS), fix, &mut checks);
+    audio_checks(probe, real(AUDIO), fix, &mut checks);
     let cpu = on_the_cpu(&checks);
-    checks.push(va_check(&va, probe.config_file().as_deref(), &fix, cpu));
+    checks.push(va_check(&va, probe.config_file().as_deref(), fix, cpu));
+    // From an AppImage the shortcuts run its path, not `qrec`.
+    let program = platform.program();
     DoctorReport {
         features_off: features_off(&checks),
         checks,
-        shortcuts: global_snippet(&platform.desktop),
+        shortcuts: global_snippet(&platform.desktop, program),
         session: session_line(&platform, &screens),
         screen_backend: sources::backend_kind(&screens),
+        niri_snippet: global_snippet(&Desktop::Niri, program).text,
         platform,
-        niri_snippet: NIRI_SNIPPET.to_owned(),
         va: Some(va),
     }
 }
@@ -451,8 +523,32 @@ fn session_line(platform: &HostPlatform, screens: &ScreenBackend) -> String {
     format!("{session}{desktop} · screens: {screens}")
 }
 
-/// The fix of a [`Need`] where Qrec runs (`run_with`'s platform).
-type Fix<'a> = &'a dyn Fn(Need) -> Hint;
+/// The fixes where Qrec runs (`run_with`'s platform).
+#[derive(Clone, Copy)]
+struct Fix<'a>(&'a HostPlatform);
+
+impl Fix<'_> {
+    /// How to get `need` here (`platform::install_hint`).
+    fn need(self, need: Need) -> Hint {
+        install_hint(need, self.0)
+    }
+
+    /// Qrec runs from an AppImage, which bundles everything the checks
+    /// look for but the host's parts.
+    fn bundled(self) -> bool {
+        self.0.app_image.is_some()
+    }
+
+    /// `advice` for a part that is there and doesn't work ("reinstall
+    /// ffmpeg"), unless an AppImage bundles it: then its hint for `need`.
+    fn repair(self, need: Need, advice: impl Into<String>) -> String {
+        if self.bundled() {
+            self.need(need).line()
+        } else {
+            advice.into()
+        }
+    }
+}
 
 const NOTHING: &[Feature] = &[];
 const APP: &[Feature] = &[Feature::App];
@@ -701,7 +797,7 @@ fn gstreamer_checks(
                 "gstreamer",
                 APP,
                 e,
-                fix(Need::Gstreamer).also(
+                fix.need(Need::Gstreamer).also(
                     "if it hangs, a GPU driver blocks the plugin scan: check the VA-API section",
                 ),
             ));
@@ -714,7 +810,10 @@ fn gstreamer_checks(
             "gstreamer",
             APP,
             format!("{version} is too old: Qrec needs GStreamer {min_major}.{min_minor} or newer"),
-            format!("update GStreamer to {min_major}.{min_minor} or newer"),
+            fix.repair(
+                Need::Gstreamer,
+                format!("update GStreamer to {min_major}.{min_minor} or newer"),
+            ),
         ),
         _ => ok("gstreamer", APP, version),
     });
@@ -748,7 +847,7 @@ fn gstreamer_checks(
                     "{} ({}) isn't in the GStreamer registry",
                     element.name, element.role
                 ),
-                fix(element.need),
+                fix.need(element.need),
             )
         });
     }
@@ -758,7 +857,7 @@ fn gstreamer_checks(
             "gst.h264dec",
             APP,
             "no software H.264 decoder: the editor can't play the takes",
-            fix(Need::GstH264Decoder),
+            fix.need(Need::GstH264Decoder),
         )
     } else if decoders.iter().all(|d| d == "openh264dec") {
         ok(
@@ -795,10 +894,10 @@ fn probes_va_factory(opts: &DoctorOptions, vendor: Option<u16>, encoders: &[Stri
 /// `choose_encoder`), if any: the one the probe child bound to the
 /// effective node. Unprobed (the GUI's doctor, whose host probes), the
 /// first full one GStreamer lists, else its first low-power one, when that
-/// node is Intel or AMD. Never with the fake backend, which records with
-/// x264enc (else openh264enc).
+/// node is Intel or AMD and opens. Never with the fake backend, which
+/// records with x264enc (else openh264enc).
 fn va_recorder(va: &VaReport, opts: &DoctorOptions) -> Option<String> {
-    if opts.fake_backend {
+    if opts.fake_backend || va.device_error.is_some() {
         None
     } else if probes_va_factory(opts, va.vendor, &va.gst_encoders) {
         va.gst_factory.clone()
@@ -838,13 +937,15 @@ fn va_gpu(va: &VaReport) -> Option<VaGpu> {
 /// (Fedora's own Mesa), so the hint is the driver's, with the plugin's
 /// after it. Once ffmpeg's h264_vaapi check encoded on that node with that
 /// driver, the driver works and the plugin is what's missing (Arch
-/// packages it on its own, gst-plugin-va).
+/// packages it on its own, gst-plugin-va). An AppImage bundles both: the
+/// driver's hint says so, alone.
 fn no_va_encoder_fix(gpu: VaGpu, va: &VaReport, fix: Fix<'_>) -> Hint {
     match (va.ffmpeg_h264, &va.export_driver) {
-        (Some(true), None) => fix(Need::GstVa),
-        _ => fix(Need::VaDriver(gpu)).also(&format!(
+        (Some(true), None) => fix.need(Need::GstVa),
+        _ if fix.bundled() => fix.need(Need::VaDriver(gpu)),
+        _ => fix.need(Need::VaDriver(gpu)).also(&format!(
             "if GStreamer still has no VA encoder: {}",
-            fix(Need::GstVa).line()
+            fix.need(Need::GstVa).line()
         )),
     }
 }
@@ -877,11 +978,11 @@ fn i965_records_nothing(gpu: VaGpu, va: &VaReport, fix: Fix<'_>, on_the_cpu: &st
             "unset LIBVA_DRIVER_NAME=i965: Qrec then loads iHD, which GStreamer records with",
         );
     }
-    let hint = fix(Need::VaDriver(VaGpu::Intel));
-    let hint = if va.gst_encoders.is_empty() {
+    let hint = fix.need(Need::VaDriver(VaGpu::Intel));
+    let hint = if va.gst_encoders.is_empty() && !fix.bundled() {
         hint.also(&format!(
             "if GStreamer still has no VA encoder: {}",
-            fix(Need::GstVa).line()
+            fix.need(Need::GstVa).line()
         ))
     } else {
         hint
@@ -991,6 +1092,16 @@ fn encoder_checks(va: &VaReport, opts: &DoctorOptions, fix: Fix<'_>, checks: &mu
         ));
         return;
     };
+    // No driver can help a node that doesn't open.
+    if let Some(error) = &va.device_error {
+        checks.push(fail(
+            id,
+            NOTHING,
+            format!("{device} can't be opened: {}: {on_the_cpu}", error.message),
+            error.hint(device),
+        ));
+        return;
+    }
     let probed = probes_va_factory(opts, va.vendor, &va.gst_encoders);
     let none_bound = va.gst_encoders.is_empty() || (probed && va.gst_factory.is_none());
     checks.push(
@@ -1013,7 +1124,7 @@ fn encoder_checks(va: &VaReport, opts: &DoctorOptions, fix: Fix<'_>, checks: &mu
                         "none of {} encodes on {device}: {on_the_cpu}",
                         va.gst_encoders.join(", ")
                     ),
-                    fix(Need::VaDriver(gpu)),
+                    fix.need(Need::VaDriver(gpu)),
                 ),
             }
         } else {
@@ -1053,7 +1164,7 @@ fn ffmpeg_checks(
                 program,
                 APP,
                 format!("{program} wasn't found on PATH"),
-                fix(Need::Ffmpeg),
+                fix.need(Need::Ffmpeg),
             ),
             Some(path) => match probe.version(program) {
                 Ok(version) => {
@@ -1064,7 +1175,7 @@ fn ffmpeg_checks(
                     program,
                     APP,
                     format!("{} doesn't run: {e}", path.display()),
-                    "reinstall ffmpeg",
+                    fix.repair(Need::Ffmpeg, "reinstall ffmpeg"),
                 ),
             },
         };
@@ -1079,7 +1190,7 @@ fn ffmpeg_checks(
             "ffmpeg.decoders",
             APP,
             format!("can't list ffmpeg's decoders: {e}"),
-            "reinstall ffmpeg",
+            fix.repair(Need::Ffmpeg, "reinstall ffmpeg"),
         ),
     });
     checks.push(match probe.ffmpeg_demuxers() {
@@ -1090,13 +1201,13 @@ fn ffmpeg_checks(
             "ffmpeg.demuxers",
             APP,
             "ffmpeg can't read matroska (the takes' MKV files)",
-            fix(Need::FullFfmpeg),
+            fix.need(Need::FullFfmpeg),
         ),
         Err(e) => fail(
             "ffmpeg.demuxers",
             APP,
             format!("can't list ffmpeg's demuxers: {e}"),
-            "reinstall ffmpeg",
+            fix.repair(Need::Ffmpeg, "reinstall ffmpeg"),
         ),
     });
     match probe.ffmpeg_encoders() {
@@ -1110,7 +1221,7 @@ fn ffmpeg_checks(
                         &id,
                         needed_for,
                         format!("ffmpeg has no {name} encoder ({role})"),
-                        fix(Need::FullFfmpeg),
+                        fix.need(Need::FullFfmpeg),
                     )
                 });
             }
@@ -1120,7 +1231,7 @@ fn ffmpeg_checks(
             "ffmpeg.encoders",
             EXPORTS,
             format!("can't list ffmpeg's encoders: {e}"),
-            "reinstall ffmpeg",
+            fix.repair(Need::Ffmpeg, "reinstall ffmpeg"),
         )),
     }
 }
@@ -1129,14 +1240,14 @@ fn ffmpeg_checks(
 /// software encoders (A§9.3 `export_vaapi`), if any, as [`va_recorder`]
 /// says for recordings: the effective node once its h264_vaapi check
 /// passed. Unprobed (the GUI's doctor, whose host runs the check), that
-/// node when it is Intel or AMD and ffmpeg has h264_vaapi. Never with the
-/// fake backend, which exports with libx264, else libopenh264.
+/// node when it is Intel or AMD, opens, and ffmpeg has h264_vaapi. Never
+/// with the fake backend, which exports with libx264, else libopenh264.
 fn va_exporter<'a>(
     va: &'a VaReport,
     opts: &DoctorOptions,
     encoders: &BTreeSet<String>,
 ) -> Option<&'a str> {
-    let exports = if opts.fake_backend {
+    let exports = if opts.fake_backend || va.device_error.is_some() {
         false
     } else if opts.probe_vaapi {
         va.ffmpeg_h264 == Some(true)
@@ -1284,7 +1395,7 @@ fn decoders_check(decoders: &BTreeMap<String, String>, fix: Fix<'_>) -> Check {
             "ffmpeg.decoders",
             APP,
             format!("ffmpeg can't decode {}", missing.join(", ")),
-            fix(Need::FullFfmpeg),
+            fix.need(Need::FullFfmpeg),
         )
     }
 }
@@ -1345,7 +1456,7 @@ fn pipewire_check(probe: &dyn Probe, screens: &[Feature], fix: Fix<'_>) -> Check
             ID,
             screens,
             format!("no PipeWire daemon: {e}"),
-            fix(Need::PipeWire),
+            fix.need(Need::PipeWire),
         ),
     }
 }
@@ -1407,7 +1518,7 @@ fn x11_check(probe: &dyn Probe, display: &str, screens: &[Feature], fix: Fix<'_>
             ID,
             NOTHING,
             format!("the X server has no RandR: {whole}"),
-            fix(Need::RandR),
+            fix.need(Need::RandR),
         ),
     }
 }
@@ -1422,7 +1533,7 @@ fn portal_checks(probe: &dyn Probe, screens: &[Feature], fix: Fix<'_>, checks: &
             "portal.screencast",
             screens,
             "the ScreenCast portal can't capture monitors",
-            fix(Need::ScreenCastPortal),
+            fix.need(Need::ScreenCastPortal),
         ),
         Ok(info) if info.screencast_version >= 3 => {
             let mut detail = format!(
@@ -1451,7 +1562,7 @@ fn portal_checks(probe: &dyn Probe, screens: &[Feature], fix: Fix<'_>, checks: &
             "portal.screencast",
             screens,
             format!("no ScreenCast portal: {e}"),
-            fix(Need::ScreenCastPortal),
+            fix.need(Need::ScreenCastPortal),
         ),
     });
     if let Ok(info) = &portal {
@@ -1481,7 +1592,7 @@ fn audio_checks(probe: &dyn Probe, audio: &[Feature], fix: Fix<'_>, checks: &mut
             "pactl",
             audio,
             "pactl wasn't found (it lists microphones and system audio)",
-            fix(Need::Pactl),
+            fix.need(Need::Pactl),
         ));
         return;
     };
@@ -1492,7 +1603,7 @@ fn audio_checks(probe: &dyn Probe, audio: &[Feature], fix: Fix<'_>, checks: &mut
                 "pactl",
                 audio,
                 format!("{} doesn't run: {e}", path.display()),
-                "reinstall the PulseAudio client tools",
+                fix.repair(Need::Pactl, "reinstall the PulseAudio client tools"),
             ));
             return;
         }
@@ -1505,7 +1616,10 @@ fn audio_checks(probe: &dyn Probe, audio: &[Feature], fix: Fix<'_>, checks: &mut
                 "{version} is too old: Qrec needs pactl {min_major} or newer ({})",
                 path.display()
             ),
-            format!("update the PulseAudio client tools (pactl) to {min_major} or newer"),
+            fix.repair(
+                Need::Pactl,
+                format!("update the PulseAudio client tools (pactl) to {min_major} or newer"),
+            ),
         ));
         return;
     }
@@ -1522,7 +1636,7 @@ fn audio_checks(probe: &dyn Probe, audio: &[Feature], fix: Fix<'_>, checks: &mut
             "pactl",
             audio,
             format!("{} can't reach the sound server: {e}", path.display()),
-            fix(Need::SoundServer),
+            fix.need(Need::SoundServer),
         )),
     }
 }
@@ -1580,11 +1694,21 @@ fn va_report(probe: &dyn Probe, opts: &DoctorOptions, gst_encoders: Vec<String>)
         .and_then(|d| drivers.file(d))
         .map(|f| f.to_string_lossy().into_owned());
     let mut notes = Vec::new();
+    // The node, opened and closed again before anything asks it to encode:
+    // sysfs may list a GPU whose device file a container didn't get, or that
+    // this user may not open. Never NVIDIA's (A§8.10).
+    let device_error = match (&device, vendor) {
+        (Some(device), Some(PCI_INTEL | PCI_AMD)) if !opts.fake_backend => {
+            probe.open_node(device).err().map(|e| DeviceError::of(&e))
+        }
+        _ => None,
+    };
+    let opens = device_error.is_none();
     // Intel's other driver, where the check passed with it alone: what
     // exports load (`caps::detect` runs the same checks).
     let mut export_driver = None;
     let ffmpeg_h264 = match (&device, vendor) {
-        (Some(device), Some(PCI_INTEL | PCI_AMD)) if opts.probe_vaapi => {
+        (Some(device), Some(PCI_INTEL | PCI_AMD)) if opts.probe_vaapi && opens => {
             match probe.vaapi_h264(device, expected_driver.as_deref()) {
                 Ok(()) => Some(true),
                 Err(e) => {
@@ -1630,7 +1754,7 @@ fn va_report(probe: &dyn Probe, opts: &DoctorOptions, gst_encoders: Vec<String>)
         _ => None,
     };
     let gst_factory = match &device {
-        Some(device) if probes_va_factory(opts, vendor, &gst_encoders) => {
+        Some(device) if opens && probes_va_factory(opts, vendor, &gst_encoders) => {
             match probe.gst_va_factory(device) {
                 Ok(factory) => factory,
                 Err(e) => {
@@ -1647,6 +1771,7 @@ fn va_report(probe: &dyn Probe, opts: &DoctorOptions, gst_encoders: Vec<String>)
         origin: origin.map(str::to_owned),
         vendor,
         device_id: node.and_then(|n| n.device_id),
+        device_error,
         expected_driver,
         libva_driver_name: env_driver,
         driver_dirs: drivers
@@ -1696,6 +1821,14 @@ fn va_check(va: &VaReport, config_file: Option<&Path>, fix: Fix<'_>, cpu: OnTheC
         (Some(false), _) => detail.push_str(" · ffmpeg h264_vaapi failed"),
         (None, _) => {}
     }
+    if let Some(error) = &va.device_error {
+        return fail(
+            "vaapi",
+            NOTHING,
+            format!("{detail} · can't be opened: {}", error.message),
+            format!("{}; {}", error.hint(device), cpu.meanwhile()),
+        );
+    }
     if let (Some(expected), Some(actual), Some(vendor)) =
         (va.expected_driver.as_deref(), env, va.vendor)
         && !driver_fits(actual, vendor)
@@ -1728,14 +1861,14 @@ fn va_check(va: &VaReport, config_file: Option<&Path>, fix: Fix<'_>, cpu: OnTheC
             "vaapi",
             NOTHING,
             detail,
-            fix(Need::VaDriver(gpu)).also(&cpu.meanwhile()),
+            fix.need(Need::VaDriver(gpu)).also(&cpu.meanwhile()),
         ),
         // Not probed (the GUI's doctor): the driver file is all there is.
         None if missing.is_some() => fail_fix(
             "vaapi",
             NOTHING,
             detail,
-            fix(Need::VaDriver(gpu)).also(&cpu.meanwhile()),
+            fix.need(Need::VaDriver(gpu)).also(&cpu.meanwhile()),
         ),
         _ => ok("vaapi", NOTHING, detail),
     }
@@ -1808,13 +1941,18 @@ impl DoctorReport {
         )
     }
 
-    /// The human report: the session line, then one line per check (`ok`,
+    /// The human report: the session line (and the AppImage's), then one
+    /// line per check (`ok`,
     /// `MISSING` for an app check, `off` when features need it, else
     /// `optional`), a hint under each failure, the VA-API summary, the
     /// global shortcuts for the desktop, then a line per feature that is
     /// off and the verdict.
     pub fn to_text(&self) -> String {
-        let mut out = format!("Qrec doctor\n\nSession: {}\n\n", self.session);
+        let mut out = format!("Qrec doctor\n\nSession: {}\n", self.session);
+        if let Some(app_image) = &self.platform.app_image {
+            let _ = writeln!(out, "AppImage: {}", app_image.describe());
+        }
+        out.push('\n');
         let width = self.checks.iter().map(|c| c.id.len()).max().unwrap_or(0);
         for check in &self.checks {
             let status = match (check.ok, check.required, check.needed_for.is_empty()) {
@@ -2004,6 +2142,14 @@ impl Probe for SystemProbe {
         gpu::VaDrivers::from_process()
     }
 
+    fn open_node(&self, path: &str) -> io::Result<()> {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .map(drop)
+    }
+
     fn env(&self, key: &str) -> Option<String> {
         std::env::var(key).ok().filter(|v| !v.is_empty())
     }
@@ -2015,19 +2161,9 @@ impl Probe for SystemProbe {
     }
 
     fn gpu_startup(&self) -> Vec<String> {
-        let Some(report) = gpu::startup_report() else {
-            return Vec::new();
-        };
-        let changes = report.changes.iter().map(|c| match &c.previous {
-            Some(previous) => format!("set {}={} (was {previous})", c.key, c.value),
-            None => format!("set {}={}", c.key, c.value),
-        });
-        let mut lines: Vec<String> = changes.collect();
-        if !report.applied && !report.changes.is_empty() {
-            lines.push("those changes were not applied (more than one thread)".to_owned());
-        }
-        lines.extend(report.notes.iter().cloned());
-        lines
+        gpu::startup_report()
+            .map(gpu::GpuReport::lines)
+            .unwrap_or_default()
     }
 
     fn vaapi_h264(&self, device: &str, driver: Option<&str>) -> Result<(), String> {
@@ -2274,6 +2410,8 @@ mod tests {
     use std::cell::Cell;
 
     use qrec_core::ctx::ScreenInfo;
+    use qrec_core::keymap::NIRI_SNIPPET;
+    use qrec_core::platform::{AppImage, QREC};
 
     use super::*;
     use crate::platform::{PlatformEnv, detect};
@@ -2285,7 +2423,7 @@ mod tests {
         elements: BTreeSet<&'static str>,
         va_encoders: Vec<String>,
         h264_decoders: Vec<String>,
-        programs: BTreeMap<&'static str, &'static str>,
+        programs: BTreeMap<&'static str, String>,
         encoders: BTreeSet<String>,
         decoders: BTreeMap<String, String>,
         demuxers: BTreeSet<String>,
@@ -2298,6 +2436,8 @@ mod tests {
         pulse: Result<String, String>,
         nodes: Vec<gpu::RenderNode>,
         drivers: gpu::VaDrivers,
+        /// Opening an Intel or AMD node: `None` opens, else this errno.
+        node_errno: Option<i32>,
         env: BTreeMap<&'static str, &'static str>,
         /// The h264_vaapi check with the node's driver…
         vaapi: Result<(), String>,
@@ -2311,6 +2451,7 @@ mod tests {
         /// …and with Intel's other one.
         vaapi_retried: Cell<u32>,
         factory_probed: Cell<u32>,
+        nodes_opened: Cell<u32>,
         portal_asked: Cell<u32>,
         x11_asked: Cell<u32>,
     }
@@ -2402,12 +2543,9 @@ mod tests {
                     .collect(),
                 va_encoders: vec!["vah264enc".to_owned()],
                 h264_decoders: vec!["avdec_h264".to_owned(), "openh264dec".to_owned()],
-                programs: [
-                    ("ffmpeg", "/nix/bin/ffmpeg"),
-                    ("ffprobe", "/nix/bin/ffprobe"),
-                    ("pactl", "/nix/bin/pactl"),
-                ]
-                .into(),
+                programs: ["ffmpeg", "ffprobe", "pactl"]
+                    .map(|name| (name, format!("/nix/bin/{name}")))
+                    .into(),
                 // ffmpeg-full's: the doctor's encoders and h264_vaapi.
                 encoders: ENCODERS
                     .iter()
@@ -2440,6 +2578,7 @@ mod tests {
                     gpu_node("/dev/dri/renderD129", PCI_INTEL, 0x7d51, "i915"),
                 ],
                 drivers: drivers_in("/run/opengl-driver/lib/dri", &["iHD", "i965"]),
+                node_errno: None,
                 env: [
                     ("LIBVA_DRIVER_NAME", "iHD"),
                     ("XDG_RUNTIME_DIR", "/run/user/1000"),
@@ -2461,6 +2600,7 @@ mod tests {
                 vaapi_probed: Cell::new(0),
                 vaapi_retried: Cell::new(0),
                 factory_probed: Cell::new(0),
+                nodes_opened: Cell::new(0),
                 portal_asked: Cell::new(0),
                 x11_asked: Cell::new(0),
             }
@@ -2561,6 +2701,14 @@ mod tests {
         }
         fn va_drivers(&self) -> gpu::VaDrivers {
             self.drivers.clone()
+        }
+        fn open_node(&self, path: &str) -> io::Result<()> {
+            self.probed_node(path);
+            self.nodes_opened.set(self.nodes_opened.get() + 1);
+            match self.node_errno {
+                None => Ok(()),
+                Some(errno) => Err(io::Error::from_raw_os_error(errno)),
+            }
         }
         fn env(&self, key: &str) -> Option<String> {
             self.env.get(key).map(|v| (*v).to_owned())
@@ -2758,7 +2906,7 @@ mod tests {
             "/dev/dri/renderD129 (Intel, auto) · LIBVA_DRIVER_NAME=iHD · ffmpeg h264_vaapi works"
         );
         assert_eq!(report.niri_snippet, NIRI_SNIPPET);
-        assert_eq!(report.shortcuts, global_snippet(&Desktop::Niri));
+        assert_eq!(report.shortcuts, global_snippet(&Desktop::Niri, QREC));
         assert_eq!(report.screen_backend, ScreenBackendKind::Portal);
         assert_eq!(report.session, "Wayland (niri) · screens: portal");
         let text = report.to_text();
@@ -4054,9 +4202,10 @@ mod tests {
             ]
         );
         // Fedora's fixes: the failed check carries RPM Fusion's ffmpeg.
-        let fedora_fix = |need| install_hint(need, &platform(&[], "ID=fedora\n"));
+        let fedora_platform = platform(&[], "ID=fedora\n");
+        let fedora_fix = Fix(&fedora_platform);
         assert_eq!(
-            decoders_check(&decoders, &fedora_fix).detail,
+            decoders_check(&decoders, fedora_fix).detail,
             "h264 (the takes' video), flac (the takes' audio)"
         );
         // Fedora's ffmpeg-free: only OpenH264 decodes H.264; a hardware
@@ -4067,7 +4216,7 @@ mod tests {
             .map(|(n, c)| (n.clone(), c.clone()))
             .collect();
         assert_eq!(
-            decoders_check(&fedora, &fedora_fix).detail,
+            decoders_check(&fedora, fedora_fix).detail,
             "libopenh264 for h264 (the takes' video), flac (the takes' audio)"
         );
         let cuda: BTreeMap<String, String> = decoders
@@ -4075,7 +4224,7 @@ mod tests {
             .filter(|(n, _)| *n == "h264_cuvid" || *n == "flac")
             .map(|(n, c)| (n.clone(), c.clone()))
             .collect();
-        let c = decoders_check(&cuda, &fedora_fix);
+        let c = decoders_check(&cuda, fedora_fix);
         assert!(!c.ok && c.required, "{c:?}");
         assert_eq!(c.detail, "ffmpeg can't decode h264 (the takes' video)");
         assert_eq!(
@@ -4298,6 +4447,91 @@ mod tests {
         debian.drivers = debian_drivers();
         debian.h264_decoders.clear();
 
+        // Debian's render nodes belong to the render group, and a session
+        // logind gives no seat (ssh, a service) can't open them without it.
+        let mut node_denied = distro_ffmpeg(Fake::healthy().intel_only()).on(
+            &[
+                ("DISPLAY", ":0"),
+                ("XDG_SESSION_TYPE", "x11"),
+                ("XDG_CURRENT_DESKTOP", "XFCE"),
+            ],
+            "ID=debian\nVERSION_ID=\"13\"\n",
+        );
+        node_denied.drivers = debian_drivers();
+        node_denied.portal = no_portal();
+        node_denied.va_encoders.clear();
+        node_denied.node_errno = Some(13);
+
+        // The AppImage (issue #9): everything Qrec runs comes from it,
+        // GStreamer 1.28, Arch's ffmpeg (no libopenh264), pactl 17 and the
+        // VA-API drivers, in its FUSE mount or the folder it extracted
+        // itself to.
+        let from_appimage = |mut fake: Fake, appdir: &'static str, path: &str| {
+            fake.platform.app_image = Some(AppImage {
+                path: path.to_owned(),
+                dir: appdir.to_owned(),
+            });
+            fake.gst = Ok("GStreamer 1.28.8".to_owned());
+            fake.programs = ["ffmpeg", "ffprobe", "pactl"]
+                .map(|name| (name, format!("{appdir}/bin/{name}")))
+                .into();
+            fake.drivers = drivers_in(
+                &format!("{appdir}/lib/dri"),
+                &["iHD", "i965", "radeonsi", "r600"],
+            );
+            fake.pactl = Ok("pactl 17.0".to_owned());
+            distro_ffmpeg(fake)
+        };
+        let ubuntu_24_04 = "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"24.04\"\n";
+
+        // On Ubuntu 24.04's GNOME in a virtual machine without 3D: no render
+        // node at all, so x264 records; its xdg-desktop-portal (1.18) has no
+        // host app registry, a host's part.
+        let mut appimage_vm = from_appimage(
+            gnome(Fake::healthy(), ubuntu_24_04),
+            "/tmp/.mount_QrecAbC123",
+            "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage",
+        );
+        appimage_vm.nodes.clear();
+        appimage_vm.va_encoders.clear();
+        appimage_vm.env.remove("LIBVA_DRIVER_NAME");
+        appimage_vm.startup = vec![
+            "no Intel or AMD render node: VA-API stays off, LIBVA_DRIVER_NAME untouched".to_owned(),
+        ];
+        appimage_vm.portal = Ok(PortalInfo {
+            screencast_version: 5,
+            source_types: Some(7),
+            registry_version: None,
+        });
+        appimage_vm.pulse = Ok("PulseAudio (on PipeWire 1.0.5)".to_owned());
+
+        // In an Ubuntu 24.04 container that didn't get the GPU (docker run
+        // without --device), as packaging/appimage/test.sh runs it: sysfs
+        // lists the host's Intel and NVIDIA nodes, /dev/dri has neither;
+        // no FUSE, so it extracted itself; no display, no sound server.
+        let mut appimage_container = from_appimage(
+            Fake::healthy().on(&[], ubuntu_24_04),
+            "/tmp/appimage_extracted_qrec6877858091878431995",
+            "/opt/qrec.AppImage",
+        );
+        appimage_container.nodes = vec![
+            gpu_node("/dev/dri/renderD128", PCI_INTEL, 0x7d51, "i915"),
+            gpu_node("/dev/dri/renderD129", PCI_NVIDIA, 0x2db8, "nvidia"),
+        ];
+        appimage_container.node_errno = Some(2);
+        appimage_container.va_encoders.clear();
+        appimage_container.env = [
+            ("LIBVA_DRIVER_NAME", "iHD"),
+            ("XDG_RUNTIME_DIR", "/tmp/runtime"),
+        ]
+        .into();
+        appimage_container.startup = vec!["set LIBVA_DRIVER_NAME=iHD".to_owned()];
+        appimage_container.sockets.clear();
+        appimage_container.pulse = Err(
+            "pactl exited with status 1: pa_context_connect() failed: Connection refused"
+                .to_owned(),
+        );
+
         vec![
             ("dev_box", Fake::healthy()),
             ("pulseaudio_15", pulseaudio_15),
@@ -4313,6 +4547,9 @@ mod tests {
             ("nvidia_only", nvidia),
             ("vm", vm),
             ("debian_without_gst_libav", debian),
+            ("debian_node_denied", node_denied),
+            ("ubuntu_appimage_without_gpu", appimage_vm),
+            ("ubuntu_appimage_node_missing", appimage_container),
         ]
     }
 
@@ -4350,6 +4587,9 @@ mod tests {
                 ("nvidia_only", 0, vec![]),
                 ("vm", 0, vec![]),
                 ("debian_without_gst_libav", 5, vec![]),
+                ("debian_node_denied", 0, vec![]),
+                ("ubuntu_appimage_without_gpu", 0, vec![]),
+                ("ubuntu_appimage_node_missing", 0, vec![Screens, Audio]),
             ]
         );
         let machine = |wanted: &str| {
@@ -4434,6 +4674,117 @@ mod tests {
             x264.detail,
             "ffmpeg has no libx264 encoder: MP4 exports use libopenh264"
         );
+
+        // From an AppImage: its line under the session's, its path and
+        // APPDIR in the JSON, its shortcuts (niri's too), and no package to
+        // install for what it bundles; the host's parts keep their hints.
+        for name in [
+            "ubuntu_appimage_without_gpu",
+            "ubuntu_appimage_node_missing",
+        ] {
+            let (fake, report) = machine(name);
+            let app_image = fake.platform.app_image.clone().unwrap();
+            let text = report.to_text();
+            assert!(
+                text.starts_with(&format!(
+                    "Qrec doctor\n\nSession: {}\nAppImage: {}\n\n",
+                    report.session,
+                    app_image.describe()
+                )),
+                "{name}: {text}"
+            );
+            let json = report.to_json();
+            assert_eq!(
+                json["platform"]["appImage"]["path"],
+                app_image.path.as_str()
+            );
+            assert_eq!(json["platform"]["appImage"]["dir"], app_image.dir.as_str());
+            assert!(report.shortcuts.text.contains(&app_image.path), "{name}");
+            assert!(
+                report.niri_snippet.contains(&format!(
+                    "spawn \"{}\" \"record\" \"toggle\"",
+                    app_image.path
+                )),
+                "{name}: {}",
+                report.niri_snippet
+            );
+            for failed in report.checks.iter().filter(|c| !c.ok) {
+                let hint = failed.hint.as_deref().unwrap_or_default();
+                let words: Vec<&str> = hint.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+                for manager in ["apt", "dnf", "pacman", "zypper", "sudo", "nix"] {
+                    assert!(!words.contains(&manager), "{name}: {failed:?}");
+                }
+                assert!(
+                    failed.fix.as_ref().is_none_or(|fix| fix.command.is_none()),
+                    "{name}: {failed:?}"
+                );
+            }
+        }
+        let (_, vm) = machine("ubuntu_appimage_without_gpu");
+        assert_eq!(
+            check(&vm, "portal.registry").hint.as_deref(),
+            Some("update xdg-desktop-portal to 1.19 or newer")
+        );
+        // A container that didn't get the GPU: its node is opened once and
+        // can't be, so nothing asks it to encode, and both VA-API rows say
+        // why instead of naming a driver to install.
+        let (fake, report) = machine("ubuntu_appimage_node_missing");
+        assert_eq!(
+            (
+                fake.nodes_opened.get(),
+                fake.vaapi_probed.get(),
+                fake.factory_probed.get()
+            ),
+            (1, 0, 0)
+        );
+        let vaapi = check(&report, "vaapi");
+        assert_eq!(
+            vaapi.detail,
+            "/dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=iHD · can't be opened: No \
+             such file or directory (os error 2)"
+        );
+        assert_eq!(
+            vaapi.hint.as_deref(),
+            Some(
+                "sysfs lists this GPU but there is no /dev/dri/renderD128: give the container or \
+                 sandbox Qrec runs in that device (docker run --device /dev/dri/renderD128); \
+                 exports use libx264 meanwhile"
+            )
+        );
+        assert_eq!(
+            check(&report, "gst.vah264enc").detail,
+            "/dev/dri/renderD128 can't be opened: No such file or directory (os error 2): \
+             recordings use x264 on the CPU"
+        );
+        assert_eq!(
+            report.va.as_ref().unwrap().device_error,
+            Some(DeviceError {
+                kind: DeviceErrorKind::Missing,
+                message: "No such file or directory (os error 2)".into(),
+            })
+        );
+        // The same everywhere: a host qrec whose user may not open it.
+        let (fake, report) = machine("debian_node_denied");
+        assert_eq!((fake.nodes_opened.get(), fake.vaapi_probed.get()), (1, 0));
+        assert_eq!(
+            check(&report, "vaapi").hint.as_deref(),
+            Some(
+                "let your user open /dev/dri/renderD128: join the group that owns it (ls -l \
+                 /dev/dri/renderD128 shows it, usually render), then log in again; exports use \
+                 libx264 meanwhile"
+            )
+        );
+        // NVIDIA's node is never opened, nor one under the fake backend.
+        assert_eq!(machine("nvidia_only").0.nodes_opened.get(), 0);
+        let fake = Fake::healthy();
+        run_with(
+            &fake,
+            &DoctorOptions {
+                fake_backend: true,
+                ..opts()
+            },
+        );
+        assert_eq!(fake.nodes_opened.get(), 0);
     }
 
     /// The text's global shortcuts on each desktop, from the variables it
@@ -4570,6 +4921,13 @@ mod tests {
         }
         fn va_drivers(&self) -> gpu::VaDrivers {
             SystemProbe.va_drivers()
+        }
+        fn open_node(&self, path: &str) -> io::Result<()> {
+            let nvidia = gpu::render_nodes()
+                .into_iter()
+                .any(|n| n.path == path && n.vendor == Some(PCI_NVIDIA));
+            assert!(!nvidia, "never open the NVIDIA node");
+            SystemProbe.open_node(path)
         }
         fn env(&self, key: &str) -> Option<String> {
             SystemProbe.env(key)

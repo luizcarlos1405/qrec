@@ -343,6 +343,7 @@ expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\"
     "featuresOff": [],
     "niriSnippet": "binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n    Mod+Shift+O { spawn \"qrec\" \"record\" \"start\" \"--over-selection\"; }\n    Mod+Shift+D { spawn \"qrec\" \"take\" \"discard-last\"; }\n}",
     "platform": {
+      "appImage": null,
       "desktop": "gnome",
       "distro": "ubuntu",
       "nixShell": false,

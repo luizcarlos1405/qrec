@@ -193,6 +193,12 @@ pub trait Backend {
         Desktop::Unknown
     }
 
+    /// What those shortcuts run: `qrec`, or the AppImage's path when Qrec
+    /// runs from one (`HostPlatform::program`). Default: `qrec`.
+    fn program(&mut self) -> String {
+        qrec_core::platform::QREC.to_owned()
+    }
+
     /// `qrec sources list` (A§8.12): the `SourceInventory` as JSON
     /// (`{screens, cameras, mics, monitors, defaultMic, defaultMonitor}`).
     fn sources(&mut self) -> Result<Value, CoreError>;

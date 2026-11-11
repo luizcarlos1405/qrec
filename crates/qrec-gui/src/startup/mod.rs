@@ -1230,7 +1230,7 @@ mod tests {
     fn the_missing_report_lists_failed_app_checks() {
         use qrec_core::ctx::ScreenBackendKind;
         use qrec_core::keymap::global_snippet;
-        use qrec_core::platform::{Desktop, PlatformEnv, detect};
+        use qrec_core::platform::{Desktop, PlatformEnv, QREC, detect};
         use qrec_shell::doctor::{Check, Feature, FeatureOff};
         let check =
             |id: &str, needed_for: &[Feature], ok: bool, detail: &str, hint: Option<&str>| Check {
@@ -1277,7 +1277,7 @@ mod tests {
             platform: detect(&PlatformEnv::default().with("DISPLAY", ":0")),
             screen_backend: ScreenBackendKind::X11,
             session: "X11 · screens: x11 (DISPLAY=:0)".into(),
-            shortcuts: global_snippet(&Desktop::Unknown),
+            shortcuts: global_snippet(&Desktop::Unknown, QREC),
             niri_snippet: String::new(),
             va: None,
         };

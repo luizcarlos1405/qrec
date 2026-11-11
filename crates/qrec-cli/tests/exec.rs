@@ -13,7 +13,7 @@ use pretty_assertions::assert_eq;
 use qrec_cli::*;
 use qrec_core::error::NOT_MY_SWAMP;
 use qrec_core::keymap::{NIRI_SNIPPET, global_snippet};
-use qrec_core::platform::Desktop;
+use qrec_core::platform::{Desktop, QREC};
 use qrec_core::protocol::{
     HelloInfo, Progress, ProgressPhase, Toast, ToastLevel, UiAction, WireBody,
 };
@@ -78,8 +78,9 @@ struct Fake {
     /// What the window's process exits with.
     gui_exit: u8,
     logging: Option<(u8, bool)>,
-    /// Where Qrec runs.
+    /// Where Qrec runs, and what runs it (an AppImage's path).
     desktop: Desktop,
+    program: String,
 }
 
 impl Fake {
@@ -98,6 +99,7 @@ impl Fake {
             gui_exit: 0,
             logging: None,
             desktop: Desktop::Unknown,
+            program: QREC.to_owned(),
         }
     }
 
@@ -176,6 +178,10 @@ impl Backend for Fake {
 
     fn desktop(&mut self) -> Desktop {
         self.desktop.clone()
+    }
+
+    fn program(&mut self) -> String {
+        self.program.clone()
     }
 
     fn host(&mut self, project: &Path, args: &HostArgs) -> Result<u8, CoreError> {
@@ -1471,7 +1477,7 @@ fn doctor_reports_and_exits_5_when_required_pieces_are_missing() {
     let tmp = Tmp::new();
     let mut fake = Fake::new(&tmp.dir("cfg"));
     // On GNOME: its settings' steps, with the commands, and not niri's binds.
-    let gnome = global_snippet(&Desktop::Gnome);
+    let gnome = global_snippet(&Desktop::Gnome, QREC);
     fake.doctor = Ok(json!({
         "checks": [{"id": "ffmpeg", "required": true, "neededFor": ["app"], "ok": true,
                     "detail": "8.1.2", "hint": null}],
@@ -1555,9 +1561,19 @@ fn the_agent_guide_follows_the_desktop() {
     let kde = run(&mut fake, &tmp.0, "qrec agent-guide");
     assert!(!kde.out.contains(NIRI_SNIPPET), "{}", kde.out);
     assert!(
-        kde.out.contains(&global_snippet(&Desktop::Kde).text),
+        kde.out.contains(&global_snippet(&Desktop::Kde, QREC).text),
         "{}",
         kde.out
+    );
+    // From an AppImage they run its path.
+    fake.program = "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage".to_owned();
+    let appimage = run(&mut fake, &tmp.0, "qrec agent-guide");
+    assert!(
+        appimage
+            .out
+            .contains(&global_snippet(&Desktop::Kde, &fake.program).text),
+        "{}",
+        appimage.out
     );
     // A build without the shell knows no desktop: the generic list.
     let mut standalone = Standalone::default();
@@ -1576,7 +1592,7 @@ fn the_agent_guide_follows_the_desktop() {
     assert_eq!(code, 0);
     let out = String::from_utf8(out).unwrap();
     assert!(
-        out.contains(&global_snippet(&Desktop::Unknown).text),
+        out.contains(&global_snippet(&Desktop::Unknown, QREC).text),
         "{out}"
     );
 }

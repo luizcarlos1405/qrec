@@ -1,18 +1,20 @@
 //! Where Qrec runs: the session type, the desktop, the distribution's
-//! family, a sandbox and a Nix shell (issue #9). The doctor, install
-//! hints, the cheat sheet's shortcut snippet and the screen backend pick
-//! their wording and behavior from it.
+//! family, a sandbox, a Nix shell and an AppImage (issue #9). The doctor,
+//! install hints, the cheat sheet's shortcut snippet and the screen backend
+//! pick their wording and behavior from it.
 //!
 //! Detection is pure over a [`PlatformEnv`]: the environment variables in
 //! [`ENV_KEYS`], the text of os-release, whether `/.flatpak-info` exists
-//! and whether Qrec's executable lies under `$SNAP`, which the shell reads
-//! once at startup (`qrec_shell::platform`). Nothing here touches a file
-//! or a device.
+//! and whether Qrec's executable lies under `$SNAP` or `$APPDIR`, which the
+//! shell reads once at startup (`qrec_shell::platform`). Nothing here
+//! touches a file or a device.
 //!
 //! [`install_hint`] is the doctor's table of fixes: what a failed check
 //! needs ([`Need`]) as this distribution's packages and install command,
 //! the desktop's ScreenCast backend, a daemon or an X server extension to
 //! start, or a generic sentence where the package names aren't known.
+//! Inside an AppImage, what it bundles needs no package: GStreamer and its
+//! plugins, ffmpeg, pactl and the VA-API drivers come with it.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -20,7 +22,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 /// The environment variables [`detect`] reads.
-pub const ENV_KEYS: [&str; 12] = [
+pub const ENV_KEYS: [&str; 14] = [
     "WAYLAND_DISPLAY",
     "WAYLAND_SOCKET",
     "DISPLAY",
@@ -33,7 +35,13 @@ pub const ENV_KEYS: [&str; 12] = [
     "SWAYSOCK",
     "I3SOCK",
     "IN_NIX_SHELL",
+    "APPIMAGE",
+    "APPDIR",
 ];
+
+/// What starts Qrec from a terminal or a desktop's key binding, when it
+/// doesn't run from an AppImage: the `qrec` on `PATH`.
+pub const QREC: &str = "qrec";
 
 /// What [`detect`] reads, as plain data. The shell builds it from the
 /// process (`qrec_shell::platform::env_from_process`); tests build their
@@ -51,6 +59,10 @@ pub struct PlatformEnv {
     /// `SNAP` alone says nothing, since classic snaps (VS Code, IDEs,
     /// terminals) leak it into every program they start.
     pub snap: bool,
+    /// Qrec's own executable lies under `$APPDIR`: Qrec runs from the
+    /// AppImage `$APPIMAGE`. `APPDIR` alone says nothing either: an
+    /// AppImage's terminal leaks it into a host qrec it starts.
+    pub app_image: bool,
 }
 
 impl PlatformEnv {
@@ -76,7 +88,8 @@ impl PlatformEnv {
 }
 
 /// The detected platform. JSON: `{"session": "wayland", "desktop":
-/// "niri", "distro": "nixos", "sandbox": "none", "nixShell": true}`.
+/// "niri", "distro": "nixos", "sandbox": "none", "nixShell": true,
+/// "appImage": null}`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostPlatform {
@@ -86,9 +99,42 @@ pub struct HostPlatform {
     pub sandbox: Sandbox,
     /// Inside a `nix develop` or `nix-shell` environment (`IN_NIX_SHELL`).
     pub nix_shell: bool,
+    /// The AppImage Qrec runs from; `None` for any other install.
+    #[serde(default)]
+    pub app_image: Option<AppImage>,
 }
 
-/// One log line: `session=wayland desktop=niri distro=nixos sandbox=none nixShell=true`.
+impl HostPlatform {
+    /// What a desktop's key binding runs to start Qrec here: the AppImage's
+    /// path when Qrec runs from one, else [`QREC`] (the global shortcuts'
+    /// snippets, `keymap::global_snippet`).
+    pub fn program(&self) -> &str {
+        self.app_image.as_ref().map_or(QREC, |a| a.path.as_str())
+    }
+}
+
+/// An AppImage Qrec runs from: its file and where its files are while it
+/// runs. JSON: `{"path": "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage",
+/// "dir": "/tmp/.mount_QrecAbC123"}`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppImage {
+    /// The AppImage file (`$APPIMAGE`), which the global shortcuts run.
+    pub path: String,
+    /// Its FUSE mount, or the folder it extracted itself to (`$APPDIR`).
+    pub dir: String,
+}
+
+impl AppImage {
+    /// The doctor's line about it, after "AppImage: ":
+    /// `/home/me/Qrec.AppImage (APPDIR=/tmp/.mount_QrecAbC123)`.
+    pub fn describe(&self) -> String {
+        format!("{} (APPDIR={})", self.path, self.dir)
+    }
+}
+
+/// One log line: `session=wayland desktop=niri distro=nixos sandbox=none
+/// nixShell=true`, and `appImage=<path>` from an AppImage.
 impl fmt::Display for HostPlatform {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -99,7 +145,11 @@ impl fmt::Display for HostPlatform {
             self.distro.as_str(),
             self.sandbox.as_str(),
             self.nix_shell
-        )
+        )?;
+        match &self.app_image {
+            Some(app_image) => write!(f, " appImage={}", app_image.path),
+            None => Ok(()),
+        }
     }
 }
 
@@ -318,7 +368,19 @@ pub fn detect(env: &PlatformEnv) -> HostPlatform {
             .map_or(DistroFamily::Unknown, DistroFamily::from_os_release),
         sandbox,
         nix_shell: env.var("IN_NIX_SHELL").is_some(),
+        app_image: detect_app_image(env),
     }
+}
+
+/// The AppImage when Qrec's executable lies under `$APPDIR` and both
+/// `APPIMAGE` and `APPDIR` name absolute paths, as its runtime sets them.
+fn detect_app_image(env: &PlatformEnv) -> Option<AppImage> {
+    let absolute = |key| env.var(key).filter(|v| v.starts_with('/'));
+    let (path, dir) = absolute("APPIMAGE").zip(absolute("APPDIR"))?;
+    env.app_image.then(|| AppImage {
+        path: path.to_owned(),
+        dir: dir.to_owned(),
+    })
 }
 
 /// A Wayland display wins, then a login that says Wayland (with its
@@ -635,7 +697,10 @@ impl Hint {
 /// PipeWire daemon are started, not installed, and RandR comes with the X
 /// server. Package names are the ones the distributions' repositories list
 /// (checked against their package lists, October 2026); a family whose
-/// name for it isn't known gets the sentence.
+/// name for it isn't known gets the sentence. Inside an AppImage only the
+/// host's parts (the portal, the sound server, the PipeWire daemon, the X
+/// server) get those hints; everything else comes with it
+/// ([`bundled_hint`]).
 pub fn install_hint(need: Need, platform: &HostPlatform) -> Hint {
     let family = platform.distro;
     match need {
@@ -648,6 +713,7 @@ pub fn install_hint(need: Need, platform: &HostPlatform) -> Hint {
                  each monitor",
             );
         }
+        _ if platform.app_image.is_some() => return bundled_hint(need),
         _ => {}
     }
     if let Some(attribute) = need.nix_attribute() {
@@ -683,6 +749,34 @@ pub fn install_hint(need: Need, platform: &HostPlatform) -> Hint {
         }
         None => Hint::advice(family.generic_install(need.what())),
     }
+}
+
+/// The hint for what an AppImage bundles: GStreamer and its plugins, GES,
+/// ffmpeg and its encoders, pactl, and the VA-API drivers (Intel's iHD and
+/// i965, Mesa's radeonsi). Nothing there is installed from the
+/// distribution, so no package helps: a part that is missing or doesn't run
+/// means a damaged copy, and a VA-API driver that doesn't encode is the
+/// GPU's kernel driver and firmware's to change, the host's part.
+fn bundled_hint(need: Need) -> Hint {
+    let (drivers, encode, kernel) = match need {
+        Need::VaDriver(VaGpu::Intel) => (
+            "Intel's VA-API drivers (iHD, and i965 for chips older than Broadwell)",
+            "they encode",
+            "i915 or xe",
+        ),
+        Need::VaDriver(VaGpu::IntelLegacy) => ("Intel's i965 VA-API driver", "it encodes", "i915"),
+        Need::VaDriver(VaGpu::Amd) => ("Mesa's VA-API driver (radeonsi)", "it encodes", "amdgpu"),
+        _ => {
+            return Hint::advice(
+                "the AppImage bundles it, so this copy may be damaged: download the AppImage \
+                 again",
+            );
+        }
+    };
+    Hint::advice(format!(
+        "nothing to install: the AppImage bundles {drivers}; whether {encode} on this GPU is \
+         up to its kernel driver ({kernel}) and firmware"
+    ))
 }
 
 /// A family's packages for a need.
@@ -1031,6 +1125,7 @@ mod tests {
                 "distro": "nixos",
                 "sandbox": "none",
                 "nixShell": true,
+                "appImage": null,
             })
         );
         assert_eq!(
@@ -1043,6 +1138,91 @@ mod tests {
         );
         let other = serde_json::to_value(Desktop::Other("lxqt".into())).unwrap();
         assert_eq!(other, serde_json::json!("lxqt"));
+        // A report from before the AppImage field reads as no AppImage.
+        let older = serde_json::json!({
+            "session": "x11", "desktop": "xfce", "distro": "debian",
+            "sandbox": "none", "nixShell": false,
+        });
+        let older: HostPlatform = serde_json::from_value(older).unwrap();
+        assert_eq!(older.app_image, None);
+    }
+
+    /// The AppImage's variables as its runtime sets them, with Qrec's
+    /// executable under `$APPDIR` (the shell checks that).
+    fn appimage_env() -> PlatformEnv {
+        PlatformEnv {
+            app_image: true,
+            ..env(&[
+                ("WAYLAND_DISPLAY", "wayland-0"),
+                ("XDG_CURRENT_DESKTOP", "ubuntu:GNOME"),
+                (
+                    "APPIMAGE",
+                    "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage",
+                ),
+                ("APPDIR", "/tmp/.mount_QrecAbC123"),
+            ])
+            .with_os_release("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"24.04\"\n")
+        }
+    }
+
+    /// An AppImage is `APPIMAGE` and `APPDIR` with Qrec's executable under
+    /// `$APPDIR`: what the global shortcuts run, the doctor's line and the
+    /// log line. Variables an AppImage's terminal leaked into a host qrec
+    /// (its executable elsewhere), or half of them, or relative ones, are
+    /// no AppImage.
+    #[test]
+    fn an_appimage_is_its_runtimes_variables_and_this_executable() {
+        let platform = detect(&appimage_env());
+        let app_image = platform.app_image.clone().expect("an AppImage");
+        assert_eq!(
+            app_image,
+            AppImage {
+                path: "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage".into(),
+                dir: "/tmp/.mount_QrecAbC123".into(),
+            }
+        );
+        assert_eq!(
+            platform.program(),
+            "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage"
+        );
+        assert_eq!(
+            app_image.describe(),
+            "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage (APPDIR=/tmp/.mount_QrecAbC123)"
+        );
+        assert_eq!(
+            platform.to_string(),
+            "session=wayland desktop=gnome distro=ubuntu sandbox=none nixShell=false \
+             appImage=/home/me/Applications/Qrec-0.1.0-x86_64.AppImage"
+        );
+        let json = serde_json::to_value(&platform).unwrap();
+        assert_eq!(
+            json["appImage"],
+            serde_json::json!({
+                "path": "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage",
+                "dir": "/tmp/.mount_QrecAbC123",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<HostPlatform>(json).unwrap(),
+            platform
+        );
+        // The executable isn't in $APPDIR: leaked variables.
+        let leaked = PlatformEnv {
+            app_image: false,
+            ..appimage_env()
+        };
+        assert_eq!(detect(&leaked).app_image, None);
+        assert_eq!(detect(&leaked).program(), QREC);
+        // Half of them, or not absolute.
+        for (key, value) in [
+            ("APPIMAGE", ""),
+            ("APPDIR", ""),
+            ("APPIMAGE", "Qrec.AppImage"),
+            ("APPDIR", "squashfs-root"),
+        ] {
+            let odd = appimage_env().with(key, value);
+            assert_eq!(detect(&odd).app_image, None, "{key}={value:?}");
+        }
     }
 
     #[test]
@@ -1147,14 +1327,22 @@ mod tests {
             any::<String>(),
             "(ID|ID_LIKE)=[\"']?[a-z -]{0,16}[\"']?(\n(ID|ID_LIKE)=[a-z\"' -]{0,16}){0,3}",
         ]);
-        (vars, os_release, any::<bool>(), any::<bool>()).prop_map(
-            |(vars, os_release, flatpak_info, snap)| PlatformEnv {
-                vars,
-                os_release,
-                flatpak_info,
-                snap,
-            },
+        (
+            vars,
+            os_release,
+            any::<bool>(),
+            any::<bool>(),
+            any::<bool>(),
         )
+            .prop_map(
+                |(vars, os_release, flatpak_info, snap, app_image)| PlatformEnv {
+                    vars,
+                    os_release,
+                    flatpak_info,
+                    snap,
+                    app_image,
+                },
+            )
     }
 
     proptest! {
@@ -1224,6 +1412,18 @@ mod tests {
             distro,
             sandbox: Sandbox::None,
             nix_shell,
+            app_image: None,
+        }
+    }
+
+    /// `platform` running from an AppImage.
+    fn from_appimage(platform: HostPlatform) -> HostPlatform {
+        HostPlatform {
+            app_image: Some(AppImage {
+                path: "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage".into(),
+                dir: "/tmp/.mount_QrecAbC123".into(),
+            }),
+            ..platform
         }
     }
 
@@ -1244,10 +1444,11 @@ mod tests {
     }
 
     /// The whole table: every need for every family (on an unknown Wayland
-    /// desktop, and inside a Nix shell on Debian), then the ScreenCast
-    /// portal for every desktop and without a Wayland session. The desktop
-    /// only changes the portal's hint and the family never does
-    /// (`hints_follow_their_inputs_only`), so this covers family × desktop.
+    /// desktop, inside a Nix shell on Debian, and from an AppImage on
+    /// Ubuntu), then the ScreenCast portal for every desktop and without a
+    /// Wayland session. The desktop only changes the portal's hint and the
+    /// family never does (`hints_follow_their_inputs_only`), so this covers
+    /// family × desktop.
     #[test]
     fn install_hint_table() {
         let mut table = String::new();
@@ -1267,6 +1468,8 @@ mod tests {
                 ),
             );
             writeln!(table, "  {:<9} {}", "nix shell", cell(&in_shell)).unwrap();
+            let appimage = install_hint(need, &from_appimage(wayland(DistroFamily::Ubuntu)));
+            writeln!(table, "  {:<9} {}", "appimage", cell(&appimage)).unwrap();
         }
         writeln!(table, "ScreenCastPortal by desktop (Wayland)").unwrap();
         for desktop in all_desktops() {
@@ -1429,6 +1632,56 @@ mod tests {
         );
     }
 
+    /// Inside an AppImage, what it bundles gets no package and no command,
+    /// whatever the family (a Nix shell's included): a damaged copy, or
+    /// for a VA-API driver nothing to install. The host's parts (the
+    /// portal, the sound server, the PipeWire daemon, the X server) keep
+    /// their hints.
+    #[test]
+    fn an_appimage_needs_no_package_for_what_it_bundles() {
+        const MANAGERS: [&str; 9] = [
+            "apt", "dnf", "pacman", "zypper", "apk", "emerge", "sudo", "nix", "develop",
+        ];
+        for family in FAMILIES {
+            for nix_shell in [false, true] {
+                let native = host(family, Desktop::Gnome, SessionType::Wayland, nix_shell);
+                let appimage = from_appimage(native.clone());
+                for need in Need::ALL {
+                    let hint = install_hint(need, &appimage);
+                    let host_part = matches!(
+                        need,
+                        Need::ScreenCastPortal | Need::SoundServer | Need::PipeWire | Need::RandR
+                    );
+                    if host_part {
+                        assert_eq!(hint, install_hint(need, &native), "{need:?} on {family:?}");
+                        continue;
+                    }
+                    assert!(
+                        hint.packages.is_empty() && hint.command.is_none(),
+                        "{need:?} on {family:?}: {hint:?}"
+                    );
+                    let line = hint.line();
+                    let words: Vec<&str> =
+                        line.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+                    for manager in MANAGERS {
+                        assert!(!words.contains(&manager), "{need:?} on {family:?}: {line}");
+                    }
+                    assert!(line.contains("the AppImage bundles"), "{line}");
+                }
+            }
+        }
+        let ubuntu = from_appimage(wayland(DistroFamily::Ubuntu));
+        assert_eq!(
+            install_hint(Need::GstGtk4, &ubuntu).line(),
+            "the AppImage bundles it, so this copy may be damaged: download the AppImage again"
+        );
+        assert_eq!(
+            install_hint(Need::VaDriver(VaGpu::Amd), &ubuntu).line(),
+            "nothing to install: the AppImage bundles Mesa's VA-API driver (radeonsi); whether \
+             it encodes on this GPU is up to its kernel driver (amdgpu) and firmware"
+        );
+    }
+
     #[test]
     fn a_hint_reads_in_one_line() {
         let hint = Hint {
@@ -1469,14 +1722,23 @@ mod tests {
             proptest::sample::select(FAMILIES.to_vec()),
             proptest::sample::select(vec![Sandbox::None, Sandbox::Flatpak, Sandbox::Snap]),
             any::<bool>(),
+            any::<bool>(),
         )
             .prop_map(
-                |(session, desktop, distro, sandbox, nix_shell)| HostPlatform {
-                    session,
-                    desktop,
-                    distro,
-                    sandbox,
-                    nix_shell,
+                |(session, desktop, distro, sandbox, nix_shell, app_image)| {
+                    let platform = HostPlatform {
+                        session,
+                        desktop,
+                        distro,
+                        sandbox,
+                        nix_shell,
+                        app_image: None,
+                    };
+                    if app_image {
+                        from_appimage(platform)
+                    } else {
+                        platform
+                    }
                 },
             )
     }
@@ -1525,6 +1787,7 @@ mod tests {
                 distro: a.distro,
                 nix_shell: a.nix_shell,
                 sandbox: a.sandbox,
+                app_image: a.app_image.clone(),
                 ..b.clone()
             };
             if need == Need::ScreenCastPortal {

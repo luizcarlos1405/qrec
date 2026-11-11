@@ -264,12 +264,19 @@ impl Sheet {
     }
 
     /// The sheet for the search as it is, with the global shortcuts of
-    /// the desktop the window runs on.
+    /// the desktop the window runs on, run by `qrec` or the AppImage's
+    /// path.
     fn refresh(self: &Rc<Self>) {
         let keymap = self.ctx.store.keymap();
         let keys_path = crate::settings::user_files().keys_shown;
-        let desktop = &qrec_shell::platform::current().desktop;
-        let view = cheat_sheet(&keymap, &keys_path, &self.text.text(), desktop);
+        let platform = qrec_shell::platform::current();
+        let view = cheat_sheet(
+            &keymap,
+            &keys_path,
+            &self.text.text(),
+            &platform.desktop,
+            platform.program(),
+        );
         self.build(&view);
     }
 

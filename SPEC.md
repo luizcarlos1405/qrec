@@ -133,7 +133,9 @@ Each check says what needs it (`neededFor` in `qrec --json doctor`). A few
 only inform: the VA-API report, the portal's app registry, an X server
 without RandR. The screen checks follow the session's screen backend (§5.1),
 which the report names first:
-`Session: X11 (xfce) · screens: x11 (DISPLAY=:0)`.
+`Session: X11 (xfce) · screens: x11 (DISPLAY=:0)`. Run from the AppImage,
+the line under it names the AppImage and where it runs from:
+`AppImage: /home/me/Qrec.AppImage (APPDIR=/tmp/.mount_QrecAbC123)`.
 
 When an app dependency is missing, `doctor` exits 5 (`missing_dependency`),
 and startup shows the blocking "The swamp is missing something" screen with
@@ -143,7 +145,13 @@ and the window opens the project. Each failure comes with a hint for the
 machine it runs on: the distribution's packages and install command (`apt`,
 `dnf`, `pacman` or `zypper`), the desktop's ScreenCast backend and its setup,
 or `nix develop` in the dev shell. The blocking screen shows that command
-with a Copy button.
+with a Copy button. The AppImage bundles GStreamer and its plugins, ffmpeg,
+`pactl` and the VA-API drivers, so from it only the host's parts get such
+hints (the portal, PipeWire or PulseAudio, the X server); a part it bundles
+that is missing means a damaged copy. When sysfs lists a GPU whose render
+node can't be opened (a container that didn't get it, or permissions), the
+VA-API rows say so ("/dev/dri/renderD128 can't be opened: …") instead of
+naming a driver to install.
 
 ---
 
@@ -840,9 +848,10 @@ silencedetect=noise=<thresholdDb>dB:d=<minSilence> -vn -f null -` on
 Qrec grabs no keys itself: the desktop binds `Mod+Shift+R`, `Mod+Shift+O` and
 `Mod+Shift+D` to `qrec record toggle`, `qrec record start --over-selection`
 and `qrec take discard-last` (Mod is the compositor's own modifier on niri,
-sway and i3, Meta on KDE Plasma and Super elsewhere). `qrec doctor` prints
-how for the desktop Qrec runs on, and the cheat sheet's Global shortcuts
-group shows it with a Copy snippet button:
+sway and i3, Meta on KDE Plasma and Super elsewhere). From the AppImage they
+run its path (`$APPIMAGE`) instead of `qrec`. `qrec doctor` prints how for
+the desktop Qrec runs on, and the cheat sheet's Global shortcuts group shows
+it with a Copy snippet button:
 
 - niri (below), sway and i3 (`bindsym`), Hyprland (`bind`) and river
   (`riverctl map`): lines for their config file;
@@ -1035,7 +1044,7 @@ qrec --pick                  # the project picker, whatever the cwd holds
 qrec init [--canvas 1920x1080@30]
 qrec create <name|path> [--canvas 1920x1080@30] [--name NAME]   # new folder + project (§4.4)
 qrec status                  # summary; --json = full state + host/recording status
-qrec doctor                  # dependencies, session and devices (§3.3); this desktop's global shortcuts (§10.2)
+qrec doctor                  # dependencies, session, AppImage and devices (§3.3); this desktop's global shortcuts (§10.2)
 qrec sources list            # screens, cameras, mics, system-audio monitors
 
 qrec scene layer add screen --output DP-4 [--rect X,Y,W,H] [--name ..]

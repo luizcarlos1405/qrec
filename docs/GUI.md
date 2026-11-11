@@ -3391,7 +3391,8 @@ info toast titled with the reason. (`palette.open` and `keys.help` toasted
   Canvas; "default P" when rebound; search with bold matches; "3
   shortcuts match “trim”"; the Global shortcuts group is
   `keymap::global_snippet` of the desktop the window detected at startup,
-  SPEC §10.2: its rows' key caps (Mod on niri, sway and i3, Meta on KDE
+  run by `qrec` or the AppImage's path (`HostPlatform::program`), SPEC
+  §10.2: its rows' key caps (Mod on niri, sway and i3, Meta on KDE
   Plasma, else Super), its note and the text Copy snippet copies, and
   "Paste into <file>" only for a snippet with a file, so not for GNOME's,
   KDE's or the generic list; issue #9);

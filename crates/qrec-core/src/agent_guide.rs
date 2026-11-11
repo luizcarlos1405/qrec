@@ -244,8 +244,9 @@ Pass `--yes` only when that loss is intended:
 ";
 
 /// The guide text (Markdown), its global shortcuts for `desktop` (where
-/// Qrec runs).
-pub fn agent_guide(desktop: &Desktop) -> String {
+/// Qrec runs), run by `program` (`qrec`, or the AppImage's path:
+/// `HostPlatform::program`).
+pub fn agent_guide(desktop: &Desktop, program: &str) -> String {
     let mut out = String::new();
     out.push_str(INTRO);
     let _ = writeln!(out, "  \"{NOT_MY_SWAMP}\".");
@@ -260,14 +261,14 @@ pub fn agent_guide(desktop: &Desktop) -> String {
         );
     }
     out.push_str(BODY);
-    out.push_str(&key_table(desktop));
+    out.push_str(&key_table(desktop, program));
     out.push_str(&settings());
     out
 }
 
 /// "Keys and their CLI form", from the default keymap, then the global
-/// shortcuts for `desktop`.
-fn key_table(desktop: &Desktop) -> String {
+/// shortcuts for `desktop`, run by `program`.
+fn key_table(desktop: &Desktop, program: &str) -> String {
     let map = keymap::resolve("");
     let mut out = String::from(
         "
@@ -306,7 +307,7 @@ Some keys only act on the window and have no CLI form:
             let _ = writeln!(out, "| {} | {} |", keys.join(" "), b.label);
         }
     }
-    let global = keymap::global_snippet(desktop);
+    let global = keymap::global_snippet(desktop, program);
     let _ = write!(
         out,
         "
@@ -345,10 +346,11 @@ They are per user: defaults for new projects, the encoder and the GUI:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::QREC;
 
     #[test]
     fn every_error_code_is_listed_once() {
-        let guide = agent_guide(&Desktop::Niri);
+        let guide = agent_guide(&Desktop::Niri, QREC);
         for code in CODES {
             let row = format!("| {} | `{}` |", code.exit_code(), code.as_str());
             assert_eq!(guide.matches(&row).count(), 1, "{row}");
@@ -362,7 +364,7 @@ mod tests {
 
     #[test]
     fn the_tables_come_from_the_code() {
-        let guide = agent_guide(&Desktop::Niri);
+        let guide = agent_guide(&Desktop::Niri, QREC);
         let map = keymap::resolve("");
         for id in KEY_TABLE {
             let b = map.binding(id).unwrap_or_else(|| panic!("no binding {id}"));
@@ -417,7 +419,7 @@ mod tests {
         // The global shortcuts' commands too, on niri (quoted word by word)
         // and in the generic list.
         for desktop in [Desktop::Niri, Desktop::Unknown] {
-            let guide = agent_guide(&desktop);
+            let guide = agent_guide(&desktop, QREC);
             for (i, _) in guide.match_indices("qrec ") {
                 let word: String = guide[i + 5..]
                     .chars()
@@ -438,7 +440,7 @@ mod tests {
     /// generic list where Qrec has none.
     #[test]
     fn the_global_shortcuts_follow_the_desktop() {
-        let niri = agent_guide(&Desktop::Niri);
+        let niri = agent_guide(&Desktop::Niri, QREC);
         assert!(
             niri.contains(&format!("```kdl\n{}\n```", keymap::NIRI_SNIPPET)),
             "{niri}"
@@ -453,8 +455,8 @@ mod tests {
             Desktop::Xfce,
             Desktop::Unknown,
         ] {
-            let guide = agent_guide(&desktop);
-            let global = keymap::global_snippet(&desktop);
+            let guide = agent_guide(&desktop, QREC);
+            let global = keymap::global_snippet(&desktop, QREC);
             assert!(!guide.contains(keymap::NIRI_SNIPPET), "{desktop:?}");
             assert!(!guide.contains("```kdl"), "{desktop:?}");
             assert!(
@@ -465,7 +467,7 @@ mod tests {
                 "{desktop:?}: {guide}"
             );
         }
-        let gnome = agent_guide(&Desktop::Gnome);
+        let gnome = agent_guide(&Desktop::Gnome, QREC);
         assert!(
             gnome.contains("GNOME Settings \u{203a} Keyboard"),
             "{gnome}"
@@ -473,8 +475,26 @@ mod tests {
         assert!(gnome.contains("Super+Shift+R"), "{gnome}");
     }
 
+    /// From an AppImage the guide's shortcuts run its path, as the
+    /// doctor's and the cheat sheet's do.
+    #[test]
+    fn an_appimages_shortcuts_run_its_path() {
+        let appimage = "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage";
+        let guide = agent_guide(&Desktop::Sway, appimage);
+        assert!(
+            guide.contains(&format!(
+                "bindsym $mod+Shift+r exec {appimage} record toggle"
+            )),
+            "{guide}"
+        );
+        assert_eq!(
+            guide.replace(appimage, QREC),
+            agent_guide(&Desktop::Sway, QREC)
+        );
+    }
+
     #[test]
     fn snapshot_agent_guide() {
-        insta::assert_snapshot!("agent_guide", agent_guide(&Desktop::Niri));
+        insta::assert_snapshot!("agent_guide", agent_guide(&Desktop::Niri, QREC));
     }
 }

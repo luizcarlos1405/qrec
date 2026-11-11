@@ -394,6 +394,10 @@ impl Backend for Shell {
         platform::current().desktop.clone()
     }
 
+    fn program(&mut self) -> String {
+        platform::current().program().to_owned()
+    }
+
     fn host(&mut self, project: &Path, args: &HostArgs) -> Result<u8, CoreError> {
         self.init_logging(Role::Host);
         tracing::info!("platform: {}", platform::current());

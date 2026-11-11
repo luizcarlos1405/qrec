@@ -2518,7 +2518,9 @@ pub struct SourceInventory { pub screens: Vec<ScreenInfo>, pub cameras: Vec<Came
 pub enum ScreenBackendKind { Portal, X11, None }   // "portal" | "x11" | "none": the session's ScreenBackend (A§8.11) without its display; absent reads as portal
 pub struct HostPlatform { pub session: SessionType /* wayland | x11 | unknown */, pub desktop: Desktop /* niri, gnome, kde, sway, hyprland, …, another's own name, unknown */,
                           pub distro: DistroFamily /* debian, ubuntu, fedora, arch, suse, nixos, alpine, void, gentoo, unknown */,
-                          pub sandbox: Sandbox /* none | flatpak | snap */, pub nix_shell: bool }
+                          pub sandbox: Sandbox /* none | flatpak | snap */, pub nix_shell: bool,
+                          pub app_image: Option<AppImage> /* "appImage": null outside one; absent reads as null */ }
+pub struct AppImage { pub path: String /* $APPIMAGE, what the shortcuts run */, pub dir: String /* $APPDIR */ }
 pub struct DoctorReport { pub checks: Vec<Check>, pub features_off: Vec<FeatureOff>, pub platform: HostPlatform,
                           pub screen_backend: ScreenBackendKind, pub session: String /* the session line */,
                           pub shortcuts: GlobalSnippet /* A§9.7 */, pub niri_snippet: String /* deprecated, one more release */,
@@ -2530,6 +2532,7 @@ pub struct FeatureOff { pub feature: Feature, pub checks: Vec<String>, pub messa
 pub struct Hint { pub packages: Vec<String>, pub command: Option<String>, pub note: Option<String> } // platform::install_hint
 pub struct VaReport { pub nodes: Vec<RenderNode> /* path, vendor, vendorName, deviceId, driver */, pub device: Option<String>,
                       pub origin: Option<String>, pub vendor: Option<u16>, pub device_id: Option<u16>,
+                      pub device_error: Option<DeviceError> /* {kind: missing | denied | failed, message}; omitted when absent */,
                       pub expected_driver: Option<String>, pub libva_driver_name: Option<String>, pub driver_dirs: Vec<String>,
                       pub driver_file: Option<String>, pub installed_drivers: Vec<String>, pub ffmpeg_h264: Option<bool>,
                       pub gst_encoders: Vec<String>, pub gst_factory: Option<String>, pub export_driver: Option<String>,
@@ -2538,11 +2541,12 @@ pub struct VaReport { pub nodes: Vec<RenderNode> /* path, vendor, vendorName, de
 
 **Platform** (`qrec_core::platform`, pure): `detect` turns a
 `PlatformEnv` (the variables in `ENV_KEYS`, the os-release text, whether
-`/.flatpak-info` exists and whether qrec's executable lies under `$SNAP`)
-into a `HostPlatform`. The session: a Wayland display (`WAYLAND_DISPLAY`,
-`WAYLAND_SOCKET`), or a login that says Wayland (`XDG_SESSION_TYPE`), is
-never X11, since an X display there is XWayland, which shows only X
-clients; then `DISPLAY`, then a login that says x11; else unknown. The
+`/.flatpak-info` exists and whether qrec's executable lies under `$SNAP`
+or `$APPDIR`) into a `HostPlatform`. The session: a Wayland display
+(`WAYLAND_DISPLAY`, `WAYLAND_SOCKET`), or a login that says Wayland
+(`XDG_SESSION_TYPE`), is never X11, since an X display there is XWayland,
+which shows only X clients; then `DISPLAY`, then a login that says x11;
+else unknown. The
 desktop: a compositor's IPC socket first (`NIRI_SOCKET`,
 `HYPRLAND_INSTANCE_SIGNATURE`, `SWAYSOCK`, `I3SOCK`), so `NIRI_SOCKET`
 beats `XDG_CURRENT_DESKTOP`; then the first of `XDG_CURRENT_DESKTOP`,
@@ -2551,16 +2555,22 @@ by its first known entry (`ubuntu:GNOME` is GNOME), else its first. The
 family: os-release's `ID`, then `ID_LIKE` in order (Mint is Ubuntu, Rocky
 is Fedora). The sandbox: Flatpak when `/.flatpak-info` exists, Snap only
 when qrec's own executable lies under `$SNAP` (classic snaps such as VS
-Code, IDEs and terminals leak a bare `SNAP` into what they start); and
-`nixShell` is `IN_NIX_SHELL`. The shell reads all of it once
+Code, IDEs and terminals leak a bare `SNAP` into what they start);
+`nixShell` is `IN_NIX_SHELL`; and `appImage` is the AppImage qrec runs
+from: its runtime's `APPIMAGE` (the file) and `APPDIR` (its FUSE mount or
+the folder it extracted itself to), both absolute, with qrec's executable
+under `$APPDIR` (an AppImage's terminal leaks both into a host qrec it
+starts). `HostPlatform::program` is what starts Qrec from a key binding:
+the AppImage's path from one, else `qrec`. The shell reads all of it once
 (`qrec_shell::platform::current()`: the environment, `/etc/os-release`
 else `/usr/lib/os-release`, `/.flatpak-info`, its own executable's path
-compared with `$SNAP` as given and with symlinks resolved) before any
-thread starts (A§8.10), opening no device; the headless host's and the
-GUI's logs print it ("platform: session=wayland desktop=niri distro=nixos
-sandbox=none nixShell=false"). The screen backend (A§8.11), the portal's
-stream identification, the doctor and its install hints, and the global
-shortcuts' snippet (A§9.7) follow it.
+compared with `$SNAP` and `$APPDIR` as given and with symlinks resolved)
+before any thread starts (A§8.10), opening no device; the headless host's
+and the GUI's logs print it ("platform: session=wayland desktop=niri
+distro=nixos sandbox=none nixShell=false", then " appImage=<path>" from
+one). The screen backend (A§8.11), the portal's stream identification,
+the doctor and its install hints, and the global shortcuts' snippet
+(A§9.7) follow it.
 
 **Screens** come from the session's `ScreenBackend` (A§8.11,
 `sources::discover_screens`), sorted left to right, and fill the same
@@ -2703,8 +2713,9 @@ Qrec needs is here."); the GUI logs what is off and opens the project
 - `vaapi`, which informs: the VA-API report.
 
 `va` (`VaReport`): the render nodes with their PCI vendor and device ids
-(sysfs; never opened), the effective device and where it came from, the
-driver its children load (`expectedDriver`, `gpu::child_libva_driver`) and
+(sysfs), the effective device and where it came from, why it can't be
+opened (`deviceError`), the driver its children load (`expectedDriver`,
+`gpu::child_libva_driver`) and
 this process's `LIBVA_DRIVER_NAME`, libva's driver directories, the
 expected driver's file and the drivers installed (`gpu::VaDrivers`), the
 h264_vaapi check (a 10 s child, run again with Intel's other driver where
@@ -2718,8 +2729,17 @@ VA-API encoder; virtio-gpu, VMware or QXL, a virtual machine's GPU; another
 PCI vendor; a GPU not on PCI), with what encodes on the CPU instead. A
 configured node that isn't Intel's or AMD's keeps an informative failure
 whose hint names where it is configured (the project's
-`recording.vaapiDevice`, or `config.toml`). On Intel and AMD nodes the
-hints follow the node: Intel's i965 (`VaGpu::IntelLegacy`) on the chips
+`recording.vaapiDevice`, or `config.toml`). An Intel or AMD node is
+opened for reading and writing and closed again (`Probe::open_node`) before
+anything asks it to encode, everywhere but under the fake backend; NVIDIA's
+never is. When it can't be (`deviceError`: `missing`, sysfs listing a GPU
+whose device file a container or sandbox didn't get; `denied`, a user the
+node's group leaves out; `failed`), no h264_vaapi check or encoder probe
+runs, MP4 exports and recordings count no VA encoder, and both rows say
+"…/renderD128 can't be opened: <the system's words>" with what to do (pass
+the device in, `docker run --device …`; join the group that owns it)
+instead of a driver to install. On Intel and AMD nodes that open the hints
+follow the node: Intel's i965 (`VaGpu::IntelLegacy`) on the chips
 only it drives, else iHD, or AMD's Mesa driver, with GStreamer's VA plugin
 only after them (the plugin alone once ffmpeg's h264_vaapi check encoded on
 the node, since the driver works). Where the node's driver is i965 and
@@ -2740,7 +2760,16 @@ packages with `sudo apt install`, `sudo dnf install`, `sudo pacman -S` or
 `sudo zypper install` where their names are known (the distributions'
 package lists, October 2026: Debian 13, Ubuntu 26.04, Fedora 44, Arch,
 Tumbleweed), else a sentence naming what to install, upstream's names
-marked as upstream, and the family's package manager. Fedora's codecs come
+marked as upstream, and the family's package manager. Inside an AppImage
+only the host's parts keep those hints (the portal, the sound server, the
+PipeWire daemon, the X server): what it bundles (GStreamer and its plugins,
+GES, ffmpeg and its encoders, pactl, the VA-API drivers) needs no package,
+so a missing or broken one means a damaged copy ("the AppImage bundles it,
+so this copy may be damaged: download the AppImage again"), and a VA-API
+driver that doesn't encode is the GPU's kernel driver and firmware's
+("nothing to install: the AppImage bundles …"). Advice to reinstall or
+update a part the AppImage bundles (ffmpeg, pactl, GStreamer) becomes that
+hint too, and `gst.vah264enc` names the driver's alone. Fedora's codecs come
 from RPM Fusion: gstreamer1-plugins-ugly, `sudo dnf swap ffmpeg-free
 ffmpeg --allowerasing`, intel-media-driver and mesa-va-drivers-freeworld;
 its openh264enc and H.264 decoder are gstreamer1-plugin-openh264. The
@@ -2763,11 +2792,16 @@ installs nothing stays a line (reinstall ffmpeg, update pactl to 16,
 session's, where `sources list` says portal) and the `session` line both
 texts start with ("Session: X11 (xfce) · screens: x11 (DISPLAY=:0)"; the
 session, "no display" without one, its desktop and the backend in
-`ScreenBackend`'s words). `shortcuts` is `keymap::global_snippet` of the
-platform's desktop (SPEC §10.2, A§9.7), whose heading and text the
-doctor's text and the CLI's print; `niriSnippet`, SPEC §10.2's KDL whatever
-the desktop, stays for one more release. There is no `wl-copy` check: Copy
-image goes through GDK's clipboard, and no CLI command copies.
+`ScreenBackend`'s words). From an AppImage both texts print a line of its
+own under it ("AppImage: /opt/Qrec.AppImage
+(APPDIR=/tmp/.mount_QrecAbC123)", `AppImage::describe`), from
+`platform.appImage`. `shortcuts` is `keymap::global_snippet` of the
+platform's desktop run by its program (SPEC §10.2, A§9.7: the AppImage's
+path from one), whose heading and text the doctor's text and the CLI's
+print; `niriSnippet`, SPEC §10.2's KDL whatever the desktop (with the
+AppImage's path from one), stays for one more release. There is no
+`wl-copy` check: Copy image goes through GDK's clipboard, and no CLI
+command copies.
 Under `QREC_CAPTURE_BACKEND=fake` the screen backend's, the cameras' and
 the audio checks only inform, and `gst.videotestsrc` (screens, cameras)
 and `gst.audiotestsrc` (audio) are those features' needs; recordings count
@@ -3155,7 +3189,7 @@ pub fn set_binding(keys_toml: &str, id: &str, keys: &[KeyChord]) -> Result<Strin
 pub fn reset_binding(keys_toml: &str, id: &str) -> Result<String, CoreError>;               // its lines removed
 pub const KEYLESS: &[KeylessAction];                            // the palette's actions with no key: history.clear (D-19)
 pub const GLOBAL_SHORTCUTS: [GlobalShortcut; 3];                // SPEC §10.2's: { id, label, key, argv } (keymap/global.rs)
-pub fn global_snippet(desktop: &Desktop) -> GlobalSnippet;      // how to bind them on that desktop
+pub fn global_snippet(desktop: &Desktop, program: &str) -> GlobalSnippet; // how to bind them on that desktop, run by `program`
 pub struct GlobalSnippet { pub desktop: Option<Desktop> /* None: the generic list */, pub language: String, pub file: Option<String>,
                            pub heading: String, pub text: String, pub note: String, pub button: String, pub modifier: String }
 ```
@@ -3172,9 +3206,13 @@ System Settings, with each shortcut's name, command and keys; and for
 every other desktop (Xfce, Cinnamon, MATE, COSMIC, wayfire, labwc, one
 nothing names) those commands and keys, to bind in its keyboard settings.
 The modifier's key cap is `Mod` for niri, sway and i3, `Meta` on KDE,
-else `Super`. The cheat sheet's Global shortcuts group (docs/GUI.md),
-`qrec doctor`'s `shortcuts` and the agent guide (the CLI backend's
-`Backend::desktop`; the generic list without the shell) show it.
+else `Super`. The commands run `program`, `HostPlatform::program`: `qrec`,
+or from an AppImage its path (A§8.12); a word a shell would read otherwise
+(a space, a quote) goes in single quotes, river's whole command in quotes
+of its own, and niri's words are KDL strings. The cheat sheet's Global
+shortcuts group (docs/GUI.md), `qrec doctor`'s `shortcuts` and the agent
+guide (the CLI backend's `Backend::desktop` and `Backend::program`; the
+generic list run by `qrec` without the shell) show it.
 
 Grammar `ctrl+shift+z`; shift is recorded only for letters and named keys
 (`<` is `less`). The default table is SPEC §10.2 plus Backspace for remove,

@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use gui_support::{HeldKeys, Launch, Nested, Options, assert_regions, poll, wait_for_gui_host};
 use qrec_core::keymap::global_snippet;
-use qrec_core::platform::Desktop;
+use qrec_core::platform::{Desktop, QREC};
 use qrec_core::state::{CanvasMode, UiState};
 use qrec_core::{ClipId, LayerId};
 use qrec_shell::testkit::design::{DesignVariant, design_fixture, write_ui};
@@ -519,7 +519,7 @@ fn the_cheat_sheet_on_gnome() {
     nested.keys(&["?"]);
     nested.window(0).wait_idle();
     assert_eq!(overlays(&mut nested), ["CheatSheet"]);
-    let gnome = global_snippet(&Desktop::Gnome);
+    let gnome = global_snippet(&Desktop::Gnome, QREC);
     let labels = nested.window(0).labels("cheatsheet-group-globalshortcuts");
     assert_eq!(
         labels,

@@ -650,7 +650,7 @@ impl PageView for MissingDepsView {
 mod tests {
     use qrec_core::ctx::ScreenBackendKind;
     use qrec_core::keymap::global_snippet;
-    use qrec_core::platform::{Need, PlatformEnv, detect, install_hint};
+    use qrec_core::platform::{Need, PlatformEnv, QREC, detect, install_hint};
     use qrec_core::view::blocking::BlockingAction;
     use qrec_shell::doctor::{Check, Feature};
 
@@ -689,7 +689,7 @@ mod tests {
                 },
             ],
             features_off: vec![],
-            shortcuts: global_snippet(&debian.desktop),
+            shortcuts: global_snippet(&debian.desktop, QREC),
             platform: debian,
             screen_backend: ScreenBackendKind::X11,
             session: "X11 · screens: x11 (DISPLAY=:0)".into(),

@@ -1096,7 +1096,7 @@ impl UnreadablePage {
 mod tests {
     use super::*;
     use crate::platform::{
-        Desktop, DistroFamily, HostPlatform, Need, Sandbox, SessionType, install_hint,
+        AppImage, Desktop, DistroFamily, HostPlatform, Need, Sandbox, SessionType, install_hint,
     };
 
     fn kinds() -> Vec<BlockKind> {
@@ -1254,6 +1254,7 @@ mod tests {
             distro,
             sandbox: Sandbox::None,
             nix_shell: false,
+            app_image: None,
         }
     }
 
@@ -1441,7 +1442,8 @@ mod tests {
     /// family: the command to copy where the packages are known (`sudo apt
     /// install …`, `sudo pacman -S …`, Fedora's RPM Fusion), the generic
     /// sentence where they aren't, the Nix package on NixOS and `nix
-    /// develop` in the flake's shell (the frame's).
+    /// develop` in the flake's shell (the frame's); from an AppImage,
+    /// which bundles them, no command at all.
     #[test]
     fn s23_per_family() {
         let platforms = [
@@ -1473,6 +1475,16 @@ mod tests {
             (
                 "unknown",
                 host(DistroFamily::Unknown, Desktop::Unknown, SessionType::X11),
+            ),
+            (
+                "ubuntuAppImage",
+                HostPlatform {
+                    app_image: Some(AppImage {
+                        path: "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage".into(),
+                        dir: "/tmp/.mount_QrecAbC123".into(),
+                    }),
+                    ..host(DistroFamily::Ubuntu, Desktop::Gnome, SessionType::Wayland)
+                },
             ),
         ];
         let pages: Vec<serde_json::Value> = platforms

@@ -3,8 +3,8 @@
 //! [`current`] reads the variables in [`ENV_KEYS`], os-release
 //! (`/etc/os-release`, else `/usr/lib/os-release`, as os-release(5) says),
 //! whether `/.flatpak-info` exists and whether this executable lies under
-//! `$SNAP`, then keeps the core's pure [`detect`] of that for the rest of
-//! the run. `main()` calls it before any thread starts, the same moment
+//! `$SNAP` or `$APPDIR`, then keeps the core's pure [`detect`] of that for
+//! the rest of the run. `main()` calls it before any thread starts, the same moment
 //! the GPU environment is decided (A§8.10), so every later reader sees
 //! the session the process started in. No device is opened and GStreamer
 //! isn't initialized.
@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub use qrec_core::platform::{
-    Desktop, DistroFamily, ENV_KEYS, HostPlatform, PlatformEnv, Sandbox, SessionType, detect,
+    AppImage, Desktop, DistroFamily, ENV_KEYS, HostPlatform, PlatformEnv, Sandbox, SessionType,
+    detect,
 };
 
 /// More than any os-release holds (they are under 1 KiB).
@@ -57,18 +58,24 @@ fn env_from(
             .iter()
             .find_map(|file| read_small(&root.join(file))),
         flatpak_info: root.join(".flatpak-info").exists(),
-        snap: var("SNAP")
-            .map(PathBuf::from)
-            .filter(|snap| snap.is_absolute())
-            .zip(exe)
-            .is_some_and(|(snap, exe)| inside(exe, &snap)),
+        snap: holds_exe(var("SNAP"), exe),
+        app_image: holds_exe(var("APPDIR"), exe),
     }
+}
+
+/// `dir` (a variable's value) is absolute and holds this executable `exe`.
+fn holds_exe(dir: Option<OsString>, exe: Option<&Path>) -> bool {
+    dir.map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .zip(exe)
+        .is_some_and(|(dir, exe)| inside(exe, &dir))
 }
 
 /// `exe` lies under the directory `dir`, as given or with symlinks
 /// resolved (`/snap` links to `/var/lib/snapd/snap` on Fedora and Arch).
-/// Only Qrec's own snap puts it there: a classic snap's terminal leaks
-/// its `SNAP` into a host qrec, whose executable is elsewhere.
+/// Only Qrec's own snap or AppImage puts it there: a classic snap's
+/// terminal leaks its `SNAP`, and an AppImage's its `APPDIR`, into a host
+/// qrec, whose executable is elsewhere.
 fn inside(exe: &Path, dir: &Path) -> bool {
     let resolved = |path: &Path| fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
     exe.starts_with(dir) || resolved(exe).starts_with(resolved(dir))
@@ -182,5 +189,46 @@ mod tests {
             assert!(!env_from(&root, snap(dir.into()), Some(&host_exe)).snap);
         }
         assert!(!env_from(&root, snap(snaps.join("qrec/12")), None).snap);
+    }
+
+    /// Qrec runs from an AppImage when its runtime's `APPIMAGE` and
+    /// `APPDIR` are set and this executable lies in `$APPDIR` (its FUSE
+    /// mount, or the folder it extracted itself to): the shortcuts then run
+    /// `$APPIMAGE`. A host qrec that an AppImage's terminal started has the
+    /// variables and runs from elsewhere.
+    #[test]
+    fn an_appimage_only_when_this_executable_is_inside_it() {
+        let root = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(root.path()).unwrap();
+        let mount = root.join("tmp/.mount_QrecAbC123");
+        let appimage = root.join("home/me/Applications/Qrec-0.1.0-x86_64.AppImage");
+        let bundled = mount.join("bin/qrec");
+        let host = root.join("usr/bin/qrec");
+        for file in [&appimage, &bundled, &host] {
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, "").unwrap();
+        }
+        let vars = |key: &str| match key {
+            "APPIMAGE" => Some(appimage.clone().into_os_string()),
+            "APPDIR" => Some(mount.clone().into_os_string()),
+            "WAYLAND_DISPLAY" => Some(OsString::from("wayland-0")),
+            _ => None,
+        };
+        let env = env_from(&root, vars, Some(&bundled));
+        assert!(env.app_image);
+        assert_eq!(env.vars.get("APPDIR").map(String::as_str), mount.to_str());
+        let platform = detect(&env);
+        assert_eq!(
+            platform.app_image,
+            Some(AppImage {
+                path: appimage.to_string_lossy().into_owned(),
+                dir: mount.to_string_lossy().into_owned(),
+            })
+        );
+        assert_eq!(platform.program(), appimage.to_str().unwrap());
+        let leaked = env_from(&root, vars, Some(&host));
+        assert!(!leaked.app_image);
+        assert_eq!(detect(&leaked).app_image, None);
+        assert!(!env_from(&root, vars, None).app_image);
     }
 }

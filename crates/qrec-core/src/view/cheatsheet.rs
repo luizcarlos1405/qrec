@@ -270,15 +270,17 @@ pub fn listed_ids() -> Vec<&'static str> {
 
 /// The sheet for `search` (empty: everything); `keys_path` is `keys.toml`
 /// as people read it (`~/.config/qrec/keys.toml`); `desktop` is where Qrec
-/// runs, whose global shortcuts the sheet shows.
+/// runs, whose global shortcuts the sheet shows, run by `program` (`qrec`,
+/// or the AppImage's path: `HostPlatform::program`).
 pub fn cheat_sheet(
     keymap: &Keymap,
     keys_path: &str,
     search: &str,
     desktop: &Desktop,
+    program: &str,
 ) -> CheatSheet {
     let words = search_words(search);
-    let global = global_snippet(desktop);
+    let global = global_snippet(desktop, program);
     let mut count = 0;
     let mut columns: Vec<Vec<CheatGroup>> = SHEET
         .iter()
@@ -433,13 +435,14 @@ mod tests {
 
     use super::*;
     use crate::keymap::{NIRI_SNIPPET, resolve};
+    use crate::platform::QREC;
     use crate::view::palette::bracketed;
 
     const KEYS: &str = "~/.config/qrec/keys.toml";
 
     /// S20's frame is niri's sheet.
     fn sheet(keys_toml: &str, search: &str) -> CheatSheet {
-        cheat_sheet(&resolve(keys_toml), KEYS, search, &Desktop::Niri)
+        cheat_sheet(&resolve(keys_toml), KEYS, search, &Desktop::Niri, QREC)
     }
 
     fn caps(row: &CheatRow) -> String {
@@ -616,7 +619,7 @@ mod tests {
     #[test]
     fn snapshot_global_shortcuts_per_desktop() {
         let keymap = resolve("");
-        let niri = cheat_sheet(&keymap, KEYS, "", &Desktop::Niri);
+        let niri = cheat_sheet(&keymap, KEYS, "", &Desktop::Niri, QREC);
         let mut out = String::new();
         for desktop in [
             Desktop::Niri,
@@ -629,12 +632,16 @@ mod tests {
             Desktop::Xfce,
             Desktop::Unknown,
         ] {
-            let sheet = cheat_sheet(&keymap, KEYS, "", &desktop);
+            let sheet = cheat_sheet(&keymap, KEYS, "", &desktop, QREC);
             let global = &sheet.columns[0][2];
             let _ = writeln!(out, "=== {}", desktop.as_str());
             group_text(&mut out, global);
             let snippet = global.snippet.as_ref().unwrap();
-            assert_eq!(snippet.text, global_snippet(&desktop).text, "{desktop:?}");
+            assert_eq!(
+                snippet.text,
+                global_snippet(&desktop, QREC).text,
+                "{desktop:?}"
+            );
             assert_eq!(snippet.button, "Copy snippet");
             let mut others = sheet.clone();
             others.columns[0].remove(2);
@@ -644,12 +651,46 @@ mod tests {
         }
         insta::assert_snapshot!("cheatsheet_global_per_desktop", out);
         // A search finds the global rows whatever the desktop.
-        let gnome = cheat_sheet(&keymap, KEYS, "record over", &Desktop::Gnome);
+        let gnome = cheat_sheet(&keymap, KEYS, "record over", &Desktop::Gnome, QREC);
         let rows: Vec<&str> = gnome.columns[0]
             .iter()
             .flat_map(|g| g.rows.iter().map(|r| r.id.as_str()))
             .collect();
         assert_eq!(rows, ["record.over", "global.record-over"]);
+    }
+
+    /// From an AppImage, Copy snippet copies commands that run its path
+    /// (the doctor prints the same), not `qrec`; the rows and their keys
+    /// stay.
+    #[test]
+    fn an_appimages_snippet_runs_its_path() {
+        let keymap = resolve("");
+        let appimage = "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage";
+        for desktop in [Desktop::Niri, Desktop::Gnome, Desktop::Unknown] {
+            let sheet = cheat_sheet(&keymap, KEYS, "", &desktop, appimage);
+            let global = &sheet.columns[0][2];
+            let snippet = global.snippet.as_ref().unwrap();
+            assert_eq!(snippet.text, global_snippet(&desktop, appimage).text);
+            assert!(
+                snippet.text.contains(appimage),
+                "{desktop:?}: {}",
+                snippet.text
+            );
+            assert!(!snippet.text.contains("qrec record"), "{}", snippet.text);
+            let native = cheat_sheet(&keymap, KEYS, "", &desktop, QREC);
+            assert_eq!(global.rows, native.columns[0][2].rows, "{desktop:?}");
+        }
+        let niri = cheat_sheet(&keymap, KEYS, "", &Desktop::Niri, appimage);
+        assert!(
+            niri.columns[0][2]
+                .snippet
+                .as_ref()
+                .unwrap()
+                .text
+                .contains(&format!(
+                    "Mod+Shift+R {{ spawn \"{appimage}\" \"record\" \"toggle\"; }}"
+                ))
+        );
     }
 
     /// Keys that run show; a conflicting one doesn't (it never runs), an

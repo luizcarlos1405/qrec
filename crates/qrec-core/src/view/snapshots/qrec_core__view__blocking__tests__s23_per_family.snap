@@ -354,5 +354,49 @@ expression: pages
         "status": "missing"
       }
     ]
+  },
+  {
+    "platform": "ubuntuAppImage",
+    "rows": [
+      {
+        "command": null,
+        "description": "GStreamer GTK 4 video sink (gst-plugins-rs). Qrec draws the preview with it.",
+        "id": "gst.gtk4paintablesink",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gtk4paintablesink"
+          }
+        ],
+        "note": "The AppImage bundles it, so this copy may be damaged: download the AppImage again.",
+        "status": "missing"
+      },
+      {
+        "command": null,
+        "description": "no software H.264 decoder: the editor can't play the takes",
+        "id": "gst.h264dec",
+        "item": [
+          {
+            "face": "mono",
+            "text": "gst.h264dec"
+          }
+        ],
+        "note": "The AppImage bundles it, so this copy may be damaged: download the AppImage again.",
+        "status": "missing"
+      },
+      {
+        "command": null,
+        "description": "ffmpeg can't read matroska (the takes' MKV files)",
+        "id": "ffmpeg.demuxers",
+        "item": [
+          {
+            "face": "mono",
+            "text": "ffmpeg.demuxers"
+          }
+        ],
+        "note": "The AppImage bundles it, so this copy may be damaged: download the AppImage again.",
+        "status": "missing"
+      }
+    ]
   }
 ]

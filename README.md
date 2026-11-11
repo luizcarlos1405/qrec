@@ -104,8 +104,12 @@ it gives this distribution's install command (apt, dnf, pacman or zypper;
 `nix develop` in the dev shell) and the portal setup this desktop needs: on
 wlroots compositors a screen chooser and `XDPW_PERSIST_MODE=permanent`, so
 the screen choice is remembered; on Hyprland, the restore-token box in its
-picker. Only what the app itself needs blocks the window; anything else turns
-one feature off ("Screen capture is off: …"), and the rest works.
+picker. From the AppImage it names the AppImage, and gives install commands
+only for the system's parts: the AppImage bundles the rest. A GPU whose
+render node Qrec can't open (a container that didn't get it, permissions)
+is said so, not blamed on a missing driver. Only what the app itself needs
+blocks the window; anything else turns one feature off ("Screen capture is
+off: …"), and the rest works.
 
 ### On X11
 
@@ -212,7 +216,8 @@ Qrec grabs no keys of its own: your desktop runs `qrec record toggle`,
 `qrec record start --over-selection` and `qrec take discard-last` from
 Mod+Shift+R, O and D, so you can record from any app. `qrec doctor` prints
 how to bind them on the desktop it runs on, and the cheat sheet (`?`) shows
-the same with a Copy snippet button:
+the same with a Copy snippet button. From the AppImage, the commands run the
+AppImage's path instead of `qrec`:
 
 | Desktop | Where they go |
 | --- | --- |

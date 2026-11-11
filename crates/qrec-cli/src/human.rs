@@ -7,6 +7,7 @@
 use std::fmt::Write as _;
 
 use qrec_core::keymap::{KeyChord, Keymap};
+use qrec_core::platform::AppImage;
 use qrec_core::protocol::{
     AutocutPlanView, ClipRow, HelloInfo, HistoryRow, RecordStartedView, StatusView,
     TakeFinalizedView, TakeRow,
@@ -682,7 +683,8 @@ pub(crate) fn sources(inv: &Value) -> Vec<String> {
 
 /// `qrec doctor` from the `DoctorReport` JSON: the lines and whether an
 /// app check (`required`) failed (exit 5). The session line (`session`:
-/// "Session: X11 (xfce) · screens: x11 (DISPLAY=:0)") comes first, then
+/// "Session: X11 (xfce) · screens: x11 (DISPLAY=:0)") comes first, with
+/// the AppImage Qrec runs from under it (`platform.appImage`), then
 /// the checks: a failed one is `MISSING` when the app needs it, `off` when
 /// only features do (`neededFor`) and optional otherwise; the global
 /// shortcuts for the desktop (`shortcuts`: its heading, then its text) and
@@ -696,6 +698,13 @@ pub(crate) fn doctor(report: &Value, verbose: u8) -> (Vec<String>, bool) {
     let mut lines = Vec::new();
     if let Some(session) = report.get("session").and_then(Value::as_str) {
         lines.push(format!("Session: {session}"));
+        let app_image = report
+            .get("platform")
+            .and_then(|p| p.get("appImage"))
+            .and_then(|a| serde_json::from_value::<AppImage>(a.clone()).ok());
+        if let Some(app_image) = app_image {
+            lines.push(format!("AppImage: {}", app_image.describe()));
+        }
         lines.push(String::new());
     }
     let mut failed_required = false;
@@ -1324,6 +1333,29 @@ mod tests {
         assert!(
             !lines.iter().any(|l| l.contains("can't record")),
             "{lines:?}"
+        );
+
+        // From an AppImage: its line under the session's.
+        let appimage = json!({
+            "checks": [
+                {"id": "ffmpeg", "required": true, "neededFor": ["app"], "ok": true,
+                 "detail": "ffmpeg version n9.0.2 (/tmp/.mount_QrecAbC123/bin/ffmpeg)", "hint": null}
+            ],
+            "featuresOff": [],
+            "platform": {"session": "wayland", "desktop": "gnome", "distro": "ubuntu",
+                         "sandbox": "none", "nixShell": false,
+                         "appImage": {"path": "/home/me/Qrec.AppImage", "dir": "/tmp/.mount_QrecAbC123"}},
+            "session": "Wayland (gnome) · screens: portal",
+            "va": null
+        });
+        let (lines, _) = doctor(&appimage, 0);
+        assert_eq!(
+            lines[..3],
+            [
+                "Session: Wayland (gnome) · screens: portal",
+                "AppImage: /home/me/Qrec.AppImage (APPDIR=/tmp/.mount_QrecAbC123)",
+                "",
+            ]
         );
     }
 

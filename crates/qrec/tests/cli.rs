@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use qrec_core::error::NOT_MY_SWAMP;
 use qrec_core::keymap::{NIRI_SNIPPET, global_snippet};
-use qrec_core::platform::Desktop;
+use qrec_core::platform::{Desktop, QREC};
 use qrec_shell::testkit::{MediaSpec, TestEnv, ffprobe, fixture_project, run_tool};
 use serde_json::{Value, json};
 
@@ -1573,7 +1573,7 @@ fn schema_keys_and_agent_guide() {
     // Its global shortcuts are the desktop's: none named here (the env
     // drops the session's variables), so the generic list; niri's KDL on
     // niri, GNOME's settings on GNOME.
-    let generic = global_snippet(&Desktop::Unknown);
+    let generic = global_snippet(&Desktop::Unknown, QREC);
     assert!(guide.stdout.contains(&generic.text), "{}", guide.stdout);
     assert!(!guide.stdout.contains(NIRI_SNIPPET), "{}", guide.stdout);
     for (name, desktop) in [("niri", Desktop::Niri), ("GNOME", Desktop::Gnome)] {
@@ -1584,7 +1584,7 @@ fn schema_keys_and_agent_guide() {
             &[("XDG_CURRENT_DESKTOP", OsStr::new(name))],
         );
         guide.ok();
-        let snippet = global_snippet(&desktop);
+        let snippet = global_snippet(&desktop, QREC);
         assert!(
             guide.stdout.contains(&snippet.text),
             "{name}: {}",
@@ -1626,6 +1626,78 @@ fn sources_and_doctor_use_the_fake_inventory() {
         reply["error"]["details"]["checks"].clone()
     };
     assert!(checks.as_array().is_some_and(|c| !c.is_empty()), "{reply}");
+}
+
+/// From an AppImage (its runtime's `APPIMAGE` and `APPDIR`, with this
+/// binary in `$APPDIR`) the doctor says so, under the session line and in
+/// its JSON, and the global shortcuts it and the agent guide print run the
+/// AppImage's path. The same variables leaked into a qrec that runs from
+/// elsewhere change nothing.
+#[test]
+fn an_appimage_shows_in_the_doctor_and_runs_the_shortcuts() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("anywhere");
+    let bin = qrec_bin();
+    let appdir = bin.parent().unwrap().as_os_str();
+    let appimage = OsStr::new("/opt/Qrec-0.1.0-x86_64.AppImage");
+    let sway = OsStr::new("sway");
+    let vars = [
+        ("APPIMAGE", appimage),
+        ("APPDIR", appdir),
+        ("XDG_CURRENT_DESKTOP", sway),
+    ];
+    let out = qrec_with(&env, &dir, &["--json", "doctor"], &vars);
+    let reply = out.only_reply();
+    let report = if reply["ok"] == true {
+        &reply["data"]
+    } else {
+        &reply["error"]["details"]
+    };
+    assert_eq!(
+        report["platform"]["appImage"],
+        json!({"path": appimage.to_str(), "dir": appdir.to_str()}),
+        "{reply}"
+    );
+    let bind = "bindsym $mod+Shift+r exec /opt/Qrec-0.1.0-x86_64.AppImage record toggle";
+    let shortcuts = report["shortcuts"]["text"].as_str().unwrap();
+    assert!(shortcuts.contains(bind), "{shortcuts}");
+    let niri = report["niriSnippet"].as_str().unwrap();
+    assert!(
+        niri.contains(r#"spawn "/opt/Qrec-0.1.0-x86_64.AppImage" "record" "toggle""#),
+        "{niri}"
+    );
+    let text = qrec_with(&env, &dir, &["doctor"], &vars);
+    let line = format!(
+        "\nAppImage: /opt/Qrec-0.1.0-x86_64.AppImage (APPDIR={})\n",
+        appdir.to_string_lossy()
+    );
+    assert!(text.stdout.contains(&line), "{}", text.stdout);
+    let guide = qrec_with(&env, &dir, &["agent-guide"], &vars);
+    guide.ok();
+    assert!(guide.stdout.contains(bind), "{}", guide.stdout);
+
+    // APPDIR somewhere this binary isn't: no AppImage.
+    let elsewhere = env.empty_dir("elsewhere");
+    let leaked = [
+        ("APPIMAGE", appimage),
+        ("APPDIR", elsewhere.as_os_str()),
+        ("XDG_CURRENT_DESKTOP", sway),
+    ];
+    let out = qrec_with(&env, &dir, &["--json", "doctor"], &leaked);
+    let reply = out.only_reply();
+    let report = if reply["ok"] == true {
+        &reply["data"]
+    } else {
+        &reply["error"]["details"]
+    };
+    assert_eq!(report["platform"]["appImage"], Value::Null, "{reply}");
+    assert!(
+        report["shortcuts"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("exec qrec record toggle"),
+        "{reply}"
+    );
 }
 
 /// A session bus that isn't there: as on a desktop without one, the portal

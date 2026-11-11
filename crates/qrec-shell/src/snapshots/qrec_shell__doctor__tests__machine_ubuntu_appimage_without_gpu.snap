@@ -1,0 +1,453 @@
+---
+source: crates/qrec-shell/src/doctor.rs
+expression: "serde_json::json!({\n    \"exitCode\": report.exit_code(), \"text\": text.lines().collect::<Vec<_>>(),\n    \"report\": report.to_json(),\n})"
+---
+{
+  "exitCode": 0,
+  "report": {
+    "checks": [
+      {
+        "detail": "GStreamer 1.28.8",
+        "hint": null,
+        "id": "gstreamer",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "pipewiresrc (screen capture)",
+        "hint": null,
+        "id": "gst.pipewiresrc",
+        "neededFor": [
+          "screens"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "v4l2src (cameras)",
+        "hint": null,
+        "id": "gst.v4l2src",
+        "neededFor": [
+          "cameras"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "pulsesrc (audio capture)",
+        "hint": null,
+        "id": "gst.pulsesrc",
+        "neededFor": [
+          "audio"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "compositor (live preview)",
+        "hint": null,
+        "id": "gst.compositor",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "videorate (constant frame rate)",
+        "hint": null,
+        "id": "gst.videorate",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "x264enc (H.264 recording)",
+        "hint": null,
+        "id": "gst.x264enc",
+        "neededFor": [
+          "recording"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "openh264enc (H.264 recording)",
+        "hint": null,
+        "id": "gst.openh264enc",
+        "neededFor": [],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "h264parse (H.264 recording)",
+        "hint": null,
+        "id": "gst.h264parse",
+        "neededFor": [
+          "recording"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "matroskamux (MKV files)",
+        "hint": null,
+        "id": "gst.matroskamux",
+        "neededFor": [
+          "recording"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "flacenc (lossless audio)",
+        "hint": null,
+        "id": "gst.flacenc",
+        "neededFor": [
+          "recording"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "matroskademux (reading the takes' MKV files)",
+        "hint": null,
+        "id": "gst.matroskademux",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "flacdec (the takes' FLAC audio)",
+        "hint": null,
+        "id": "gst.flacdec",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "gtk4paintablesink (the GUI preview)",
+        "hint": null,
+        "id": "gst.gtk4paintablesink",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "avdec_h264, openh264dec (the editor's preview of the takes)",
+        "hint": null,
+        "id": "gst.h264dec",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "no Intel or AMD GPU: recordings use x264 on the CPU",
+        "hint": null,
+        "id": "gst.vah264enc",
+        "neededFor": [],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "GStreamer Editing Services",
+        "hint": null,
+        "id": "ges",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "ffmpeg version 8.1.2 (/tmp/.mount_QrecAbC123/bin/ffmpeg)",
+        "hint": null,
+        "id": "ffmpeg",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "ffprobe version 8.1.2 (/tmp/.mount_QrecAbC123/bin/ffprobe)",
+        "hint": null,
+        "id": "ffprobe",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "h264 (the takes' video), flac (the takes' audio)",
+        "hint": null,
+        "id": "ffmpeg.decoders",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "matroska (the takes' MKV files)",
+        "hint": null,
+        "id": "ffmpeg.demuxers",
+        "neededFor": [
+          "app"
+        ],
+        "ok": true,
+        "required": true
+      },
+      {
+        "detail": "libx264 (MP4 exports)",
+        "hint": null,
+        "id": "ffmpeg.libx264",
+        "neededFor": [
+          "export.mp4"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "ffmpeg has no libopenh264 encoder: MP4 exports use libx264",
+        "hint": null,
+        "id": "ffmpeg.libopenh264",
+        "neededFor": [],
+        "ok": false,
+        "required": false
+      },
+      {
+        "detail": "aac (MP4 audio)",
+        "hint": null,
+        "id": "ffmpeg.aac",
+        "neededFor": [
+          "export.mp4"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "pcm_s16le (export segments)",
+        "hint": null,
+        "id": "ffmpeg.pcm_s16le",
+        "neededFor": [
+          "export.mp4",
+          "export.webm",
+          "export.av1"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "libvpx-vp9 (WebM exports)",
+        "hint": null,
+        "id": "ffmpeg.libvpx-vp9",
+        "neededFor": [
+          "export.webm"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "libopus (WebM audio)",
+        "hint": null,
+        "id": "ffmpeg.libopus",
+        "neededFor": [
+          "export.webm",
+          "export.av1"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "libsvtav1 (AV1 WebM exports)",
+        "hint": null,
+        "id": "ffmpeg.libsvtav1",
+        "neededFor": [
+          "export.av1"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "/run/user/1000/pipewire-0 (the portal's screen casts)",
+        "hint": null,
+        "id": "pipewire.daemon",
+        "neededFor": [
+          "screens"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "xdg-desktop-portal ScreenCast v5 (monitors, windows, virtual)",
+        "hint": null,
+        "id": "portal.screencast",
+        "neededFor": [
+          "screens"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "no host app registry (xdg-desktop-portal < 1.19): the screen choice may not be remembered for Qrec",
+        "hint": "update xdg-desktop-portal to 1.19 or newer",
+        "id": "portal.registry",
+        "neededFor": [],
+        "ok": false,
+        "required": false
+      },
+      {
+        "detail": "pactl 17.0 (/tmp/.mount_QrecAbC123/bin/pactl)",
+        "hint": null,
+        "id": "pactl",
+        "neededFor": [
+          "audio"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "PulseAudio (on PipeWire 1.0.5)",
+        "hint": null,
+        "id": "sound.server",
+        "neededFor": [
+          "audio"
+        ],
+        "ok": true,
+        "required": false
+      },
+      {
+        "detail": "no GPU render node (a virtual machine without 3D acceleration, or no GPU driver): recordings and exports use x264 on the CPU",
+        "hint": null,
+        "id": "vaapi",
+        "neededFor": [],
+        "ok": true,
+        "required": false
+      }
+    ],
+    "featuresOff": [],
+    "niriSnippet": "binds {\n    Mod+Shift+R { spawn \"/home/me/Applications/Qrec-0.1.0-x86_64.AppImage\" \"record\" \"toggle\"; }\n    Mod+Shift+O { spawn \"/home/me/Applications/Qrec-0.1.0-x86_64.AppImage\" \"record\" \"start\" \"--over-selection\"; }\n    Mod+Shift+D { spawn \"/home/me/Applications/Qrec-0.1.0-x86_64.AppImage\" \"take\" \"discard-last\"; }\n}",
+    "platform": {
+      "appImage": {
+        "dir": "/tmp/.mount_QrecAbC123",
+        "path": "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage"
+      },
+      "desktop": "gnome",
+      "distro": "ubuntu",
+      "nixShell": false,
+      "sandbox": "none",
+      "session": "wayland"
+    },
+    "screenBackend": "portal",
+    "session": "Wayland (gnome) · screens: portal",
+    "shortcuts": {
+      "button": "Copy snippet",
+      "desktop": "gnome",
+      "file": null,
+      "heading": "Global shortcuts for GNOME:",
+      "language": "text",
+      "modifier": "Super",
+      "note": "Add these as custom shortcuts in GNOME Settings › Keyboard to record while another app has focus.",
+      "text": "In GNOME Settings › Keyboard › View and Customize Shortcuts › Custom Shortcuts,\nfor each line choose Add Shortcut (or +), type its name and command, then set its shortcut.\n\nName               Command                                                                         Shortcut\nRecord toggle      /home/me/Applications/Qrec-0.1.0-x86_64.AppImage record toggle                  Super+Shift+R\nRecord over        /home/me/Applications/Qrec-0.1.0-x86_64.AppImage record start --over-selection  Super+Shift+O\nDiscard last take  /home/me/Applications/Qrec-0.1.0-x86_64.AppImage take discard-last              Super+Shift+D"
+    },
+    "va": {
+      "device": null,
+      "deviceId": null,
+      "driverDirs": [
+        "/tmp/.mount_QrecAbC123/lib/dri"
+      ],
+      "driverFile": null,
+      "expectedDriver": null,
+      "exportDriver": null,
+      "ffmpegH264": null,
+      "gstEncoders": [],
+      "gstFactory": null,
+      "installedDrivers": [
+        "i965",
+        "iHD",
+        "r600",
+        "radeonsi"
+      ],
+      "libvaDriverName": null,
+      "nodes": [],
+      "note": null,
+      "origin": null,
+      "startup": [
+        "no Intel or AMD render node: VA-API stays off, LIBVA_DRIVER_NAME untouched"
+      ],
+      "vendor": null
+    }
+  },
+  "text": [
+    "Qrec doctor",
+    "",
+    "Session: Wayland (gnome) · screens: portal",
+    "AppImage: /home/me/Applications/Qrec-0.1.0-x86_64.AppImage (APPDIR=/tmp/.mount_QrecAbC123)",
+    "",
+    "  ok        gstreamer              GStreamer 1.28.8",
+    "  ok        gst.pipewiresrc        pipewiresrc (screen capture)",
+    "  ok        gst.v4l2src            v4l2src (cameras)",
+    "  ok        gst.pulsesrc           pulsesrc (audio capture)",
+    "  ok        gst.compositor         compositor (live preview)",
+    "  ok        gst.videorate          videorate (constant frame rate)",
+    "  ok        gst.x264enc            x264enc (H.264 recording)",
+    "  ok        gst.openh264enc        openh264enc (H.264 recording)",
+    "  ok        gst.h264parse          h264parse (H.264 recording)",
+    "  ok        gst.matroskamux        matroskamux (MKV files)",
+    "  ok        gst.flacenc            flacenc (lossless audio)",
+    "  ok        gst.matroskademux      matroskademux (reading the takes' MKV files)",
+    "  ok        gst.flacdec            flacdec (the takes' FLAC audio)",
+    "  ok        gst.gtk4paintablesink  gtk4paintablesink (the GUI preview)",
+    "  ok        gst.h264dec            avdec_h264, openh264dec (the editor's preview of the takes)",
+    "  ok        gst.vah264enc          no Intel or AMD GPU: recordings use x264 on the CPU",
+    "  ok        ges                    GStreamer Editing Services",
+    "  ok        ffmpeg                 ffmpeg version 8.1.2 (/tmp/.mount_QrecAbC123/bin/ffmpeg)",
+    "  ok        ffprobe                ffprobe version 8.1.2 (/tmp/.mount_QrecAbC123/bin/ffprobe)",
+    "  ok        ffmpeg.decoders        h264 (the takes' video), flac (the takes' audio)",
+    "  ok        ffmpeg.demuxers        matroska (the takes' MKV files)",
+    "  ok        ffmpeg.libx264         libx264 (MP4 exports)",
+    "  optional  ffmpeg.libopenh264     ffmpeg has no libopenh264 encoder: MP4 exports use libx264",
+    "  ok        ffmpeg.aac             aac (MP4 audio)",
+    "  ok        ffmpeg.pcm_s16le       pcm_s16le (export segments)",
+    "  ok        ffmpeg.libvpx-vp9      libvpx-vp9 (WebM exports)",
+    "  ok        ffmpeg.libopus         libopus (WebM audio)",
+    "  ok        ffmpeg.libsvtav1       libsvtav1 (AV1 WebM exports)",
+    "  ok        pipewire.daemon        /run/user/1000/pipewire-0 (the portal's screen casts)",
+    "  ok        portal.screencast      xdg-desktop-portal ScreenCast v5 (monitors, windows, virtual)",
+    "  optional  portal.registry        no host app registry (xdg-desktop-portal < 1.19): the screen choice may not be remembered for Qrec",
+    "                                   → update xdg-desktop-portal to 1.19 or newer",
+    "  ok        pactl                  pactl 17.0 (/tmp/.mount_QrecAbC123/bin/pactl)",
+    "  ok        sound.server           PulseAudio (on PipeWire 1.0.5)",
+    "  ok        vaapi                  no GPU render node (a virtual machine without 3D acceleration, or no GPU driver): recordings and exports use x264 on the CPU",
+    "",
+    "VA-API render nodes: none",
+    "  no Intel or AMD render node: VA-API stays off, LIBVA_DRIVER_NAME untouched",
+    "",
+    "Global shortcuts for GNOME:",
+    "",
+    "In GNOME Settings › Keyboard › View and Customize Shortcuts › Custom Shortcuts,",
+    "for each line choose Add Shortcut (or +), type its name and command, then set its shortcut.",
+    "",
+    "Name               Command                                                                         Shortcut",
+    "Record toggle      /home/me/Applications/Qrec-0.1.0-x86_64.AppImage record toggle                  Super+Shift+R",
+    "Record over        /home/me/Applications/Qrec-0.1.0-x86_64.AppImage record start --over-selection  Super+Shift+O",
+    "Discard last take  /home/me/Applications/Qrec-0.1.0-x86_64.AppImage take discard-last              Super+Shift+D",
+    "",
+    "Everything Qrec needs is here."
+  ]
+}

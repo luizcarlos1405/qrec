@@ -14,6 +14,7 @@ Gstreamer
   gentoo    install GStreamer 1.24 or newer with emerge
   unknown   install GStreamer 1.24 or newer with your distribution's package manager
   nix shell $ nix develop · the flake provides gstreamer
+  appimage  the AppImage bundles it, so this copy may be damaged: download the AppImage again
 Ges
   debian    install GStreamer Editing Services (upstream gst-editing-services) with apt
   ubuntu    install GStreamer Editing Services (upstream gst-editing-services) with apt
@@ -26,6 +27,7 @@ Ges
   gentoo    install GStreamer Editing Services (upstream gst-editing-services) with emerge
   unknown   install GStreamer Editing Services (upstream gst-editing-services) with your distribution's package manager
   nix shell $ nix develop · the flake provides gst-editing-services
+  appimage  the AppImage bundles it, so this copy may be damaged: download the AppImage again
 GstPluginsBase
   debian    install GStreamer's base plugins (upstream gst-plugins-base) with apt
   ubuntu    install GStreamer's base plugins (upstream gst-plugins-base) with apt
@@ -38,6 +40,7 @@ GstPluginsBase
   gentoo    install GStreamer's base plugins (upstream gst-plugins-base) with emerge
   unknown   install GStreamer's base plugins (upstream gst-plugins-base) with your distribution's package manager
   nix shell $ nix develop · the flake provides gst-plugins-base
+  appimage  the AppImage bundles it, so this copy may be damaged: download the AppImage again
 GstPluginsGood
   debian    install GStreamer's good plugins (upstream gst-plugins-good) with apt
   ubuntu    install GStreamer's good plugins (upstream gst-plugins-good) with apt
@@ -50,6 +53,7 @@ GstPluginsGood
   gentoo    install GStreamer's good plugins (upstream gst-plugins-good) with emerge
   unknown   install GStreamer's good plugins (upstream gst-plugins-good) with your distribution's package manager
   nix shell $ nix develop · the flake provides gst-plugins-good
+  appimage  the AppImage bundles it, so this copy may be damaged: download the AppImage again
 GstPluginsBad
   debian    install GStreamer's bad plugins (upstream gst-plugins-bad) with apt
   ubuntu    install GStreamer's bad plugins (upstream gst-plugins-bad) with apt
@@ -62,6 +66,7 @@ GstPluginsBad
   gentoo    install GStreamer's bad plugins (upstream gst-plugins-bad) with emerge
   unknown   install GStreamer's bad plugins (upstream gst-plugins-bad) with your distribution's package manager
   nix shell $ nix develop · the flake provides gst-plugins-bad
+  appimage  the AppImage bundles it, so this copy may be damaged: download the AppImage again
 GstX264
   debian    install GStreamer's x264enc (upstream gst-plugins-ugly) with apt
   ubuntu    install GStreamer's x264enc (upstream gst-plugins-ugly) with apt
@@ -74,6 +79,7 @@ GstX264
   gentoo    install GStreamer's x264enc (upstream gst-plugins-ugly) with emerge
   unknown   install GStreamer's x264enc (upstream gst-plugins-ugly) with your distribution's package manager
   nix shell $ nix develop · the flake provides gst-plugins-ugly
+  appimage  the AppImage bundles it, so this copy may be damaged: download the AppImage again
 GstOpenH264
   debian    install GStreamer's openh264enc (upstream gst-plugins-bad, built with OpenH264) with apt
   ubuntu    install GStreamer's openh264enc (upstream gst-plugins-bad, built with OpenH264) with apt
@@ -86,6 +92,7 @@ GstOpenH264
   gentoo    install GStreamer's openh264enc (upstream gst-plugins-bad, built with OpenH264) with emerge
   unknown   install GStreamer's openh264enc (upstream gst-plugins-bad, built with OpenH264) with your distribution's package manager
   nix shell $ nix develop · the flake provides gst-plugins-bad
+  appimage  the AppImage bundles it, so this copy may be damaged: download the AppImage again
 GstH264Decoder
   debian    install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with apt
   ubuntu    install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with apt
@@ -98,6 +105,7 @@ GstH264Decoder
   gentoo    install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with emerge
   unknown   install GStreamer's libav plugin, avdec_h264 (upstream gst-libav) with your distribution's package manager
   nix shell $ nix develop · the flake provides gst-libav
+  appimage  the AppImage bundles it, so this copy may be damaged: download the AppImage again
 GstGtk4
   debian    $ sudo apt install gstreamer1.0-gtk4 · [gstreamer1.0-gtk4]
   ubuntu    $ sudo apt install gstreamer1.0-gtk4 · [gstreamer1.0-gtk4]
@@ -110,6 +118,7 @@ GstGtk4
   gentoo    install GStreamer's GTK 4 plugin, gtk4paintablesink (upstream gst-plugins-rs) with emerge
   unknown   install GStreamer's GTK 4 plugin, gtk4paintablesink (upstream gst-plugins-rs) with your distribution's package manager
   nix shell $ nix develop · the flake provides gst-plugins-rs
+  appimage  the AppImage bundles it, so this copy may be damaged: download the AppImage again
 GstPipewire
   debian    $ sudo apt install gstreamer1.0-pipewire · [gstreamer1.0-pipewire]
   ubuntu    $ sudo apt install gstreamer1.0-pipewire · [gstreamer1.0-pipewire]
@@ -122,6 +131,7 @@ GstPipewire
   gentoo    install PipeWire's GStreamer plugin (pipewiresrc) with emerge
   unknown   install PipeWire's GStreamer plugin (pipewiresrc) with your distribution's package manager
   nix shell $ nix develop · the flake provides pipewire
+  appimage  the AppImage bundles it, so this copy may be damaged: download the AppImage again
 GstVa
   debian    install GStreamer's VA plugin (upstream gst-plugins-bad) with apt
   ubuntu    install GStreamer's VA plugin (upstream gst-plugins-bad) with apt
@@ -134,6 +144,7 @@ GstVa
   gentoo    install GStreamer's VA plugin (upstream gst-plugins-bad) with emerge
   unknown   install GStreamer's VA plugin (upstream gst-plugins-bad) with your distribution's package manager
   nix shell $ nix develop · the flake provides gst-plugins-bad
+  appimage  the AppImage bundles it, so this copy may be damaged: download the AppImage again
 Ffmpeg
   debian    $ sudo apt install ffmpeg · [ffmpeg]
   ubuntu    $ sudo apt install ffmpeg · [ffmpeg]
@@ -146,6 +157,7 @@ Ffmpeg
   gentoo    install ffmpeg (with ffprobe) with emerge
   unknown   install ffmpeg (with ffprobe) with your distribution's package manager
   nix shell $ nix develop · the flake provides ffmpeg-full
+  appimage  the AppImage bundles it, so this copy may be damaged: download the AppImage again
 FullFfmpeg
   debian    install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with apt
   ubuntu    install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with apt
@@ -158,6 +170,7 @@ FullFfmpeg
   gentoo    install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with emerge
   unknown   install a full ffmpeg build (with libx264, libvpx, libopus and libsvtav1) with your distribution's package manager
   nix shell $ nix develop · the flake provides ffmpeg-full
+  appimage  the AppImage bundles it, so this copy may be damaged: download the AppImage again
 Pactl
   debian    install the PulseAudio client tools (pactl) 16 or newer with apt
   ubuntu    install the PulseAudio client tools (pactl) 16 or newer with apt
@@ -170,6 +183,7 @@ Pactl
   gentoo    install the PulseAudio client tools (pactl) 16 or newer with emerge
   unknown   install the PulseAudio client tools (pactl) 16 or newer with your distribution's package manager
   nix shell $ nix develop · the flake provides pulseaudio
+  appimage  the AppImage bundles it, so this copy may be damaged: download the AppImage again
 SoundServer
   debian    start the sound server: PipeWire with pipewire-pulse, or PulseAudio
   ubuntu    start the sound server: PipeWire with pipewire-pulse, or PulseAudio
@@ -182,6 +196,7 @@ SoundServer
   gentoo    start the sound server: PipeWire with pipewire-pulse, or PulseAudio
   unknown   start the sound server: PipeWire with pipewire-pulse, or PulseAudio
   nix shell start the sound server: PipeWire with pipewire-pulse, or PulseAudio
+  appimage  start the sound server: PipeWire with pipewire-pulse, or PulseAudio
 PipeWire
   debian    start the PipeWire daemon (with systemd: systemctl --user enable --now pipewire.socket): the ScreenCast portal streams the screens through it
   ubuntu    start the PipeWire daemon (with systemd: systemctl --user enable --now pipewire.socket): the ScreenCast portal streams the screens through it
@@ -194,6 +209,7 @@ PipeWire
   gentoo    start the PipeWire daemon (with OpenRC, run gentoo-pipewire-launcher with your session): the ScreenCast portal streams the screens through it
   unknown   start the PipeWire daemon (with systemd: systemctl --user enable --now pipewire.socket; without it, run pipewire from your session's autostart): the ScreenCast portal streams the screens through it
   nix shell start the PipeWire daemon (with systemd: systemctl --user enable --now pipewire.socket): the ScreenCast portal streams the screens through it
+  appimage  start the PipeWire daemon (with systemd: systemctl --user enable --now pipewire.socket): the ScreenCast portal streams the screens through it
 ScreenCastPortal
   debian    install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
   ubuntu    install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
@@ -206,6 +222,7 @@ ScreenCastPortal
   gentoo    install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
   unknown   install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
   nix shell install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
+  appimage  install xdg-desktop-portal and your desktop's ScreenCast backend (xdg-desktop-portal-gnome, -kde, -wlr, -hyprland or -cosmic), then log out and back in
 RandR
   debian    start the X server with its RandR extension (Xvfb: +extension RANDR) to list each monitor
   ubuntu    start the X server with its RandR extension (Xvfb: +extension RANDR) to list each monitor
@@ -218,6 +235,7 @@ RandR
   gentoo    start the X server with its RandR extension (Xvfb: +extension RANDR) to list each monitor
   unknown   start the X server with its RandR extension (Xvfb: +extension RANDR) to list each monitor
   nix shell start the X server with its RandR extension (Xvfb: +extension RANDR) to list each monitor
+  appimage  start the X server with its RandR extension (Xvfb: +extension RANDR) to list each monitor
 VaDriver(Intel)
   debian    install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with apt
   ubuntu    install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with apt
@@ -230,6 +248,7 @@ VaDriver(Intel)
   gentoo    install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with emerge
   unknown   install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with your distribution's package manager
   nix shell install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with apt
+  appimage  nothing to install: the AppImage bundles Intel's VA-API drivers (iHD, and i965 for chips older than Broadwell); whether they encode on this GPU is up to its kernel driver (i915 or xe) and firmware
 VaDriver(IntelLegacy)
   debian    install Intel's i965 VA-API driver (for chips older than Broadwell) with apt
   ubuntu    install Intel's i965 VA-API driver (for chips older than Broadwell) with apt
@@ -242,6 +261,7 @@ VaDriver(IntelLegacy)
   gentoo    install Intel's i965 VA-API driver (for chips older than Broadwell) with emerge
   unknown   install Intel's i965 VA-API driver (for chips older than Broadwell) with your distribution's package manager
   nix shell install Intel's i965 VA-API driver (for chips older than Broadwell) with apt
+  appimage  nothing to install: the AppImage bundles Intel's i965 VA-API driver; whether it encodes on this GPU is up to its kernel driver (i915) and firmware
 VaDriver(Amd)
   debian    install Mesa's VA-API driver (radeonsi) with apt
   ubuntu    install Mesa's VA-API driver (radeonsi) with apt
@@ -254,6 +274,7 @@ VaDriver(Amd)
   gentoo    install Mesa's VA-API driver (radeonsi) with emerge
   unknown   install Mesa's VA-API driver (radeonsi) with your distribution's package manager
   nix shell install Mesa's VA-API driver (radeonsi) with apt
+  appimage  nothing to install: the AppImage bundles Mesa's VA-API driver (radeonsi); whether it encodes on this GPU is up to its kernel driver (amdgpu) and firmware
 ScreenCastPortal by desktop (Wayland)
   niri      on niri, install xdg-desktop-portal-gnome, then log out and back in
   gnome     install xdg-desktop-portal-gnome, GNOME's ScreenCast backend, then log out and back in
