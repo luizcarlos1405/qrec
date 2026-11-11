@@ -123,6 +123,24 @@ one feature off ("Screen capture is off: …"), and the rest works.
 - Under XWayland (a Wayland session that also sets `DISPLAY`), screens still
   go through the portal: XWayland only shows X windows.
 
+## Install
+
+There are no releases yet. With Nix (flakes enabled), Qrec runs and installs
+straight from this repository:
+
+```sh
+nix run github:luizcarlos1405/qrec                # try it
+nix profile install github:luizcarlos1405/qrec    # install it, with its desktop entry and icons
+```
+
+Nix builds Qrec itself, which takes a few minutes; GTK, GStreamer and ffmpeg
+come prebuilt from cache.nixos.org. Outside NixOS, Nix-built apps usually
+can't load the system's GPU drivers, so expect the window to draw in software
+and recordings to use x264 or OpenH264 instead of VA-API (`qrec doctor` says
+which); nixGL may give it the system's OpenGL. Neither has been tried.
+
+An AppImage, an AUR package and a .deb are on the way (issue #9).
+
 ## Build and run
 
 Everything comes from the Nix flake (GStreamer, GTK and Rust aren't
