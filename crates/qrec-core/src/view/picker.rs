@@ -13,6 +13,7 @@ use std::path::Path;
 use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
 
+use crate::config::{ProjectFolder, ProjectsDefaults};
 use crate::new_project;
 use crate::recents::RecentProjects;
 use crate::view::format;
@@ -116,11 +117,14 @@ const NAME_BONUS: u32 = 100_000;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum NewProjectHint {
-    /// Nothing typed: how the field works.
+    /// Nothing typed, with no project folders: how the field works.
     Idle { text: String },
-    /// Where the project would go.
-    Creates { path: String },
-    /// A name, with no projects folder to put it in.
+    /// Nothing typed: a name goes in the chosen folder (`name`, at `path`).
+    GoesIn { name: String, path: String },
+    /// Where the project would go; `note` says that a path ignores the
+    /// folder menu (when there is one).
+    Creates { path: String, note: Option<String> },
+    /// A name, with no project folders to put it in.
     NeedsFolder { text: String },
     /// It can't be made.
     Problem { text: String },
@@ -133,41 +137,111 @@ impl NewProjectHint {
     }
 }
 
-/// The hint for `typed`. `cwd` and `projects_folder` as in
-/// [`new_project::resolve`]; nothing here looks at the disk.
+/// The folder a name goes in: the one `chosen` names, else the default
+/// (a `chosen` that is gone, say renamed meanwhile, falls back too).
+pub fn chosen_folder<'a>(
+    projects: &'a ProjectsDefaults,
+    chosen: Option<&str>,
+) -> Option<&'a ProjectFolder> {
+    chosen
+        .and_then(|name| projects.find(name))
+        .or_else(|| projects.default_folder())
+}
+
+/// The hint for `typed`. `cwd` as in [`new_project::resolve`]; `folder` is
+/// where a name goes ([`chosen_folder`]), `has_folders` whether there are
+/// project folders at all. Nothing here looks at the disk.
 pub fn new_project_hint(
     typed: &str,
     cwd: Option<&Path>,
-    projects_folder: Option<&str>,
+    folder: Option<&ProjectFolder>,
     home: Option<&str>,
 ) -> NewProjectHint {
     let typed = typed.trim();
+    let shown = |path: &str| format::display_path(path, "", home);
+    let none_yet = |example: &str| {
+        format!("There are no project folders yet. Add one, or type a path such as ./{example}.")
+    };
     if typed.is_empty() {
-        return NewProjectHint::Idle {
-            text: match projects_folder {
-                Some(folder) => format!(
-                    "A name goes in {}. A path, with a slash, goes where it says.",
-                    format::display_path(folder, "", home)
-                ),
-                None => "Type a path, such as ./demo or /mnt/videos/demo.".to_owned(),
+        return match folder {
+            Some(folder) => NewProjectHint::GoesIn {
+                name: folder.name.clone(),
+                path: shown(&folder.path),
+            },
+            None => NewProjectHint::Idle {
+                text: none_yet("demo"),
             },
         };
     }
     let target = OsStr::new(typed);
-    if projects_folder.is_none() && !new_project::is_path(target) && typed != "." && typed != ".." {
+    let is_path = new_project::is_path(target);
+    if folder.is_none() && !is_path && typed != "." && typed != ".." {
         return NewProjectHint::NeedsFolder {
-            text: format!(
-                "No projects folder is set. Choose one, or type a path such as ./{typed}."
-            ),
+            text: none_yet(typed),
         };
     }
-    match new_project::resolve(target, cwd, projects_folder) {
+    match new_project::resolve(target, cwd, folder.map(|f| f.path.as_str())) {
         Ok(path) => NewProjectHint::Creates {
-            path: format::display_path(&path.dir().to_string_lossy(), "", home),
+            path: shown(&path.dir().to_string_lossy()),
+            note: (is_path && folder.is_some())
+                .then(|| "A path goes where it says, not in a project folder.".to_owned()),
         },
         Err(e) => NewProjectHint::Problem {
             text: format::capitalized(&e.message),
         },
+    }
+}
+
+/// The New project page's folder menu (design/boards/09-project-folders).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderMenuView {
+    /// The chosen folder's name, what the button shows after "in"; `None`
+    /// when there are no folders (no button, the "Add a project folder…"
+    /// link instead).
+    pub chosen: Option<String>,
+    /// For screen readers: "Project folder: work".
+    pub accessible: String,
+    pub rows: Vec<FolderMenuRow>,
+}
+
+/// One folder in the menu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderMenuRow {
+    pub name: String,
+    /// The path as people read it (`~/Videos/work`).
+    pub path: String,
+    /// A name goes here now (the check).
+    pub chosen: bool,
+    /// The default folder (its badge; the others offer Make default).
+    pub default: bool,
+}
+
+/// The menu for `projects` with `chosen` picked ([`chosen_folder`]).
+pub fn folder_menu(
+    projects: &ProjectsDefaults,
+    chosen: Option<&str>,
+    home: Option<&str>,
+) -> FolderMenuView {
+    let picked = chosen_folder(projects, chosen).map(|f| f.name.clone());
+    let default = projects.default_folder().map(|f| f.name.clone());
+    FolderMenuView {
+        accessible: match &picked {
+            Some(name) => format!("Project folder: {name}"),
+            None => "No project folders".to_owned(),
+        },
+        rows: projects
+            .folders
+            .iter()
+            .map(|f| FolderMenuRow {
+                name: f.name.clone(),
+                path: format::display_path(&f.path, "", home),
+                chosen: picked.as_deref() == Some(f.name.as_str()),
+                default: default.as_deref() == Some(f.name.as_str()),
+            })
+            .collect(),
+        chosen: picked,
     }
 }
 
@@ -267,44 +341,89 @@ mod tests {
         assert!(all[1].openable(), "still being looked at");
     }
 
-    fn hint(typed: &str, folder: Option<&str>) -> NewProjectHint {
-        new_project_hint(typed, Some(Path::new("/home/shrek/swamp")), folder, HOME)
+    fn folder(name: &str, path: &str) -> ProjectFolder {
+        ProjectFolder {
+            name: name.into(),
+            path: path.into(),
+        }
+    }
+
+    fn hint(typed: &str, path: Option<&str>) -> NewProjectHint {
+        let folder = path.map(|p| folder("videos", p));
+        new_project_hint(
+            typed,
+            Some(Path::new("/home/shrek/swamp")),
+            folder.as_ref(),
+            HOME,
+        )
     }
 
     #[test]
     fn the_hint_follows_the_rule() {
-        let creates = |path: &str| NewProjectHint::Creates { path: path.into() };
+        let creates = |path: &str, note: bool| NewProjectHint::Creates {
+            path: path.into(),
+            note: note.then(|| "A path goes where it says, not in a project folder.".into()),
+        };
         let folder = Some("/home/shrek/videos");
-        assert_eq!(hint("demo", folder), creates("~/videos/demo"));
-        assert_eq!(hint("  demo  ", folder), creates("~/videos/demo"));
-        assert_eq!(hint("./demo", folder), creates("~/swamp/demo"));
-        assert_eq!(hint("./demo", None), creates("~/swamp/demo"));
-        assert_eq!(hint("/mnt/demo", None), creates("/mnt/demo"));
+        assert_eq!(hint("demo", folder), creates("~/videos/demo", false));
+        assert_eq!(hint("  demo  ", folder), creates("~/videos/demo", false));
+        assert_eq!(hint("./demo", folder), creates("~/swamp/demo", true));
+        assert_eq!(hint("./demo", None), creates("~/swamp/demo", false));
+        assert_eq!(hint("/mnt/demo", None), creates("/mnt/demo", false));
         assert!(hint("/mnt/demo", None).can_create());
     }
 
     #[test]
     fn a_name_without_a_folder_asks_for_one() {
         let needs = hint("demo", None);
-        assert!(matches!(needs, NewProjectHint::NeedsFolder { .. }));
         assert!(!needs.can_create());
         let NewProjectHint::NeedsFolder { text } = needs else {
-            unreachable!()
+            panic!("{needs:?}")
         };
+        assert!(text.contains("no project folders"), "{text}");
         assert!(text.contains("./demo"), "{text}");
     }
 
     #[test]
     fn nothing_typed_explains_the_field() {
-        let NewProjectHint::Idle { text } = hint("", Some("/home/shrek/videos")) else {
-            panic!("not idle");
-        };
-        assert!(text.contains("~/videos"), "{text}");
+        assert_eq!(
+            hint("", Some("/home/shrek/videos")),
+            NewProjectHint::GoesIn {
+                name: "videos".into(),
+                path: "~/videos".into()
+            }
+        );
         let NewProjectHint::Idle { text } = hint("  ", None) else {
             panic!("not idle");
         };
         assert!(text.contains("./demo"), "{text}");
         assert!(!hint("", None).can_create());
+    }
+
+    #[test]
+    fn the_folder_menu_marks_the_chosen_and_the_default() {
+        let projects = ProjectsDefaults {
+            default_folder: Some("work".into()),
+            open_last: false,
+            folders: vec![
+                folder("work", "/home/shrek/Videos/work"),
+                folder("clients", "/srv/clients"),
+            ],
+        };
+        let menu = folder_menu(&projects, None, HOME);
+        assert_eq!(menu.chosen.as_deref(), Some("work"));
+        assert_eq!(menu.accessible, "Project folder: work");
+        assert_eq!(menu.rows[0].path, "~/Videos/work");
+        assert!(menu.rows[0].chosen && menu.rows[0].default);
+        let menu = folder_menu(&projects, Some("clients"), HOME);
+        assert!(!menu.rows[0].chosen && menu.rows[0].default);
+        assert!(menu.rows[1].chosen && !menu.rows[1].default);
+        // A choice that is gone falls back to the default.
+        let menu = folder_menu(&projects, Some("renamed"), HOME);
+        assert_eq!(menu.chosen.as_deref(), Some("work"));
+        let none = folder_menu(&ProjectsDefaults::default(), None, HOME);
+        assert_eq!(none.chosen, None);
+        assert!(none.rows.is_empty());
     }
 
     #[test]

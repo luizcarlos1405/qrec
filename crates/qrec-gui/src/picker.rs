@@ -27,7 +27,7 @@ use std::thread;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use qrec_core::CoreError;
-use qrec_core::config::UserConfig;
+use qrec_core::config::{ProjectsDefaults, UserConfig};
 use qrec_core::error::NOT_MY_SWAMP;
 use qrec_core::keymap::{self, Keymap};
 use qrec_core::new_project;
@@ -238,9 +238,11 @@ struct Picker {
     keymap: Keymap,
     /// Kept for the window's life: its providers and its art.
     _theme: Theme,
-    /// The default project folder's path: where a name goes (SPEC §4.4).
-    projects_folder: RefCell<Option<String>>,
-    projects: RefCell<qrec_core::config::ProjectsDefaults>,
+    /// The project folders (SPEC §4.4), as the file held them last.
+    projects: RefCell<ProjectsDefaults>,
+    /// The folder chosen in the menu for this project; `None`: the default.
+    /// Choosing never changes the default (only Make default does).
+    chosen: RefCell<Option<String>>,
     recents: RefCell<RecentProjects>,
     /// What each recent folder turned out to be.
     states: RefCell<BTreeMap<String, FolderState>>,
@@ -266,6 +268,12 @@ struct Picker {
     slow_checks: Cell<bool>,
     entry: gtk::Entry,
     hint: gtk::Label,
+    /// "in 📁 work ▾": the folder a name goes in, and its menu.
+    folder_button: gtk::MenuButton,
+    folder_name: gtk::Label,
+    folder_popover: gtk::Popover,
+    folder_rows: gtk::ListBox,
+    /// "Add a project folder…", while there are none.
     folder_link: gtk::Button,
     create: gtk::Button,
     cancel: gtk::Button,
@@ -439,7 +447,42 @@ impl Picker {
         let new_error = wrapping(&["picker-error"]);
         new_error.set_widget_name("picker-new-error");
         new_error.set_visible(false);
-        let folder_link = button::link("Choose a projects folder…");
+        // The folder menu (design/boards/09-project-folders).
+        let folder_rows = gtk::ListBox::new();
+        folder_rows.set_widget_name("picker-folder-rows");
+        folder_rows.add_css_class("picker-folder-rows");
+        folder_rows.set_selection_mode(gtk::SelectionMode::None);
+        let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        menu.add_css_class("picker-folder-menu");
+        let menu_label = label("Project folders", &["t-caption-strong", "muted"]);
+        menu_label.add_css_class("picker-folder-menu-label");
+        menu.append(&menu_label);
+        menu.append(&folder_rows);
+        let folder_popover = gtk::Popover::new();
+        folder_popover.set_has_arrow(false);
+        folder_popover.set_position(gtk::PositionType::Bottom);
+        folder_popover.add_css_class("qrec-popover");
+        folder_popover.set_child(Some(&menu));
+        let folder_name = label("", &["t-body-strong"]);
+        folder_name.set_widget_name("picker-folder-name");
+        let folder_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        folder_content.append(&label("in", &["t-body", "muted"]));
+        folder_content.append(&gtk::Image::from_icon_name("qrec-folder-symbolic"));
+        folder_content.append(&folder_name);
+        folder_content.append(&gtk::Image::from_icon_name("qrec-chevron-down-symbolic"));
+        let folder_button = button::popover_button(
+            &folder_popover,
+            &folder_content,
+            &["secondary", "picker-folder-button"],
+            "Project folder",
+        );
+        folder_button.set_widget_name("picker-folder");
+        folder_button.set_valign(gtk::Align::Center);
+        let field_line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        entry.set_hexpand(true);
+        field_line.append(&entry);
+        field_line.append(&folder_button);
+        let folder_link = button::link("Add a project folder…");
         folder_link.set_widget_name("picker-projects-folder");
         folder_link.set_halign(gtk::Align::Start);
         let create = button::labeled("Create", None, None, &keymap, Kind::Primary);
@@ -466,7 +509,7 @@ impl Picker {
         form.add_css_class("picker-page");
         form.append(&title);
         form.append(&field_label);
-        form.append(&entry);
+        form.append(&field_line);
         form.append(&hint);
         form.append(&new_error);
         form.append(&folder_link);
@@ -475,6 +518,7 @@ impl Picker {
         new_page.append(&column(&form, theme.scale()));
         new_page.append(&hints(&[
             (&["Enter"], "Create"),
+            (&["Alt", "↓"], "Folder"),
             (&["Esc"], "Back"),
             (&["Ctrl", "Q"], "Quit"),
         ]));
@@ -496,8 +540,8 @@ impl Picker {
             home,
             keymap,
             _theme: theme,
-            projects_folder: RefCell::new(default_path(&config.projects)),
             projects: RefCell::new(config.projects),
+            chosen: RefCell::new(None),
             recents: RefCell::new(recents),
             states: RefCell::new(BTreeMap::new()),
             shown: RefCell::new(Vec::new()),
@@ -517,6 +561,10 @@ impl Picker {
             slow_checks: Cell::new(false),
             entry,
             hint,
+            folder_button,
+            folder_name,
+            folder_popover,
+            folder_rows,
             folder_link,
             create,
             cancel,
@@ -556,9 +604,33 @@ impl Picker {
         let run = on(Self::refresh_hint);
         self.entry
             .connect_changed(guarded!("the picker: the field", move |_| run()));
-        let run = on(Self::choose_projects_folder);
+        let run = on(Self::add_project_folder);
         self.folder_link
-            .connect_clicked(guarded!("the picker: projects folder", move |_| run()));
+            .connect_clicked(guarded!("the picker: add a project folder", move |_| run()));
+        // The menu opens on the chosen folder, so ↑ ↓ Enter start there.
+        let weak = Rc::downgrade(self);
+        self.folder_popover
+            .connect_map(guarded!("the picker: the folder menu opens", move |_| {
+                let Some(picker) = weak.upgrade() else { return };
+                let want = format!("picker-folder-row-{}", picker.folder_name.text());
+                let mut child = picker.folder_rows.first_child();
+                while let Some(row) = child {
+                    if row.widget_name() == want {
+                        row.grab_focus();
+                        break;
+                    }
+                    child = row.next_sibling();
+                }
+            }));
+        let weak = Rc::downgrade(self);
+        self.folder_rows.connect_row_activated(guarded!(
+            "the picker: a project folder",
+            move |_, row| {
+                if let Some(picker) = weak.upgrade() {
+                    picker.folder_row_activated(row);
+                }
+            }
+        ));
         let run = on(Self::refresh_rows);
         self.search
             .connect_search_changed(guarded!("the picker: the search", move |_| run()));
@@ -595,6 +667,17 @@ impl Picker {
             gdk::Key::o if ctrl && on_list => self.choose_folder(),
             gdk::Key::Down if on_list => self.move_selection(1),
             gdk::Key::Up if on_list => self.move_selection(-1),
+            gdk::Key::Down
+                if !on_list
+                    && modifiers.contains(gdk::ModifierType::ALT_MASK)
+                    && self.folder_button.is_visible()
+                    && self.folder_button.is_sensitive() =>
+            {
+                self.folder_button.popup();
+            }
+            gdk::Key::Escape if !on_list && self.folder_popover.is_visible() => {
+                self.folder_popover.popdown();
+            }
             gdk::Key::Escape if !on_list => self.show_list(),
             gdk::Key::Escape if !self.search.text().is_empty() => self.search.set_text(""),
             _ => return glib::Propagation::Proceed,
@@ -904,28 +987,51 @@ impl Picker {
         self.search.grab_focus();
     }
 
-    /// What the field says about what was typed; Create follows it.
+    /// What the field says about what was typed; Create follows it. The
+    /// folder button shows the chosen folder, dimmed for a path.
     fn refresh_hint(self: &Rc<Self>) {
         self.new_error.set_visible(false);
         self.entry.remove_css_class("invalid");
-        let folder = self.projects_folder.borrow().clone();
-        let hint = picker::new_project_hint(
-            &self.entry.text(),
-            self.args.cwd.as_deref(),
-            folder.as_deref(),
-            self.home.as_deref(),
-        );
+        let typed = self.entry.text();
+        let (hint, menu) = {
+            let projects = self.projects.borrow();
+            let chosen = self.chosen.borrow();
+            let folder = picker::chosen_folder(&projects, chosen.as_deref());
+            (
+                picker::new_project_hint(
+                    &typed,
+                    self.args.cwd.as_deref(),
+                    folder,
+                    self.home.as_deref(),
+                ),
+                picker::folder_menu(&projects, chosen.as_deref(), self.home.as_deref()),
+            )
+        };
         self.create.set_sensitive(hint.can_create());
         self.hint.remove_css_class("record-text");
+        let mono = |path: &str| {
+            format!(
+                "<span font_family=\"JetBrains Mono\" size=\"92%\">{}</span>",
+                glib::markup_escape_text(path)
+            )
+        };
         let markup = match &hint {
             NewProjectHint::Idle { text } | NewProjectHint::NeedsFolder { text } => {
                 glib::markup_escape_text(text).to_string()
             }
-            // The path in mono, as every path (DESIGN Typography).
-            NewProjectHint::Creates { path } => format!(
-                "Creates <span font_family=\"JetBrains Mono\" size=\"92%\">{}</span>",
-                glib::markup_escape_text(path)
+            NewProjectHint::GoesIn { name, path } => format!(
+                "A name goes in <b>{}</b>, {}. A path, with a slash, goes where it says.",
+                glib::markup_escape_text(name),
+                mono(path)
             ),
+            // The path in mono, as every path (DESIGN Typography).
+            NewProjectHint::Creates { path, note } => {
+                let note = note
+                    .as_deref()
+                    .map(|n| format!(". {}", glib::markup_escape_text(n)))
+                    .unwrap_or_default();
+                format!("Creates {}{note}", mono(path))
+            }
             NewProjectHint::Problem { text } => {
                 self.entry.add_css_class("invalid");
                 self.hint.add_css_class("record-text");
@@ -933,15 +1039,105 @@ impl Picker {
             }
         };
         self.hint.set_markup(&markup);
-        let link = match &folder {
-            Some(folder) => format!("Change the projects folder ({})…", self.shown_path(folder)),
-            None => "Choose a projects folder…".to_owned(),
-        };
-        if let Some(child) = self.folder_link.child().and_downcast::<gtk::Label>() {
-            child.set_text(&link);
+        match &menu.chosen {
+            Some(name) => {
+                self.folder_button.set_visible(true);
+                self.folder_link.set_visible(false);
+                self.folder_name.set_text(name);
+                button::set_menu_label(&self.folder_button, &menu.accessible);
+            }
+            None => {
+                self.folder_button.set_visible(false);
+                self.folder_link.set_visible(true);
+            }
         }
-        self.folder_link
-            .update_property(&[gtk::accessible::Property::Label(&link)]);
+        // A path goes where it says: the menu plays no part.
+        self.folder_button
+            .set_sensitive(!new_project::is_path(OsStr::new(typed.trim())));
+        self.rebuild_folder_rows(&menu);
+    }
+
+    /// The menu's rows: each folder (the chosen one checked, the default
+    /// one's badge, Make default on the others), then Add a folder….
+    fn rebuild_folder_rows(self: &Rc<Self>, menu: &picker::FolderMenuView) {
+        while let Some(row) = self.folder_rows.first_child() {
+            self.folder_rows.remove(&row);
+        }
+        for folder in &menu.rows {
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            line.add_css_class("picker-folder-row");
+            let check = gtk::Image::from_icon_name("qrec-check-symbolic");
+            check.add_css_class("accent-text");
+            check.set_opacity(if folder.chosen { 1.0 } else { 0.0 });
+            line.append(&check);
+            let text = gtk::Box::new(gtk::Orientation::Vertical, 1);
+            text.set_hexpand(true);
+            text.append(&label(&folder.name, &["t-body"]));
+            let path = label(&folder.path, &["t-mono-xs", "muted"]);
+            path.set_ellipsize(gtk::pango::EllipsizeMode::Start);
+            path.set_max_width_chars(36);
+            text.append(&path);
+            line.append(&text);
+            if folder.default {
+                let badge = label("Default", &["folder-badge"]);
+                badge.set_valign(gtk::Align::Center);
+                line.append(&badge);
+            } else {
+                let make = gtk::Button::with_label("Make default");
+                make.add_css_class("qrec-link");
+                make.add_css_class("folder-make-default");
+                make.set_valign(gtk::Align::Center);
+                make.update_property(&[gtk::accessible::Property::Label(&format!(
+                    "Make {} the default folder",
+                    folder.name
+                ))]);
+                let (weak, name) = (Rc::downgrade(self), folder.name.clone());
+                make.connect_clicked(guarded!(
+                    "the picker: make a folder the default",
+                    move |_| {
+                        if let Some(picker) = weak.upgrade() {
+                            picker.edit_folders(project_folders::FolderEdit::SetDefault {
+                                name: name.clone(),
+                            });
+                        }
+                    }
+                ));
+                line.append(&make);
+            }
+            let row = gtk::ListBoxRow::new();
+            row.set_widget_name(&format!("picker-folder-row-{}", folder.name));
+            row.set_child(Some(&line));
+            row.update_property(&[gtk::accessible::Property::Label(&format!(
+                "{}, {}{}",
+                folder.name,
+                folder.path,
+                if folder.default { ", default" } else { "" }
+            ))]);
+            self.folder_rows.append(&row);
+        }
+        let add = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        add.add_css_class("picker-folder-row");
+        add.add_css_class("picker-folder-add");
+        add.append(&gtk::Image::from_icon_name("qrec-plus-symbolic"));
+        add.append(&label("Add a folder…", &["t-body"]));
+        let row = gtk::ListBoxRow::new();
+        row.set_widget_name("picker-folder-add");
+        row.set_child(Some(&add));
+        self.folder_rows.append(&row);
+    }
+
+    /// A row of the menu: that folder chosen, or Add a folder….
+    fn folder_row_activated(self: &Rc<Self>, row: &gtk::ListBoxRow) {
+        let name = row.widget_name();
+        self.folder_popover.popdown();
+        if name == "picker-folder-add" {
+            return self.add_project_folder();
+        }
+        if let Some(folder) = name.strip_prefix("picker-folder-row-") {
+            *self.chosen.borrow_mut() = Some(folder.to_owned());
+            self.refresh_hint();
+            self.entry.grab_focus();
+        }
     }
 
     fn create_project(self: &Rc<Self>) {
@@ -949,12 +1145,18 @@ impl Picker {
             return;
         }
         let typed = self.entry.text().trim().to_owned();
-        let folder = self.projects_folder.borrow().clone();
-        let target = new_project::resolve(
-            OsStr::new(&typed),
-            self.args.cwd.as_deref(),
-            folder.as_deref(),
-        );
+        let target = {
+            let projects = self.projects.borrow();
+            let chosen = self.chosen.borrow();
+            let folder =
+                picker::chosen_folder(&projects, chosen.as_deref()).map(|f| f.name.clone());
+            new_project::resolve_in(
+                OsStr::new(&typed),
+                self.args.cwd.as_deref(),
+                &projects,
+                folder.as_deref(),
+            )
+        };
         let target = match target {
             Ok(target) => target,
             Err(e) => return self.show_new_error(&format::capitalized(&e.message)),
@@ -988,50 +1190,69 @@ impl Picker {
         );
     }
 
-    fn choose_projects_folder(self: &Rc<Self>) {
+    /// Add a folder…: the folder chooser, then the folder under its own
+    /// name (`videos 2` when taken), chosen for this project.
+    fn add_project_folder(self: &Rc<Self>) {
         let dialog = gtk::FileDialog::builder()
-            .title("Choose the projects folder")
+            .title("Add a project folder")
             .modal(true)
             .build();
-        let folder = self.projects_folder.borrow().clone();
-        if let Some(folder) = folder {
-            dialog.set_initial_folder(Some(&gio::File::for_path(folder)));
-        }
         let weak = Rc::downgrade(self);
         dialog.select_folder(
             Some(&self.window),
             gio::Cancellable::NONE,
-            guarded!("the picker: the projects folder dialog", move |result| {
+            guarded!("the picker: the project folder dialog", move |result| {
                 let Some(picker) = weak.upgrade() else { return };
                 match result.map(|folder| folder.path()) {
-                    Ok(Some(dir)) => picker.set_projects_folder(&dir),
+                    Ok(Some(dir)) => picker.add_folder_at(&dir),
                     Ok(None) => picker.show_new_error("That folder isn't on this computer."),
-                    Err(e) => tracing::debug!("the picker: no projects folder picked: {e}"),
+                    Err(e) => tracing::debug!("the picker: no project folder picked: {e}"),
                 }
             }),
         );
     }
 
-    /// Makes the chosen folder the default project folder (added when it
-    /// isn't one), as Settings and `qrec folders` do.
-    fn set_projects_folder(self: &Rc<Self>, dir: &Path) {
+    fn add_folder_at(self: &Rc<Self>, dir: &Path) {
+        let Some(path) = dir.to_str().map(str::to_owned) else {
+            return self.show_new_error("That folder's path can't be saved in the settings.");
+        };
+        let projects = self.projects.borrow().clone();
+        let edit = match projects.folders.iter().find(|f| Path::new(&f.path) == dir) {
+            // Already one: just choose it.
+            Some(folder) => {
+                *self.chosen.borrow_mut() = Some(folder.name.clone());
+                return self.refresh_hint();
+            }
+            None => project_folders::FolderEdit::Add {
+                name: project_folders::unused_name_for_path(&projects, &path),
+                path,
+                make_default: false,
+            },
+        };
+        if let project_folders::FolderEdit::Add { name, .. } = &edit {
+            *self.chosen.borrow_mut() = Some(name.clone());
+        }
+        self.edit_folders(edit);
+    }
+
+    /// Saves one change to the project folders, as Settings and `qrec
+    /// folders` do, then shows the folders the file holds.
+    fn edit_folders(self: &Rc<Self>, edit: project_folders::FolderEdit) {
         let Some(dirs) = self.dirs.clone() else {
             return self.show_new_error("Can't find where the settings live.");
         };
-        let Some(value) = dir.to_str().map(str::to_owned) else {
-            return self.show_new_error("That folder's path can't be saved in the settings.");
-        };
-        let edit = project_folders::make_default_path(&self.projects.borrow(), &value);
         background(
-            "the picker: the projects folder",
+            "the picker: the project folders",
             move || config_file::edit_folders(&dirs.config_file(), &edit),
             |picker, saved| match saved {
                 Ok(config) => {
-                    *picker.projects_folder.borrow_mut() = default_path(&config.projects);
                     *picker.projects.borrow_mut() = config.projects;
                     picker.refresh_hint();
                 }
-                Err(e) => picker.show_new_error(&format::capitalized(&e.message)),
+                Err(e) => {
+                    picker.refresh_hint();
+                    picker.show_new_error(&format::capitalized(&e.message));
+                }
             },
         );
     }
@@ -1105,9 +1326,4 @@ fn hints(items: &[(&[&str], &str)]) -> gtk::Box {
         bar.append(&hint);
     }
     bar
-}
-
-/// The default project folder's path.
-fn default_path(projects: &qrec_core::config::ProjectsDefaults) -> Option<String> {
-    projects.default_folder().map(|f| f.path.clone())
 }

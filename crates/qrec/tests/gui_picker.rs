@@ -142,6 +142,12 @@ fn the_picker_makes_a_new_project() {
         &["folders", "add", "videos", projects_home.to_str().unwrap()],
     );
     assert_eq!(set["ok"], true, "{set}");
+    let clients = fs::canonicalize(nested.env.empty_dir("clients")).expect("the folder");
+    let set = nested.cli_json(
+        &elsewhere,
+        &["folders", "add", "clients", clients.to_str().unwrap()],
+    );
+    assert_eq!(set["ok"], true, "{set}");
     nested.launch(&elsewhere, Launch::bare_in(&elsewhere, &[]));
     wait_picker(&nested);
     nested.screenshot("empty");
@@ -153,11 +159,21 @@ fn the_picker_makes_a_new_project() {
     wtype(&nested, &["-M", "ctrl", "-k", "n", "-m", "ctrl"]);
     wtype(&nested, &["demo"]);
     nested.screenshot("new");
+    // Another folder, chosen from the menu: the project goes there and the
+    // default stays (design/boards/09-project-folders).
+    wtype(&nested, &["-M", "alt", "-k", "Down", "-m", "alt"]);
+    std::thread::sleep(Duration::from_millis(700));
+    nested.screenshot("folder-menu");
+    wtype(&nested, &["-k", "Down", "-k", "Return"]);
+    nested.screenshot("clients");
     wtype(&nested, &["-k", "Return"]);
-    let project = projects_home.join("demo");
+    let project = clients.join("demo");
     poll(OPEN, "the new project's file", || {
         project.join("qrec.json").is_file().then_some(())
     });
+    assert!(!projects_home.join("demo").exists());
+    let list = nested.cli_json(&elsewhere, &["folders"]);
+    assert_eq!(list["data"]["defaultFolder"], "videos", "{list}");
     opened_then_close(&mut nested, &project);
 }
 
@@ -204,13 +220,19 @@ fn a_broken_last_project_offers_the_picker() {
     assert_eq!(nested.window(0).wait_exit(OPEN), Some(1), "X3's exit code");
 }
 
-/// Settings › Project shows the machine's settings under the canvas, and
-/// they reach `config.toml`.
+/// Settings › Project shows the machine's settings under the canvas (the
+/// project folders with the default marked), and they reach `config.toml`.
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn the_settings_page_has_the_projects_settings() {
     let mut nested = Nested::start(AREA, "settings", Options::default());
     let project = fixture(&nested, "rust-traits-talk");
+    let work = fs::canonicalize(nested.env.empty_dir("work")).expect("the folder");
+    let set = nested.cli_json(
+        &project,
+        &["folders", "add", "work", work.to_str().unwrap()],
+    );
+    assert_eq!(set["ok"], true, "{set}");
     nested.launch(&project, Launch::default());
     wait_for_gui_host(&nested, &project, OPEN);
     poll(OPEN, "the project open", || {
@@ -232,8 +254,9 @@ fn the_settings_page_has_the_projects_settings() {
     for want in [
         "All projects",
         "Open the last project on start",
-        "Projects folder",
-        "Not set",
+        "Project folders",
+        "work",
+        "Default",
     ] {
         assert!(labels.iter().any(|l| l == want), "{want}: {labels:?}");
     }

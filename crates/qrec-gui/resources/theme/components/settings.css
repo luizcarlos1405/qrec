@@ -96,3 +96,43 @@ dropdown.settings-dropdown > button {
   padding: 0 24px;
   border-top: 1px solid var(--qrec-border);
 }
+
+/* All projects › Project folders (design/boards/09-project-folders): the
+   list under its head, the default one's badge, Make default on hover. */
+.qrec-settings .settings-folders {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--qrec-border);
+}
+
+.qrec-settings .settings-folder-list {
+  border-radius: var(--qrec-radius-md);
+  background-color: var(--qrec-surface);
+  box-shadow: inset 0 0 0 1px var(--qrec-border);
+}
+
+.qrec-settings .settings-folders-empty {
+  padding: 14px 12px;
+}
+
+.qrec-settings .settings-folder {
+  min-height: 48px;
+  padding: 0 8px 0 12px;
+}
+
+.qrec-settings .settings-folder:hover {
+  background-color: var(--qrec-hover);
+}
+
+.qrec-settings .settings-folder + .settings-folder {
+  border-top: 1px solid var(--qrec-border);
+}
+
+.qrec-settings button.folder-make-default {
+  color: var(--qrec-accent-text);
+  opacity: 0;
+}
+
+.qrec-settings .settings-folder:hover button.folder-make-default,
+.qrec-settings button.folder-make-default:focus:focus-visible {
+  opacity: 1;
+}

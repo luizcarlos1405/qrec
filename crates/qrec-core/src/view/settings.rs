@@ -302,18 +302,26 @@ pub struct AllProjectsView {
     pub open_last_label: String,
     pub open_last_caption: String,
     pub open_last: bool,
-    pub folder_label: String,
-    pub folder_caption: String,
-    /// The folder as people read it, or that there is none.
-    pub folder_shown: String,
-    pub folder_set: bool,
+    pub folders_label: String,
+    pub folders_caption: String,
+    /// The project folders in their order, the default one marked.
+    pub folders: Vec<FolderRowView>,
+    /// What the list says with no folders.
+    pub folders_empty: String,
+}
+
+/// One project folder in Settings › Project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderRowView {
+    pub name: String,
+    /// The path as people read it (`~/Videos/work`).
+    pub path: String,
+    pub default: bool,
 }
 
 /// The group for `config`.
 pub fn all_projects(config: &UserConfig, home: Option<&str>) -> AllProjectsView {
-    // Until the project folders' boards are approved, the group shows the
-    // default one (SPEC §4.4).
-    let folder = config.projects.default_folder().map(|f| f.path.as_str());
     AllProjectsView {
         group: "All projects".to_owned(),
         caption: "On this computer, for every project.".to_owned(),
@@ -321,13 +329,20 @@ pub fn all_projects(config: &UserConfig, home: Option<&str>) -> AllProjectsView 
         open_last_caption: "Running qrec outside a project opens the last one, not the picker."
             .to_owned(),
         open_last: config.projects.open_last,
-        folder_label: "Projects folder".to_owned(),
-        folder_caption: "Where a new project given by name goes.".to_owned(),
-        folder_shown: folder.map_or_else(
-            || "Not set".to_owned(),
-            |folder| format::display_path(folder, "", home),
-        ),
-        folder_set: folder.is_some(),
+        folders_label: "Project folders".to_owned(),
+        folders_caption:
+            "Where a new project given by name goes. The default is used when you don't pick one."
+                .to_owned(),
+        folders: crate::project_folders::rows(&config.projects)
+            .into_iter()
+            .map(|row| FolderRowView {
+                path: format::display_path(&row.path, "", home),
+                name: row.name,
+                default: row.default,
+            })
+            .collect(),
+        folders_empty: "No project folders yet. A new project needs a path until you add one."
+            .to_owned(),
     }
 }
 
@@ -343,8 +358,7 @@ mod tests {
         let mut config = UserConfig::default();
         let unset = all_projects(&config, Some("/home/shrek"));
         assert!(!unset.open_last, "off by default");
-        assert!(!unset.folder_set);
-        assert_eq!(unset.folder_shown, "Not set");
+        assert!(unset.folders.is_empty());
         config.projects.open_last = true;
         config.projects.folders = vec![crate::config::ProjectFolder {
             name: "videos".into(),
@@ -352,8 +366,14 @@ mod tests {
         }];
         let set = all_projects(&config, Some("/home/shrek"));
         assert!(set.open_last);
-        assert!(set.folder_set);
-        assert_eq!(set.folder_shown, "~/videos");
+        assert_eq!(
+            set.folders,
+            [FolderRowView {
+                name: "videos".into(),
+                path: "~/videos".into(),
+                default: true
+            }]
+        );
     }
 
     #[test]

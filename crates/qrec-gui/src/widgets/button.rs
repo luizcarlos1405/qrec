@@ -340,6 +340,29 @@ pub fn menu_button(
     button
 }
 
+/// [`menu_button`] over a popover of the caller's (rows a `gio::Menu`
+/// can't draw: the picker's folder menu), with `child` as its content.
+pub fn popover_button(
+    popover: &gtk::Popover,
+    child: &impl IsA<gtk::Widget>,
+    classes: &[&str],
+    label: &str,
+) -> gtk::MenuButton {
+    let button = gtk::MenuButton::new();
+    button.set_popover(Some(popover));
+    button.set_child(Some(child));
+    button.add_css_class("qrec-menu-button");
+    if let Some(inner) = menu_inner_button(&button) {
+        inner.add_css_class("qrec-btn");
+        for class in classes {
+            inner.add_css_class(class);
+        }
+        inner.set_focus_on_click(false);
+    }
+    set_menu_label(&button, label);
+    button
+}
+
 /// Names a menu button and its inner button for screen readers (a row's
 /// overflow says whose it is: "More for layer Face").
 pub fn set_menu_label(button: &gtk::MenuButton, label: &str) {
