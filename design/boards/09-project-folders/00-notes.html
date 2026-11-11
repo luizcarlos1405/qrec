@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Project folders · notes</title>
+  <meta name="description" content="Named project folders with a default one (SPEC §4.4): the picker's folder menu and Settings' folder list. Not approved yet; the questions need your answer.">
+  <meta name="htmlboard" content="width=880">
+  <link rel="stylesheet" href="../styles.css">
+  <style>
+    body { padding: 40px 48px 48px; }
+    h1 { font-family: var(--display); font-weight: 600; font-size: 32px; line-height: 38px; }
+    h2 { font-family: var(--ui); font-weight: 700; font-size: 12px; line-height: 16px; margin: 32px 0 8px; color: var(--qrec-accent-text); text-transform: uppercase; letter-spacing: 0.06em; }
+    p, li { max-width: 72ch; }
+    ol, ul { padding-left: 20px; display: grid; gap: 8px; }
+    li::marker { color: var(--qrec-muted); }
+    code { font-family: var(--mono); font-size: 12px; background: var(--qrec-field); padding: 1px 5px; border-radius: var(--qrec-radius-sm); }
+    b { font-weight: 600; }
+    .lede { margin-top: 8px; color: var(--qrec-muted); }
+    .q { padding: 12px 16px; border: 1px solid var(--qrec-border); border-radius: var(--qrec-radius-md); background: var(--qrec-surface); }
+    .q + .q { margin-top: 8px; }
+    .q .rec { display: block; margin-top: 4px; color: var(--qrec-muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>Project folders</h1>
+  <p class="lede">The single projects folder becomes a list of named folders, one of them the default (SPEC §4.4, §6.4). The CLI is built: <code>qrec folders [add|rename|default|rm]</code> and <code>qrec create NAME --in FOLDER</code>. Until these boards are approved, the GUI keeps the approved 08 boards and works on the default folder only.</p>
+
+  <h2>What's on the board</h2>
+  <ol>
+    <li><b>New project · folder menu</b>: beside the field, <i>in 📁 work ▾</i>, the default to begin with. The hint names the folder. Variants: a name typed, the menu open (the default marked, <i>Make default</i> on the hovered row, <i>Add a folder…</i>), another folder chosen, a path typed (the menu dims: a path goes where it says), no folders yet (no menu, the <i>Add a project folder…</i> link), a taken folder.</li>
+    <li><b>Settings › Project · project folders</b>: the <i>Projects folder</i> row becomes a list in the All projects group. Each row: name, path (mono), <i>Default</i> badge or <i>Make default</i> on hover, rename (✎) and forget (×). <i>Add folder…</i> above. Variants: renaming in place, no folders.</li>
+  </ol>
+
+  <h2>Behavior</h2>
+  <ul>
+    <li><b>Choosing a folder in the picker is for this project only</b>; the default changes only through <i>Make default</i> (menu or Settings) or <code>qrec folders default</code>.</li>
+    <li><b>Add a folder…</b> opens the folder chooser; the new folder is named after its last part (<i>videos</i>, <i>videos 2</i> when taken) and can be renamed in Settings. In the picker it becomes the chosen folder.</li>
+    <li><b>Forget (×)</b> never touches the disk, so it asks nothing: a toast says <i>Forgot clients. The folder is untouched.</i> Forgetting the default makes the first one left the default.</li>
+    <li><b>Keys</b>: <code>Alt+↓</code> opens the menu from the field; in it <code>↑ ↓ Enter Esc</code>.</li>
+  </ul>
+
+  <h2>Questions</h2>
+  <div class="q"><b>1. Should a chosen folder in the picker become the default?</b><span class="rec">Recommended no: the default stays put, and <i>Make default</i> is one click away in the menu.</span></div>
+  <div class="q"><b>2. Should Add folder ask for a name first?</b><span class="rec">Recommended no: the folder's own name is almost always right, and renaming is in Settings. Asking adds a dialog to every add.</span></div>
+  <div class="q"><b>3. Should rows be reorderable?</b><span class="rec">Recommended no for now: the order is the order added, and the default is what matters.</span></div>
+</body>
+</html>
