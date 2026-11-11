@@ -138,7 +138,7 @@ The draft frames, the icons and the art were exported the same day
 1. The approved board (CLAUDE.md: `qrec-gui` follows `design/boards/`).
    The ported boards are pen.dev's html-css export of each approved frame
    (2026-11-10), so exact positions, sizes, paddings, fonts and token names
-   are in the HTML: read the file, or `npx htmlboard@0.9.0 shot <file>` to
+   are in the HTML: read the file, or `npx htmlboard@0.10.0 shot <file>` to
    see it. Each names its pen frame id; the node ids in this document are
    the `data-pencil-id`s in it. `design/qrec.pen` was deleted (git history
    has it): the pen MCP isn't needed any more. The PNGs in `design/screens/` stay as the approved
