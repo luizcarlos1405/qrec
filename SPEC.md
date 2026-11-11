@@ -212,16 +212,35 @@ the file.
 Anything else is rejected with the message _"Not my swamp: this folder isn't
 empty and has no qrec.json"_ and exit code 3. Commands that don't use a
 project still work anywhere: `--help`, `version`, `doctor`, `sources list`,
-`schema`, `keys`, `agent-guide`.
+`schema`, `keys`, `agent-guide`, `config`, `folders`.
 
 **New projects.** `qrec create <name-or-path>` makes a new folder and starts
 a project in it. A slash tells the two apart:
 
-- A **name** (`demo`) goes in the projects folder of the user config
-  (`projects.folder`, §6.4). There is no default place: with none set, a name
-  is a usage error (exit 2).
+- A **name** (`demo`) goes in one of the **project folders** of the user
+  config (§6.4): the one `--in <folder>` names, else the default folder.
+  There is no built-in place: with no project folders, a name is a usage
+  error (exit 2), and so is an `--in` that names none of them.
 - A **path** (`./demo`, `../demo`, `/mnt/videos/demo`) is used as it is,
-  against the current directory when relative. The setting plays no part.
+  against the current directory when relative. The project folders play no
+  part, and `--in` doesn't go with a path (usage, exit 2).
+
+**Project folders.** Each has a name (`work`, `Clients`) and a folder. A name
+is 1 to 40 characters after trimming, without `/` or control characters, and
+no two are the same ignoring case; no two folders have the same path, and
+each path is absolute. Whenever there are project folders, exactly one is the
+default: the first one added becomes it, `qrec folders default <name>` (or
+Settings, or the picker) changes it, and removing it makes the first one left
+the default. Removing a project folder only forgets it: nothing on disk is
+touched, and the projects in it stay in the recent list.
+
+```
+qrec folders                         # the project folders, the default marked
+qrec folders add <name> <path> [--default]   # the path must be a folder already
+qrec folders rename <name> <new-name>
+qrec folders default <name>
+qrec folders rm <name>               # forgets it; the folder is untouched
+```
 
 Only the last part is made; the folder it goes in must already exist. The
 folder rule then decides what becomes of what is there: a folder just made,
@@ -239,7 +258,10 @@ here". `qrec --pick` always shows the picker.
 
 The picker lists the recent projects (§6.4), most recent first, searchable.
 It opens one, opens another folder, and makes a new project with the same
-name-or-path rule as `qrec create`. A folder that has moved stays listed,
+name-or-path rule as `qrec create`: a name goes in the project folder chosen
+beside the field, the default one to begin with, and a path ignores it. The
+picker can add a project folder, so one can be set before any project
+exists. A folder that has moved stays listed,
 marked, until it is removed from the list, which never touches the folder.
 A running window opens the picker from the command palette, in a process of
 its own, so a project it opens gets its own window beside this one.
@@ -603,8 +625,14 @@ copy to `.qrec/qrec.v{N}.json.bak`.
     dev machine; never let the encoder auto-pick, see `RECORDING.md`)
   - UI scale
   - reduced motion
-  - projects folder: where a new project given by name goes (`projects.folder`,
-    unset by default, §4.4)
+  - project folders: the named folders a new project given by name goes in,
+    and which one is the default (`[[projects.folders]]` with `name` and
+    `path`, and `projects.default_folder`; none by default, §4.4). They are
+    changed with `qrec folders`, Settings › Project or the picker, not with
+    `qrec config set`. A file from before named folders, with one
+    `projects.folder = "/path"`, reads as one project folder named after the
+    path's last part (`projects` for `/`) that is the default, and the next
+    change to the project folders saves it in the new shape.
   - open the last project on start (`projects.open_last`, off by default)
 - `keys.toml`: keybinding overrides (§10).
 - `scenes.json`: the saved scenes (§5.6). A file that can't be read counts
@@ -990,7 +1018,8 @@ Timeline positions are clip-relative unless `--timeline` is given.
 qrec                         # open GUI: the cwd's project, else the picker or the last project (§4.4)
 qrec --pick                  # the project picker, whatever the cwd holds
 qrec init [--canvas 1920x1080@30]
-qrec create <name|path> [--canvas 1920x1080@30] [--name NAME]   # new folder + project (§4.4)
+qrec create <name|path> [--in FOLDER] [--canvas 1920x1080@30] [--name NAME]   # new folder + project (§4.4)
+qrec folders [add|rename|default|rm]   # the project folders a name goes in (§4.4)
 qrec status                  # summary; --json = full state + host/recording status
 qrec doctor                  # dependency + portal + device check, niri bind snippet
 qrec sources list            # screens, cameras, mics, system-audio monitors
