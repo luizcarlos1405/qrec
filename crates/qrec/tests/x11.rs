@@ -451,9 +451,10 @@ fn landed(dir: &Path, take: &str) -> Value {
 /// source's own buffers too, which the record bin's `videorate` would
 /// hide), with square pixels on an X screen whose millimetres aren't
 /// (`ximagesrc` would say 11:10), and its ball moved between the first
-/// frame and the last. Once the monitor is gone, a take of it fails
-/// naming the layer instead of grabbing the whole screen (`ximagesrc`'s
-/// fallback for a rectangle it can't grab).
+/// frame and the last. Once the monitor is gone, a take leaves its layer
+/// out (SPEC §5.6), so with nothing else to record it fails, naming the
+/// screen, instead of grabbing the whole screen (`ximagesrc`'s fallback
+/// for a rectangle it can't grab).
 #[test]
 #[ignore = "starts a private Xvfb (scripts/check-full)"]
 fn an_x11_screen_is_recorded_without_the_portal() {
@@ -560,18 +561,15 @@ fn an_x11_screen_is_recorded_without_the_portal() {
     assert!(!tokens.exists(), "no restore token was asked for or saved");
     assert_eq!(x.niri_calls(), "", "niri msg never runs on X11");
 
-    // VIRT-R is gone: the take fails, naming the layer.
+    // VIRT-R is gone: the take would record without it (SPEC §5.6), and
+    // it's the scene's only source, so the take fails, naming the screen.
     x.xvfb.delete_monitor("VIRT-R");
     let (ok, reply, stderr) = x.run(&dir, &["--json", "record", "start"], &[]);
     assert!(!ok, "{reply}\n{stderr}");
     assert_eq!(reply["error"]["code"], "capture_failed", "{reply}");
     let message = reply["error"]["message"].as_str().unwrap();
     assert!(
-        message.contains("L1 screen VIRT-R")
-            && message.contains(&format!(
-                "the X server (DISPLAY={}) has no such monitor",
-                x.xvfb.display()
-            )),
+        message.contains("nothing to record: VIRT-R isn't connected"),
         "{message}"
     );
     let left: Vec<String> = fs::read_dir(dir.join("takes/take-0002"))
