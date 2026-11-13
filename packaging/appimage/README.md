@@ -40,15 +40,17 @@ debloated Mesa and glycin-ng. Then each build:
    environment (below), makes the AppImage (DwarFS, zstd) and lets its runtime
    extract images of any size when FUSE is missing (`URUNTIME_EXTRACT=2`).
 
-Containers run at `nice 19` on at most `JOBS` CPUs (default 3). Everything
-goes under `tmp/appimage/` (`QREC_APPIMAGE_DIR`), owned by you: `out/` (the
-AppImage, its `.sha256`, and `.build.txt` with every package version),
-`build/AppDir`, the Cargo cache (`cargo-home/`, `target/`) and `cache/`
-(fonts, quick-sharun). With the builder image and the Cargo cache in place, a
-build takes about 5 minutes, half of it DwarFS's compression; making the
-builder image downloads about 460 MB from the archive (2 GB installed), and a
-cold `cargo build` adds about 4 minutes. `ARCH_SNAPSHOT=YYYY/MM/DD` picks
-another archive day (and makes a new builder image).
+Containers run at `nice 19` on at most `JOBS` CPUs (default 3). Everything goes
+under `tmp/appimage/` (`QREC_APPIMAGE_DIR`), owned by you: `out/` (the
+AppImage, `Qrec-<version>-<commit>-x86_64.AppImage`, or
+`Qrec-<version>-x86_64.AppImage` when built at the tag `v<version>`; its
+`.sha256`; and `.build.txt` with every package version), `build/AppDir`, the
+Cargo cache (`cargo-home/`, `target/`) and `cache/` (fonts, quick-sharun). With
+the builder image and the Cargo cache in place, a build takes about 5 minutes,
+half of it DwarFS's compression; making the builder image downloads about 460
+MB from the archive (2 GB installed), and a cold `cargo build` adds about 4
+minutes. `ARCH_SNAPSHOT=YYYY/MM/DD` picks another archive day (and makes a new
+builder image).
 
 ## Try it
 

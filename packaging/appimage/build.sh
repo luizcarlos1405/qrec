@@ -317,9 +317,15 @@ host() {
 	fi
 
 	version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$repo/Cargo.toml" | head -n 1)
+	# A release, the tag v<version> with nothing changed, is
+	# Qrec-<version>-x86_64.AppImage; any other build names its commit.
 	if rev=$(git -C "$repo" rev-parse --short HEAD 2>/dev/null); then
-		git -C "$repo" diff --quiet HEAD 2>/dev/null || rev=$rev-dirty
-		version=$version-$rev
+		if ! git -C "$repo" diff --quiet HEAD 2>/dev/null; then
+			version=$version-$rev-dirty
+		elif ! { [ "${GITHUB_REF_TYPE:-}" = tag ] && [ "${GITHUB_REF_NAME:-}" = "v$version" ]; } \
+			&& ! git -C "$repo" describe --exact-match --tags --match "v$version" HEAD >/dev/null 2>&1; then
+			version=$version-$rev
+		fi
 	fi
 	log "Building Qrec $version in $builder"
 	docker run --rm --name "qrec-appimage-build-$$" --cpus="$JOBS" \
