@@ -461,11 +461,19 @@ fn s02_live_idle_in_every_theme() {
             "{theme}: the live picture is black ({grey:.1})"
         );
         let t = Tokens::of(theme);
+        // The meter's row moves with what the panel shows above it (the
+        // saved scenes' row, SPEC §5.6): its track's middle, past the level.
+        let meter = rect(&mut nested, "audio-meter-A1");
         let mut probes = grounds(&t, 7391);
         probes.extend([
             probe("Live, the selected segment", 118.0, 24.0, t.rgb("raised")),
             probe("the mode switch's field well", 280.0, 24.0, t.rgb("field")),
-            probe("A1's meter track (field)", 1500.0, 341.0, t.rgb("field")),
+            probe(
+                "A1's meter track (field)",
+                1500.0,
+                meter[1] + meter[3] / 2.0,
+                t.rgb("field"),
+            ),
         ]);
         assert_probes(&nested, &shot, theme, &probes, 0);
         assert_probes(
