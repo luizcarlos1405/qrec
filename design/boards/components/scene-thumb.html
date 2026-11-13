@@ -1,0 +1,11 @@
+<!-- <scene-thumb><i style="inset: 0"></i><i class="cam" style="left: 78%; top: 70%; width: 20%; height: 27%"></i></scene-thumb> -->
+<slot></slot>
+<style>
+  & { position: relative; display: block; flex: none; width: 48px; height: 27px; background: var(--qrec-project-canvas);
+      border: 1px solid var(--qrec-border-strong); border-radius: var(--qrec-radius-xs); overflow: hidden; }
+  & > i { position: absolute; background: var(--qrec-muted-40); outline: 1px solid var(--qrec-bg); }
+  & > i.cam { background: var(--qrec-take-moss); }
+  & > i.missing { background: repeating-linear-gradient(45deg, var(--qrec-hatch-stripe) 0 1px, transparent 1px 3px); outline-color: var(--qrec-warning); }
+  &[sm] { width: 32px; height: 18px; }
+  &[lg] { width: 96px; height: 54px; }
+</style>

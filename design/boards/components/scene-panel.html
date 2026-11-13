@@ -1,0 +1,205 @@
+<!-- <scene-panel state="menu"></scene-panel> states: clean unsaved edited menu menu-edited row-menu rename save save-exists missing recording -->
+  <div class="panel-head">
+    <div>
+      <div class="title">Onion layers</div>
+      <div class="caption muted">Project scene · new takes use this</div>
+    </div>
+    <button class="icon-btn md" aria-label="Add layer"><i class="ic s20 i-plus"></i></button>
+  </div>
+
+  <div class="panel-body">
+    <!-- The scene picker: a dropdown field naming the scene the project uses now -->
+    <!-- Program mode with a clip selected: the take banner of S06, its Layout menu now offers the saved scenes -->
+    <div class="take-banner" data-in="program">
+      <span class="body-sm">Changes here only affect take 5.</span>
+      <button class="layout-btn open">Layout<i class="ic s14 i-chevron-down"></i></button>
+    </div>
+    <div class="scene-row">
+      <button class="scene-bar" aria-haspopup="menu">
+        <!-- saved, or edited: the thumbnail of the current layout -->
+        <scene-thumb sm data-in="clean edited menu menu-edited row-menu rename save save-exists recording">
+          <i style="inset: 0"></i><i class="cam" style="left: 78%; top: 70%; width: 20%; height: 27%"></i>
+        </scene-thumb>
+        <scene-thumb sm data-in="missing">
+          <i style="left: 0; top: 0; width: 50%; height: 100%"></i><i class="missing" style="left: 50%; top: 0; width: 50%; height: 100%"></i><i class="cam" style="left: 40%; top: 66%; width: 20%; height: 30%"></i>
+        </scene-thumb>
+        <scene-thumb sm data-in="unsaved">
+          <i style="inset: 0"></i><i class="cam" style="left: 78%; top: 70%; width: 20%; height: 27%"></i>
+        </scene-thumb>
+        <span class="nm" data-in="clean menu row-menu rename save save-exists recording">Screen + camera</span>
+        <span class="nm" data-in="edited menu-edited">Screen + camera</span>
+        <span class="nm" data-in="missing">Two screens</span>
+        <span class="nm unsaved" data-in="unsaved">No saved scene</span>
+        <span class="edited caption" data-in="edited menu-edited">Edited</span>
+        <span class="grow"></span>
+        <i class="ic i-chevron-down muted"></i>
+      </button>
+      <button class="btn secondary" data-in="edited menu-edited">Save</button>
+      <button class="btn secondary" data-in="unsaved"><i class="ic i-save"></i>Save as…</button>
+    </div>
+
+    <div class="section-head"><span class="heading">Layers</span><span class="caption" data-in="clean unsaved edited menu menu-edited row-menu rename save save-exists recording program">2</span><span class="caption" data-in="missing">3</span></div>
+
+    <div data-in="clean unsaved edited menu menu-edited row-menu rename save save-exists program">
+      <layer-row icon="webcam" name="Face" source="Camera · Logitech C920" data-in="clean unsaved menu row-menu rename save save-exists"></layer-row>
+      <layer-row icon="webcam" name="Face" source="Camera · Logitech C920" changed selected data-in="edited menu-edited"></layer-row>
+      <layer-row icon="webcam" name="Face" source="Camera · Logitech C920" selected data-in="program"></layer-row>
+      <layer-row icon="monitor" name="Main screen" source="Screen · DP-4 · GIGA-BYTE GS27QA"></layer-row>
+    </div>
+    <div data-in="recording" class="rec-lock">
+      <layer-row icon="webcam" name="Face" source="Camera · Logitech C920"></layer-row>
+      <layer-row icon="monitor" name="Main screen" source="Screen · DP-4 · GIGA-BYTE GS27QA"></layer-row>
+    </div>
+    <div data-in="missing">
+      <layer-row icon="webcam" name="Face" source="Camera · Logitech C920"></layer-row>
+      <layer-row icon="monitor-x" name="Right screen" source="DP-2 isn't connected" error><button class="replace">Replace…</button></layer-row>
+      <layer-row icon="monitor" name="Left screen" source="Screen · DP-4 · GIGA-BYTE GS27QA"></layer-row>
+    </div>
+    <div class="add-row"><i class="ic i-plus"></i>Add layer</div>
+
+    <div class="section-head"><span class="heading">Audio</span><span class="caption">2</span></div>
+    <audio-row icon="mic" name="Yeti Nano" track="A1" level="64" peak="−16.0" gain="0.0" sync="+0" autocut></audio-row>
+    <audio-row icon="volume" name="System audio" track="A2" level="12" peak="−48.0" gain="−6.0" sync="+0"></audio-row>
+    <div class="add-row"><i class="ic i-plus"></i>Add audio track</div>
+
+    <div class="section-head"><span class="heading">Inspector</span><span class="caption" data-in="edited menu-edited program">Face · L2</span></div>
+    <p class="caption muted" data-in="clean unsaved menu row-menu rename save save-exists missing recording">Select a layer on the canvas or in the list to edit its position, size and crop.</p>
+    <p class="caption muted" data-in="program">Position X 1500 px · Y 760 px · 384 × 288 px</p>
+    <p class="caption muted" data-in="edited menu-edited">Position X 1180 px · Y 700 px (was 1500, 760 in the saved scene)</p>
+  </div>
+
+  <!-- Scene menu: the saved scenes, then the actions on the current one -->
+  <div class="popover menu scene-menu" role="menu" data-in="menu menu-edited row-menu rename">
+    <div class="menu-label"><span>Scenes</span><span class="caption">4 on this computer</span></div>
+    <scene-item name="Screen + camera" summary="DP-4 · Logitech C920 · 2 audio" key="1" active data-in="menu menu-edited">
+      <i style="inset: 0"></i><i class="cam" style="left: 78%; top: 70%; width: 20%; height: 27%"></i>
+    </scene-item>
+    <scene-item name="Screen + camera" summary="DP-4 · Logitech C920 · 2 audio" key="1" active data-in="row-menu rename">
+      <i style="inset: 0"></i><i class="cam" style="left: 78%; top: 70%; width: 20%; height: 27%"></i>
+    </scene-item>
+    <scene-item name="Camera only" summary="Logitech C920 · 1 audio" key="2" focused data-in="menu menu-edited">
+      <i class="cam" style="inset: 0"></i>
+    </scene-item>
+    <scene-item name="Camera only" summary="Logitech C920 · 1 audio" key="2" hover data-in="row-menu">
+      <i class="cam" style="inset: 0"></i>
+    </scene-item>
+    <div class="rename-field" data-in="rename">
+      <scene-thumb><i class="cam" style="inset: 0"></i></scene-thumb>
+      <span class="field focused">Talking head<span class="caret" style="margin-left: -6px"></span></span>
+    </div>
+    <scene-item name="Two screens" summary="DP-2 isn't connected" key="3" warning>
+      <i style="left: 0; top: 0; width: 50%; height: 100%"></i><i class="missing" style="left: 50%; top: 0; width: 50%; height: 100%"></i><i class="cam" style="left: 40%; top: 66%; width: 20%; height: 30%"></i>
+    </scene-item>
+    <scene-item name="Interview" summary="DP-4 · Logitech C920 · 2 audio" key="4">
+      <i style="left: 0; top: 12%; width: 62%; height: 76%"></i><i class="cam" style="left: 64%; top: 12%; width: 34%; height: 76%"></i>
+    </scene-item>
+    <div class="menu-sep"></div>
+    <div class="menu-item" data-in="menu row-menu rename"><i class="ic i-save"></i><span class="grow">Save as new scene…</span></div>
+    <div class="menu-item disabled" data-in="menu row-menu rename"><i class="ic i-rotate"></i><span class="grow">Revert to saved</span></div>
+    <div class="menu-item" data-in="menu-edited"><i class="ic i-save"></i><span class="grow">Save changes</span></div>
+    <div class="menu-item" data-in="menu-edited"><i class="ic i-save"></i><span class="grow">Save as new scene…</span></div>
+    <div class="menu-item" data-in="menu-edited"><i class="ic i-rotate"></i><span class="grow">Revert to saved</span></div>
+  </div>
+
+  <!-- A scene's own actions: right-click or ⋮ on hover, Menu key on the focused row -->
+  <div class="popover menu row-menu" role="menu" data-in="row-menu">
+    <div class="menu-item hover"><i class="ic i-pencil"></i><span class="grow">Rename</span><span class="keys"><span class="kc">F2</span></span></div>
+    <div class="menu-item"><i class="ic i-save"></i><span class="grow">Replace with current scene</span></div>
+    <div class="menu-item"><i class="ic i-copy"></i><span class="grow">Duplicate</span></div>
+    <div class="menu-sep"></div>
+    <div class="menu-item danger"><i class="ic i-trash"></i><span class="grow">Delete…</span><span class="keys"><span class="kc">Del</span></span></div>
+  </div>
+
+  <!-- Program: the take's Layout menu (S06's three actions), plus saved scenes -->
+  <div class="popover menu layout-menu" role="menu" data-in="program">
+    <div class="menu-item"><span class="grow">Apply this layout to all takes</span></div>
+    <div class="menu-item"><span class="grow">Use this layout for new takes</span></div>
+    <div class="menu-item"><span class="grow">Reset take to project scene</span></div>
+    <div class="menu-sep"></div>
+    <div class="menu-item hover"><span class="grow">Apply a saved scene</span><i class="ic s14 i-chevron-right muted"></i></div>
+    <div class="menu-item"><span class="grow">Save this layout as a scene…</span></div>
+  </div>
+  <div class="popover menu apply-menu" role="menu" data-in="program">
+    <div class="menu-label">Apply to take 5</div>
+    <scene-item name="Screen + camera" summary="Matches 2 of 2 layers" key="1" nokey><i style="inset: 0"></i><i class="cam" style="left: 78%; top: 70%; width: 20%; height: 27%"></i></scene-item>
+    <scene-item name="Camera only" summary="Hides Main screen" key="2" nokey focused><i class="cam" style="inset: 0"></i></scene-item>
+    <scene-item name="Interview" summary="Matches 2 of 2 layers" key="4" nokey><i style="left: 0; top: 12%; width: 62%; height: 76%"></i><i class="cam" style="left: 64%; top: 12%; width: 34%; height: 76%"></i></scene-item>
+    <scene-item name="Two screens" summary="Take 5 has no DP-2 file" key="3" nokey warning class="disabled"><i style="left: 0; top: 0; width: 50%; height: 100%"></i><i class="missing" style="left: 50%; top: 0; width: 50%; height: 100%"></i><i class="cam" style="left: 40%; top: 66%; width: 20%; height: 30%"></i></scene-item>
+    <p class="caption muted apply-note">Moves the layers take 5 shares with the scene, matched by source. One undo step.</p>
+  </div>
+
+  <!-- Save as: a popover under the picker, not a modal -->
+  <div class="popover save-pop" role="dialog" aria-label="Save scene" data-in="save save-exists">
+    <div class="title">Save scene</div>
+    <label class="lbl caption">Name</label>
+    <span class="field focused" data-in="save">Screen + camera, big face<span class="caret" style="margin-left: -6px"></span></span>
+    <span class="field focused taken" data-in="save-exists">Interview<span class="caret" style="margin-left: -6px"></span></span>
+    <div class="helper caption warning-text" data-in="save-exists"><i class="ic s14 i-alert" style="margin-top: 1px"></i>A scene named “Interview” exists. Saving replaces it.</div>
+    <div class="what caption">
+      <i class="ic s14 i-layers muted"></i><span>2 layers: their sources, place, size, crop, opacity, fit and order</span>
+      <i class="ic s14 i-mic muted"></i><span>2 audio tracks: gain, mute, sync offset and the autocut track</span>
+    </div>
+    <p class="caption muted" style="margin-top: 10px">Every project on this computer can use it. Takes already recorded keep their own layout.</p>
+    <div class="foot">
+      <button class="btn secondary">Cancel</button>
+      <button class="btn primary" data-in="save">Save <span class="kc on-fill">Enter</span></button>
+      <button class="btn primary" data-in="save-exists">Replace <span class="kc on-fill">Enter</span></button>
+    </div>
+  </div>
+<style>
+  & { display: block; }
+    /* Which blocks a state shows: [data-in="a b"] shows in states a and b */
+    & [data-in] { display: none !important; }
+
+    .scene-row { display: flex; gap: 8px; margin-top: 0; }
+    .scene-bar { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 8px 0 10px;
+      background: var(--qrec-field); border: 1px solid var(--qrec-border-strong); border-radius: var(--qrec-radius-md); }
+    .scene-bar.open { border-color: var(--qrec-accent); box-shadow: 0 0 0 1px var(--qrec-accent); }
+    .scene-bar .lbl { color: var(--qrec-muted); font-size: 12px; }
+    .scene-bar .nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .scene-bar .nm.unsaved { font-weight: 400; color: var(--qrec-muted); }
+    .edited { display: inline-flex; align-items: center; gap: 6px; color: var(--qrec-muted); white-space: nowrap; }
+    .edited::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--qrec-accent-2); }
+    .scene-row .btn { height: 40px; }
+
+    .scene-menu { left: 16px; top: 92px; width: 352px; }
+    .scene-menu .menu-label { display: flex; justify-content: space-between; }
+    .row-menu { left: 124px; top: 200px; width: 244px; }
+    .row-menu .menu-item .keys { margin-left: auto; }
+    .rename-field { height: 48px; padding: 0 10px; display: flex; align-items: center; gap: 12px; }
+    .rename-field .field { flex: 1; }
+
+    .save-pop { left: 16px; top: 92px; width: 352px; padding: 16px; }
+    .save-pop .lbl { display: block; margin: 12px 0 4px; color: var(--qrec-muted); }
+    .save-pop .what { margin-top: 12px; padding: 10px 12px; background: var(--qrec-field); border-radius: var(--qrec-radius-md);
+      display: grid; grid-template-columns: 16px 1fr; gap: 6px 8px; align-items: center; }
+    .save-pop .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+    .field.taken { border-color: var(--qrec-warning-text); }
+    .helper { display: flex; gap: 6px; align-items: flex-start; margin-top: 6px; }
+
+    .take-banner { display: flex; align-items: center; justify-content: space-between; height: 40px; padding: 0 8px 0 12px;
+      border: 1px solid var(--qrec-border); border-radius: var(--qrec-radius-md); }
+    .layout-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; font-weight: 600; border-radius: var(--qrec-radius-md); }
+    .layout-btn.open { background: var(--qrec-pressed); }
+    .layout-menu { right: 16px; top: 92px; width: 292px; }
+    .apply-menu { right: 300px; top: 220px; width: 330px; }
+    .apply-note { padding: 6px 10px 4px; }
+    .replace { color: var(--qrec-accent-text); font-weight: 600; font-size: 13px; padding: 0 8px; height: 24px; border-radius: var(--qrec-radius-md); margin-right: 4px; }
+    .rec-lock { opacity: 0.45; }
+</style>
+<script>
+  const state = this.getAttribute('state') || 'clean';
+  this.classList.add('panel');
+  for (const el of this.querySelectorAll('[data-in]')) {
+    if (el.dataset.in.split(' ').includes(state)) el.removeAttribute('data-in');
+  }
+  if (['menu', 'menu-edited', 'row-menu', 'rename'].includes(state)) this.querySelector('.scene-bar').classList.add('open');
+  if (state === 'program') {
+    this.querySelector('.scene-row').style.display = 'none';
+    this.querySelector('.panel-head .caption').textContent = 'Take 5 layout · edits this take only';
+  }
+  if (state === 'recording') {
+    this.querySelector('.scene-row').classList.add('disabled');
+    this.querySelector('.panel-head .caption').textContent = 'Recording take 11 · scene locked';
+  }
+</script>

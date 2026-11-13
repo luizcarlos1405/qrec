@@ -162,6 +162,8 @@ impl Session {
             Facts {
                 config,
                 keys_toml,
+                // The file as it is now: the CLI may have just changed it.
+                saved_scenes: matches!(query, Query::Scenes).then(|| self.facts.saved_scenes()),
                 ..Facts::default()
             },
         );

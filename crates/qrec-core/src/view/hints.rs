@@ -595,12 +595,12 @@ mod tests {
         ClipId::from_raw(id)
     }
 
-    /// The facts of the design window at fit zoom (BRIEF §2.6: 0.1396
-    /// px/frame with the 8 px end inset).
+    /// The facts of the design window at fit zoom (G§4.5: 0.1353
+    /// px/frame between the 8 px start and 32 px end pads).
     fn fit() -> GuiFacts {
         GuiFacts {
-            px_per_frame: 1032.0 / 7391.0,
-            fit_px_per_frame: 1032.0 / 7391.0,
+            px_per_frame: 1000.0 / 7391.0,
+            fit_px_per_frame: 1000.0 / 7391.0,
             ..GuiFacts::default()
         }
     }
@@ -775,8 +775,8 @@ mod tests {
         let mut s04 = s02.clone();
         recording(&mut s04, "recording");
         let ghost_fit = GuiFacts {
-            px_per_frame: 1032.0 / 12_233.0,
-            fit_px_per_frame: 1032.0 / 12_233.0,
+            px_per_frame: 1000.0 / 12_233.0,
+            fit_px_per_frame: 1000.0 / 12_233.0,
             ..GuiFacts::default()
         };
         let recording_hints = vec![
@@ -942,7 +942,7 @@ mod tests {
             s12,
             GuiFacts {
                 panel_page: PanelPageKind::Autocut,
-                px_per_frame: 1040.0 / 3105.0,
+                px_per_frame: 1000.0 / 3105.0,
                 ..fit()
             },
             HintState::AutocutPage,

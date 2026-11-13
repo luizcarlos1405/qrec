@@ -1,0 +1,40 @@
+/* The project picker (docs/GUI.md G§4.12): its own small window, 760×640 by default (DEFAULT_SIZE).
+   The minimal header and the quiet-swamp art are spliced from the ported X3 and Artwork boards. */
+.pk-window { width: 760px; height: 640px; display: flex; flex-direction: column; overflow: hidden; background: var(--qrec-bg); position: relative; }
+.pk-window > [data-pencil-name="Header (minimal)"] { width: 100% !important; }
+.pk-window > [data-pencil-name="Header (minimal)"] > [data-pencil-name="Close button"] { left: auto !important; right: 8px; }
+.pk-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 16px; padding: 24px 32px 16px; }
+.pk-head { display: flex; align-items: center; gap: 8px; }
+.pk-head .display-sm { flex: 1; }
+.pk-search { display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 12px; background: var(--qrec-field);
+  border: 1px solid var(--qrec-accent); box-shadow: 0 0 0 1px var(--qrec-accent); border-radius: var(--qrec-radius-md); font-size: 16px; }
+.pk-search .ph { color: var(--qrec-muted); }
+.pk-search .caret { width: 1px; height: 20px; background: var(--qrec-text); margin-left: -9px; }
+.pk-group { display: flex; align-items: baseline; gap: 8px; margin: 4px 0 -8px 12px; }
+.pk-group .heading { font-size: 12px; line-height: 16px; color: var(--qrec-muted); }
+.pk-list { display: flex; flex-direction: column; gap: 2px; }
+.pk-here { display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 16px; background: var(--qrec-surface);
+  border: 1px solid var(--qrec-border); border-radius: var(--qrec-radius-md); }
+.pk-here .ic { color: var(--qrec-muted); }
+.pk-here .text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pk-error { display: flex; align-items: flex-start; gap: 8px; color: var(--qrec-record-text); font-size: 13px; line-height: 18px; }
+.pk-error .ic { margin-top: 1px; }
+.pk-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; padding-bottom: 24px; }
+.pk-empty p { color: var(--qrec-muted); max-width: 44ch; }
+.pk-nomatch { padding: 32px 0; text-align: center; color: var(--qrec-muted); }
+.pk-field-label { display: block; margin-bottom: 6px; color: var(--qrec-muted); }
+.pk-field { display: flex; align-items: center; height: 40px; padding: 0 12px; background: var(--qrec-field); border: 1px solid var(--qrec-accent);
+  box-shadow: 0 0 0 1px var(--qrec-accent); border-radius: var(--qrec-radius-md); font-family: var(--mono); font-weight: 500; font-size: 14px; line-height: 20px; }
+.pk-field .ph { color: var(--qrec-muted); font-family: var(--ui); }
+.pk-field .caret { width: 1px; height: 18px; background: var(--qrec-text); margin-left: 1px; }
+.pk-field.invalid { border-color: var(--qrec-record-text); box-shadow: 0 0 0 1px var(--qrec-record-text); }
+.pk-hint { margin-top: 8px; font-size: 13px; line-height: 18px; color: var(--qrec-muted); }
+.pk-hint .mono-sm { color: var(--qrec-text); }
+.pk-hint.problem { color: var(--qrec-record-text); display: flex; gap: 6px; }
+.pk-link { display: inline-block; margin-top: 12px; color: var(--qrec-accent-text); font-size: 13px; line-height: 18px; text-decoration: underline; text-underline-offset: 3px; }
+.pk-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: auto; }
+.pk-hints { display: flex; align-items: center; gap: 20px; height: 32px; padding: 0 12px; background: var(--qrec-surface);
+  border-top: 1px solid var(--qrec-border); font-size: 13px; line-height: 18px; flex: none; }
+.pk-hints > span { display: inline-flex; align-items: center; gap: 6px; color: var(--qrec-muted); }
+.pk-hints > span:first-child { color: var(--qrec-text); }
+[data-in] { display: none !important; }

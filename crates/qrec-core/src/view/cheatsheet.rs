@@ -243,15 +243,22 @@ const SHEET: [&[(&str, &[Row])]; 3] = [
         ),
         (
             "Canvas",
-            &[row(
-                "Nudge layer 1 px (Shift: 10)",
-                &[
-                    "layer.nudge-left",
-                    "layer.nudge-right",
-                    "layer.nudge-up",
-                    "layer.nudge-down",
-                ],
-            )],
+            &[
+                row(
+                    "Nudge layer 1 px (Shift: 10)",
+                    &[
+                        "layer.nudge-left",
+                        "layer.nudge-right",
+                        "layer.nudge-up",
+                        "layer.nudge-down",
+                    ],
+                ),
+                // The nine scene keys as one row: the first and the last.
+                row(
+                    "Use saved scene 1 \u{2026} 9",
+                    &["scene.use-1", "scene.use-9"],
+                ),
+            ],
         ),
     ],
 ];
@@ -563,7 +570,12 @@ mod tests {
         let listed = listed_ids();
         for b in &resolve("").bindings {
             let n = listed.iter().filter(|id| **id == b.id).count();
-            let expected = usize::from(!b.id.ends_with("-10"));
+            // The 10 px nudges ride on the 1 px row; scenes 2–8 between
+            // the first and the last scene key.
+            let between =
+                b.id.strip_prefix("scene.use-")
+                    .is_some_and(|n| n != "1" && n != "9");
+            let expected = usize::from(!b.id.ends_with("-10") && !between);
             assert_eq!(n, expected, "{}", b.id);
         }
     }

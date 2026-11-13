@@ -71,6 +71,7 @@ the portal, but they are untested. X11 is tested on a private Xvfb only.
 | **Layer**       | A video source placed on the canvas with a rect, z-order, opacity, crop and visibility. In the UI these are called "Onion layers".                      |
 | **Audio track** | An audio source (`mic` or `system`) with gain, mute and sync offset. Each one is recorded to its own file.                                              |
 | **Scene**       | The full set of layers and audio tracks. The **project scene** is used for new takes. Each take keeps its own **snapshot** of the scene.                |
+| **Saved scene** | A scene saved under a name on this computer, to use again in any project (§5.6). Switching to one replaces the project scene.                         |
 | **Take**        | One recording session (start → stop). It is a folder with one file per source, all on one shared clock. Takes are immutable media.                      |
 | **Clip**        | A timeline item that references a take with an in/out range `[in, out)` in frames. One take can back several clips, for example after a cut or autocut. |
 | **Timeline**    | An ordered, gapless list of clips (one magnetic track).                                                                                                 |
@@ -249,16 +250,35 @@ the file.
 Anything else is rejected with the message _"Not my swamp: this folder isn't
 empty and has no qrec.json"_ and exit code 3. Commands that don't use a
 project still work anywhere: `--help`, `version`, `doctor`, `sources list`,
-`schema`, `keys`, `agent-guide`.
+`schema`, `keys`, `agent-guide`, `config`, `folders`.
 
 **New projects.** `qrec create <name-or-path>` makes a new folder and starts
 a project in it. A slash tells the two apart:
 
-- A **name** (`demo`) goes in the projects folder of the user config
-  (`projects.folder`, §6.4). There is no default place: with none set, a name
-  is a usage error (exit 2).
+- A **name** (`demo`) goes in one of the **project folders** of the user
+  config (§6.4): the one `--in <folder>` names, else the default folder.
+  There is no built-in place: with no project folders, a name is a usage
+  error (exit 2), and so is an `--in` that names none of them.
 - A **path** (`./demo`, `../demo`, `/mnt/videos/demo`) is used as it is,
-  against the current directory when relative. The setting plays no part.
+  against the current directory when relative. The project folders play no
+  part, and `--in` doesn't go with a path (usage, exit 2).
+
+**Project folders.** Each has a name (`work`, `Clients`) and a folder. A name
+is 1 to 40 characters after trimming, without `/` or control characters, and
+no two are the same ignoring case; no two folders have the same path, and
+each path is absolute. Whenever there are project folders, exactly one is the
+default: the first one added becomes it, `qrec folders default <name>` (or
+Settings, or the picker) changes it, and removing it makes the first one left
+the default. Removing a project folder only forgets it: nothing on disk is
+touched, and the projects in it stay in the recent list.
+
+```
+qrec folders                         # the project folders, the default marked
+qrec folders add <name> <path> [--default]   # the path must be a folder already
+qrec folders rename <name> <new-name>
+qrec folders default <name>
+qrec folders rm <name>               # forgets it; the folder is untouched
+```
 
 Only the last part is made; the folder it goes in must already exist. The
 folder rule then decides what becomes of what is there: a folder just made,
@@ -276,7 +296,10 @@ here". `qrec --pick` always shows the picker.
 
 The picker lists the recent projects (§6.4), most recent first, searchable.
 It opens one, opens another folder, and makes a new project with the same
-name-or-path rule as `qrec create`. A folder that has moved stays listed,
+name-or-path rule as `qrec create`: a name goes in the project folder chosen
+beside the field, the default one to begin with, and a path ignores it. The
+picker can add a project folder, so one can be set before any project
+exists. A folder that has moved stays listed,
 marked, until it is removed from the list, which never touches the folder.
 A running window opens the picker from the command palette, in a process of
 its own, so a project it opens gets its own window beside this one.
@@ -427,6 +450,45 @@ selection for anything else.)
 
 `recording.countdownSecs` can be 0–10 and defaults to **0**. During a
 countdown the canvas shows a big number, and `Esc` or `r` aborts it.
+
+### 5.6 Saved scenes (issue #3)
+
+A setup such as "screen + camera in the corner", "camera only" or "two
+screens" can be saved under a name and used again, in this project or any
+other on the same computer.
+
+- **What a saved scene holds:** the layers (source, name, rect, crop,
+  opacity, fit, z-order, visibility, lock) and the audio tracks (role,
+  source, label, gain, mute, sync offset), plus which track is the autocut
+  track. Not the canvas size or fps: those belong to the project.
+- **Where:** `~/.config/qrec/scenes.json` (§6.4), in the order they were
+  saved. Names are unique, compared without case; they can't be empty.
+- **Save:** _Save scene as…_ stores the project scene under a new name. A
+  name that exists asks first and then replaces that scene. _Save changes_
+  stores the project scene over the saved scene it came from.
+- **Use:** picking a saved scene replaces the project scene in **one
+  undoable step**. Layers and tracks whose source the project scene already
+  has keep their ids, so take layouts still match them. Takes already
+  recorded keep their snapshot. It isn't allowed while recording.
+- **Which scene is in use, and edited:** the panel names the saved scene the
+  project scene equals. When it equals none, it names the one last used or
+  saved, marked _Edited_, with _Save changes_ and _Revert to saved_. With
+  neither, it says _No saved scene_ and offers _Save as…_. This is derived,
+  so undoing a switch shows the scene from before.
+- **A source that isn't connected** (an unplugged screen, a camera on
+  another machine) doesn't block the switch. Its layer stays in the scene,
+  the panel and the canvas say it isn't connected, and the layer offers
+  _Replace…_ (another screen or camera). Record still works: the take is
+  recorded without that source, and its snapshot marks the layer missing.
+- **Manage:** rename, duplicate, replace with the current scene, and delete.
+  Deleting asks first (saved scenes live outside the project's undo
+  history). None of these change the project or its takes.
+- **Apply to a take:** in Program, the take banner's Layout menu can apply a
+  saved scene to the selected take, in one undoable step. Layers and tracks
+  are matched by source; a take layer the scene doesn't have is hidden, and
+  a scene layer the take has no stream for is skipped. A scene that shares
+  no layer with the take can't be applied.
+- **Keys:** `Alt+1` … `Alt+9` use the first nine saved scenes, in Live.
 
 ---
 
@@ -635,10 +697,19 @@ copy to `.qrec/qrec.v{N}.json.bak`.
     dev machine; never let the encoder auto-pick, see `RECORDING.md`)
   - UI scale
   - reduced motion
-  - projects folder: where a new project given by name goes (`projects.folder`,
-    unset by default, §4.4)
+  - project folders: the named folders a new project given by name goes in,
+    and which one is the default (`[[projects.folders]]` with `name` and
+    `path`, and `projects.default_folder`; none by default, §4.4). They are
+    changed with `qrec folders`, Settings › Project or the picker, not with
+    `qrec config set`. A file from before named folders, with one
+    `projects.folder = "/path"`, reads as one project folder named after the
+    path's last part (`projects` for `/`) that is the default, and the next
+    change to the project folders saves it in the new shape.
   - open the last project on start (`projects.open_last`, off by default)
 - `keys.toml`: keybinding overrides (§10).
+- `scenes.json`: the saved scenes (§5.6). A file that can't be read counts
+  as no saved scenes (the window says so) and is never overwritten by a
+  save until it can be read again.
 - `~/.local/state/qrec/`: portal restore tokens, the logs of the last
   session, and the recent projects (`recent-projects.json`: what the window
   opened, at most 50; losing it loses only the list).
@@ -748,6 +819,8 @@ recording time and status, with actions:
     about the disk. Undoing a recording removes **its clip**, and the take
     shows up in the bin. Redo puts the clip back.
   - UI state.
+  - The saved scenes (§5.6): saving, renaming and deleting one. Switching to
+    one, or applying one to a take, is undoable: it changes a scene.
   - Purge, which is destructive and confirmed. It also removes history
     entries that reference the purged take.
 
@@ -834,6 +907,7 @@ silencedetect=noise=<thresholdDb>dB:d=<minSilence> -vn -f null -` on
 |              | `Ctrl+A`                                  | Select all                                                                                         | —                                       |
 | **Output**   | `p`                                       | Save the frame at the playhead as PNG                                                              | `qrec frame save --at <t>`              |
 |              | `Ctrl+E`                                  | Export…                                                                                            | `qrec export`                           |
+| **Canvas**   | `Alt+1` … `Alt+9`                         | Use saved scene 1 … 9 (Live; §5.6)                                                                 | `qrec scene use <name>`                 |
 | **View**     | `=` / `-`                                 | Zoom the timeline in / out                                                                         | —                                       |
 |              | `\`                                       | Zoom to fit                                                                                        | —                                       |
 |              | `z`                                       | Zoom to the selection                                                                              | —                                       |
@@ -1042,7 +1116,8 @@ Timeline positions are clip-relative unless `--timeline` is given.
 qrec                         # open GUI: the cwd's project, else the picker or the last project (§4.4)
 qrec --pick                  # the project picker, whatever the cwd holds
 qrec init [--canvas 1920x1080@30]
-qrec create <name|path> [--canvas 1920x1080@30] [--name NAME]   # new folder + project (§4.4)
+qrec create <name|path> [--in FOLDER] [--canvas 1920x1080@30] [--name NAME]   # new folder + project (§4.4)
+qrec folders [add|rename|default|rm]   # the project folders a name goes in (§4.4)
 qrec status                  # summary; --json = full state + host/recording status
 qrec doctor                  # dependencies, session, AppImage and devices (§3.3); this desktop's global shortcuts (§10.2)
 qrec sources list            # screens, cameras, mics, system-audio monitors
@@ -1057,6 +1132,14 @@ qrec scene audio set <id> [--gain-db -3] [--mute true|false] [--sync-offset-ms 8
 qrec scene audio remove <id>
 qrec scene apply --take <take> | --to-all-takes | --from-take <take>
         # (scene commands accept --take <take> to edit a take's snapshot instead of the project scene)
+qrec scene list                        # saved scenes; which one the project uses, and whether it was edited
+qrec scene save <name> [--yes]         # save the project scene as <name> (--yes replaces one that exists)
+qrec scene save                        # save changes to the scene in use
+qrec scene use <name> | --revert       # switch to a saved scene (undoable)
+qrec scene rename <name> <new-name>
+qrec scene duplicate <name> [--as <new-name>]
+qrec scene rm <name> --yes             # delete a saved scene (the project is untouched)
+qrec scene apply --scene <name> --take <take>   # a saved scene's layout on one take (undoable)
 
 qrec record start [--over <clip>… | --over-selection] [--countdown N]
 qrec record stop | toggle | cancel
@@ -1117,14 +1200,15 @@ qrec agent-guide                      # concise usage guide for LLM agents
 ### 15.1 Process gates (must happen in this order)
 
 1. **Install the impeccable skills** (<https://impeccable.style/>) before any
-   UI work. They aren't installed yet. The pen.dev (Pencil) MCP server is
-   already connected.
-2. **Design in pen.dev.** Every screen and state below is designed in
-   `design/qrec.pen` through the Pencil MCP and reviewed by the product owner
-   **before** any GTK UI code is written.
-3. Implement GTK views from the approved designs. Design tokens come out of
-   Pencil into `crates/qrec-gui/resources/theme/*.css` as CSS variables, so
-   the code and the design share one source.
+   UI work. They aren't installed yet.
+2. **Design on htmlboard.** Every screen and state below is designed as an
+   HTML board in `design/boards/` and reviewed by the product owner
+   **before** any GTK UI code is written. (Until 2026-11-10 the designs were
+   drawn in pen.dev, `design/qrec.pen`; they were ported to boards then.)
+3. Implement GTK views from the approved designs. Design tokens live in
+   `design/tokens/qrec-tokens.json` and are generated into
+   `crates/qrec-gui/resources/theme/*.css` and `design/boards/themes.css` as
+   CSS variables, so the code and the design share one source.
 
 **Screens and states to design:**
 

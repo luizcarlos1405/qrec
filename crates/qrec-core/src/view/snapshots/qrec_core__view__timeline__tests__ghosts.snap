@@ -6,8 +6,8 @@ expression: "[ghost04, ghost04b, ghost05]"
   {
     "take": "take-0010",
     "color": 1,
-    "x": 623.5193329518515,
-    "w": 408.48066704814846,
+    "x": 612.185400147143,
+    "w": 395.81459985285704,
     "plate": "● Take 10 · recording",
     "over": null,
     "replaced": [],
@@ -16,8 +16,8 @@ expression: "[ghost04, ghost04b, ghost05]"
   {
     "take": "take-0010",
     "color": 1,
-    "x": 290.9874171289406,
-    "w": 130.13448789067786,
+    "x": 289.9645514815316,
+    "w": 126.09930997158708,
     "plate": "● Take 10 · recording",
     "over": "over c2d0 (take 5)",
     "replaced": [
@@ -28,8 +28,8 @@ expression: "[ghost04, ghost04b, ghost05]"
   {
     "take": "take-0010",
     "color": 1,
-    "x": 623.5193329518515,
-    "w": 408.48066704814846,
+    "x": 612.185400147143,
+    "w": 395.81459985285704,
     "plate": "Take 10 · saving…",
     "over": null,
     "replaced": [],

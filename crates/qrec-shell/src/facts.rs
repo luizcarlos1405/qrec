@@ -522,6 +522,16 @@ impl FactsGatherer {
     }
 
     /// The config alone (every dispatch needs it).
+    /// `scenes.json`, next to `config.toml` (A§9.11).
+    pub fn scenes_path(&self) -> PathBuf {
+        crate::scenes_file::beside(self.config.path())
+    }
+
+    /// The saved scenes as the file holds them now.
+    pub fn saved_scenes(&self) -> qrec_core::scenes::ScenesFile {
+        crate::scenes_file::read(&self.scenes_path())
+    }
+
     pub fn config(&self) -> UserConfig {
         self.config.get()
     }
@@ -607,6 +617,9 @@ impl FactsGatherer {
                 }
                 Err(e) => warnings.push(format!("{file}: {e}")),
             }
+        }
+        if need.saved_scenes {
+            facts.saved_scenes = Some(self.saved_scenes());
         }
         if need.player {
             facts.player_ns = self.player.as_ref().and_then(|position| position());
@@ -1446,9 +1459,15 @@ mod tests {
                 "takes/take-0002/missing.mka".into(),
             ],
             player: true,
+            saved_scenes: true,
         });
         let facts = &all.facts;
         assert_eq!(facts.player_ns, None, "no player outside the GUI");
+        assert_eq!(
+            facts.saved_scenes,
+            Some(qrec_core::scenes::ScenesFile::default()),
+            "no scenes.json: no saved scenes"
+        );
         assert_eq!(facts.folder_name.as_deref(), Some("swamp"));
         assert_eq!(facts.default_mic.as_ref().unwrap().name, FAKE_MIC);
         assert_eq!(facts.default_monitor.as_ref().unwrap().name, FAKE_MONITOR);

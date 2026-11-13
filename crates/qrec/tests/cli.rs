@@ -543,53 +543,173 @@ fn create_with_a_path() {
     assert!(!here.join("no").exists());
 }
 
-/// A name goes in `projects.folder`; with none set it is refused and nothing
-/// is made anywhere.
+/// A name goes in a project folder: `--in`'s, else the default one; with
+/// none it is refused and nothing is made anywhere (SPEC §4.4).
 #[test]
-fn create_with_a_name_needs_the_projects_folder() {
+fn create_with_a_name_goes_in_a_project_folder() {
     let env = TestEnv::new();
     let here = env.empty_dir("here");
     let refused = qrec(&env, &here, &["create", "demo", "--json"]);
     assert_eq!(refused.code, Some(2));
     let error = &refused.only_reply()["error"];
     assert_eq!(error["code"], "usage");
-    assert!(
-        error["hint"].as_str().unwrap().contains("./demo"),
-        "{error}"
-    );
+    let hint = error["hint"].as_str().unwrap();
+    assert!(hint.contains("./demo"), "{error}");
+    assert!(hint.contains("qrec folders add"), "{error}");
     assert!(!here.join("demo").exists());
 
-    let projects = fs::canonicalize(env.empty_dir("projects")).unwrap();
+    let work = fs::canonicalize(env.empty_dir("work")).unwrap();
+    let home = fs::canonicalize(env.empty_dir("home")).unwrap();
     qrec(
         &env,
         &here,
-        &[
-            "config",
-            "set",
-            "projects.folder",
-            projects.to_str().unwrap(),
-        ],
+        &["folders", "add", "work", work.to_str().unwrap()],
+    )
+    .ok();
+    qrec(
+        &env,
+        &here,
+        &["folders", "add", "home", home.to_str().unwrap()],
     )
     .ok();
     qrec(&env, &here, &["create", "demo"]).ok();
-    assert!(projects.join("demo/qrec.json").is_file());
+    assert!(
+        work.join("demo/qrec.json").is_file(),
+        "the first is the default"
+    );
     assert!(!here.join("demo").exists(), "a name ignores the cwd");
+    qrec(&env, &here, &["create", "talk", "--in", "home"]).ok();
+    assert!(home.join("talk/qrec.json").is_file());
 
-    // A path doesn't use the setting.
+    // The default can change.
+    qrec(&env, &here, &["folders", "default", "home"]).ok();
+    qrec(&env, &here, &["create", "next"]).ok();
+    assert!(home.join("next/qrec.json").is_file());
+
+    // A path doesn't use them, and --in doesn't go with one.
     qrec(&env, &here, &["create", "./local"]).ok();
     assert!(here.join("local/qrec.json").is_file());
-    assert!(!projects.join("local").exists());
+    let both = qrec(
+        &env,
+        &here,
+        &["create", "./other", "--in", "work", "--json"],
+    );
+    assert_eq!(both.code, Some(2));
+    assert!(!here.join("other").exists());
 
-    // Unset again, a name is refused again.
-    qrec(&env, &here, &["config", "set", "projects.folder", "none"]).ok();
-    let get = qrec(&env, &here, &["config", "get", "projects.folder", "--json"]);
-    assert_eq!(get.only_reply()["data"]["value"], Value::Null);
+    // An --in that names no folder lists the ones there are.
+    let unknown = qrec(&env, &here, &["create", "x", "--in", "clients", "--json"]);
+    assert_eq!(unknown.code, Some(2));
+    let hint = unknown.only_reply()["error"]["hint"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(hint.contains("work, home"), "{hint}");
+
+    // Without folders again, a name is refused again; the folders and the
+    // projects in them are untouched.
+    qrec(&env, &here, &["folders", "rm", "work"]).ok();
+    qrec(&env, &here, &["folders", "rm", "home"]).ok();
+    assert!(work.join("demo/qrec.json").is_file());
     assert_eq!(qrec(&env, &here, &["create", "again"]).code, Some(2));
 
     // A broken config.toml only gets in the way of a name.
     fs::write(env.config_home().join("qrec/config.toml"), "ui = 3\n").unwrap();
     assert_eq!(qrec(&env, &here, &["create", "again"]).code, Some(1));
     qrec(&env, &here, &["create", "./despite"]).ok();
+}
+
+/// `qrec folders` lists, adds, renames, picks the default and forgets
+/// folders (SPEC §4.4); the old single `projects.folder` reads as the
+/// default one and is saved in the new shape on the next change.
+#[test]
+fn folders_add_rename_default_and_rm() {
+    let env = TestEnv::new();
+    let here = env.empty_dir("here");
+    let empty = qrec(&env, &here, &["folders"]);
+    assert!(
+        empty.stdout.contains("No project folders"),
+        "{}",
+        empty.stdout
+    );
+
+    let old = fs::canonicalize(env.empty_dir("videos")).unwrap();
+    let config = env.config_home().join("qrec/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        &config,
+        format!("# mine\n[projects]\nfolder = \"{}\"\n", old.display()),
+    )
+    .unwrap();
+    let list = qrec(&env, &here, &["folders", "--json"]);
+    let data = &list.only_reply()["data"];
+    assert_eq!(data["defaultFolder"], "videos");
+    assert_eq!(data["folders"][0]["path"], old.to_str().unwrap());
+    assert_eq!(data["folders"][0]["default"], true);
+
+    // A relative path is made absolute; it must be a folder.
+    fs::create_dir(here.join("clients")).unwrap();
+    let added = qrec(
+        &env,
+        &here,
+        &["folders", "add", "Clients", "clients", "--default"],
+    );
+    assert_eq!(added.code, Some(0), "{}", added.stderr);
+    assert!(
+        added.stdout.contains("the default folder"),
+        "{}",
+        added.stdout
+    );
+    let text = fs::read_to_string(&config).unwrap();
+    assert!(text.starts_with("# mine\n"), "{text}");
+    assert!(!text.contains("\nfolder = "), "the old key is gone: {text}");
+    let missing = qrec(
+        &env,
+        &here,
+        &["folders", "add", "gone", "./nowhere", "--json"],
+    );
+    assert_eq!(missing.code, Some(1));
+    assert_eq!(missing.only_reply()["error"]["code"], "io");
+    let twice = qrec(&env, &here, &["folders", "add", "clients", "/", "--json"]);
+    assert_eq!(twice.only_reply()["error"]["code"], "invalid");
+
+    let list = qrec(&env, &here, &["folders"]);
+    assert_eq!(list.code, Some(0));
+    let lines: Vec<&str> = list.stdout.lines().collect();
+    assert!(lines[0].starts_with("FOLDER"), "{}", list.stdout);
+    assert!(
+        lines[2].starts_with("Clients") && lines[2].ends_with("default"),
+        "{}",
+        list.stdout
+    );
+
+    qrec(&env, &here, &["folders", "rename", "clients", "Customers"]).ok();
+    let list = qrec(&env, &here, &["folders", "--json"]);
+    assert_eq!(list.only_reply()["data"]["defaultFolder"], "Customers");
+    let gone = qrec(&env, &here, &["folders", "rm", "Customers"]);
+    assert!(
+        gone.stdout.contains("the default folder is videos"),
+        "{}",
+        gone.stdout
+    );
+    assert!(here.join("clients").is_dir(), "forgetting touches nothing");
+    let unknown = qrec(&env, &here, &["folders", "default", "nope", "--json"]);
+    assert_eq!(unknown.code, Some(7));
+    assert_eq!(unknown.only_reply()["error"]["code"], "not_found");
+
+    // Not `qrec config set` keys.
+    let set = qrec(
+        &env,
+        &here,
+        &["config", "set", "projects.folder", "/", "--json"],
+    );
+    assert_eq!(set.code, Some(2));
+    assert!(
+        set.only_reply()["error"]["hint"]
+            .as_str()
+            .unwrap()
+            .contains("qrec folders")
+    );
 }
 
 /// What `qrec create` finds at the target (#11): the folder rule decides,
@@ -887,6 +1007,77 @@ fn scene_commands_return_seqs_and_ids() {
     assert_eq!(scene["audio"][0]["gainDb"], -3.0);
     let remove = qrec(&env, &dir, &["scene", "layer", "remove", "L1", "--json"]);
     remove.ok();
+}
+
+/// Saved scenes (SPEC §5.6): saved on this computer, listed with the one
+/// in use, switched to in one undo step, and the library outlives projects.
+#[test]
+fn saved_scenes_round_trip_through_the_cli() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("scenes");
+    qrec(&env, &dir, &["init"]).ok();
+    for args in [
+        &["scene", "layer", "add", "screen", "--output", "FAKE-1"][..],
+        &["scene", "layer", "add", "camera", "--device", "/dev/fake0"],
+    ] {
+        qrec(&env, &dir, args).ok();
+    }
+    let empty = qrec(&env, &dir, &["scene", "list"]);
+    empty.ok();
+    assert!(empty.stdout.contains("No saved scenes"), "{}", empty.stdout);
+
+    qrec(&env, &dir, &["scene", "save", "Screen + camera"]).ok();
+    let scenes_json = env.config_home().join("qrec").join("scenes.json");
+    assert!(scenes_json.is_file(), "saved next to config.toml");
+    let list = qrec(&env, &dir, &["scene", "list", "--json"]);
+    list.ok();
+    let view = &list.reply()["data"];
+    assert_eq!(view["scenes"][0]["name"], "Screen + camera");
+    assert_eq!(view["scenes"][0]["key"], 1);
+    assert_eq!(view["current"]["name"], "Screen + camera");
+    assert_eq!(view["current"]["edited"], false);
+
+    // Camera only: a second scene, then back to the first in one step.
+    qrec(&env, &dir, &["scene", "layer", "remove", "L1"]).ok();
+    let list = qrec(&env, &dir, &["scene", "list"]);
+    assert!(list.stdout.contains("in use, edited"), "{}", list.stdout);
+    let replace = qrec(&env, &dir, &["scene", "save", "screen + CAMERA"]);
+    assert_eq!(replace.code, Some(4), "a name that exists asks first");
+    qrec(&env, &dir, &["scene", "save", "Camera only"]).ok();
+    let back = qrec(&env, &dir, &["scene", "use", "Screen + camera", "--json"]);
+    back.ok();
+    let status = qrec(&env, &dir, &["status", "--json"]);
+    let layers = &status.reply()["data"]["project"]["scene"]["layers"];
+    assert_eq!(layers.as_array().unwrap().len(), 2);
+    assert_eq!(layers[1]["id"], "L2", "the camera kept its id");
+    qrec(&env, &dir, &["undo"]).ok();
+    let list = qrec(&env, &dir, &["scene", "list", "--json"]);
+    assert_eq!(list.reply()["data"]["current"]["name"], "Camera only");
+
+    // Another project on this computer sees them.
+    let other = env.empty_dir("other");
+    qrec(&env, &other, &["init"]).ok();
+    qrec(&env, &other, &["scene", "use", "Camera only"]).ok();
+    qrec(
+        &env,
+        &other,
+        &["scene", "rename", "Camera only", "Talking head"],
+    )
+    .ok();
+    qrec(&env, &other, &["scene", "duplicate", "Talking head"]).ok();
+    let gone = qrec(&env, &other, &["scene", "rm", "Talking head"]);
+    assert_eq!(gone.code, Some(4), "deleting asks first");
+    qrec(&env, &other, &["scene", "rm", "Talking head", "--yes"]).ok();
+    let names: Vec<String> =
+        qrec(&env, &other, &["scene", "list", "--json"]).reply()["data"]["scenes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap().to_owned())
+            .collect();
+    assert_eq!(names, ["Screen + camera", "Talking head copy"]);
+    let nope = qrec(&env, &other, &["scene", "use", "Nope"]);
+    assert_eq!(nope.code, Some(7), "{}", nope.stderr);
 }
 
 #[test]

@@ -4,9 +4,10 @@
 //! What was typed is a **name** or a **path**, and a slash is what tells
 //! them apart:
 //!
-//! - A name (`demo`) goes in the projects folder of `config.toml`
-//!   (`projects.folder`). With none set it is refused: Qrec has no default
-//!   place to put things.
+//! - A name (`demo`) goes in one of the project folders of `config.toml`
+//!   ([`crate::project_folders`]): the one chosen (`--in`, the picker's
+//!   folder menu), else the default. With none it is refused: Qrec has no
+//!   built-in place to put things.
 //! - A path (`./demo`, `../demo`, `/mnt/videos/demo`) is used as it is,
 //!   against the current directory when it is relative.
 //!
@@ -18,6 +19,7 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
+use crate::config::ProjectsDefaults;
 use crate::error::CoreError;
 
 /// Where a new project goes, before anything on disk is looked at.
@@ -41,9 +43,32 @@ pub fn is_path(target: &OsStr) -> bool {
     target.as_bytes().contains(&b'/')
 }
 
+/// The rule with the folder a name goes in chosen from the project
+/// folders: the one called `chosen` (ignoring case), else the default. A
+/// path ignores both. A `chosen` that names no folder is `Usage`.
+pub fn resolve_in(
+    target: &OsStr,
+    cwd: Option<&Path>,
+    projects: &ProjectsDefaults,
+    chosen: Option<&str>,
+) -> Result<NewProjectPath, CoreError> {
+    if is_path(target) {
+        return resolve(target, cwd, None);
+    }
+    let folder = match chosen {
+        Some(name) => Some(projects.find(name).ok_or_else(|| {
+            CoreError::usage(format!("no project folder is called `{}`", name.trim()))
+                .with_hint(crate::project_folders::folders_hint(projects))
+        })?),
+        None => projects.default_folder(),
+    };
+    resolve(target, cwd, folder.map(|f| f.path.as_str()))
+}
+
 /// Applies the rule to what was typed. `cwd` makes a relative path absolute
 /// (`None`: the current directory can't be read, which only matters for
-/// one); `projects_folder` is `projects.folder`.
+/// one); `projects_folder` is the path of the project folder a name goes
+/// in ([`resolve_in`] picks it).
 pub fn resolve(
     target: &OsStr,
     cwd: Option<&Path>,
@@ -94,11 +119,11 @@ pub fn resolve(
 /// A name with no projects folder to put it in.
 fn no_projects_folder(name: &str) -> CoreError {
     CoreError::usage(format!(
-        "no projects folder is set, so `{name}` has nowhere to go"
+        "there are no project folders, so `{name}` has nowhere to go"
     ))
     .with_hint(format!(
-        "give a path (./{name} makes it here), or set the folder: \
-         `qrec config set projects.folder /path/to/projects`"
+        "give a path (./{name} makes it here), or add a project folder: \
+         `qrec folders add NAME /path/to/projects`"
     ))
 }
 
@@ -136,10 +161,42 @@ mod tests {
     fn a_name_without_a_projects_folder_is_refused() {
         let error = run("demo", None).unwrap_err();
         assert_eq!(error.code, ErrorCode::Usage);
-        assert!(error.message.contains("no projects folder"), "{error:?}");
+        assert!(error.message.contains("no project folders"), "{error:?}");
         let hint = error.hint.unwrap();
         assert!(hint.contains("./demo"), "{hint}");
-        assert!(hint.contains("projects.folder"), "{hint}");
+        assert!(hint.contains("qrec folders add"), "{hint}");
+    }
+
+    #[test]
+    fn a_name_goes_in_the_chosen_folder_else_the_default() {
+        use crate::config::ProjectFolder;
+        let folder = |name: &str, path: &str| ProjectFolder {
+            name: name.into(),
+            path: path.into(),
+        };
+        let projects = ProjectsDefaults {
+            default_folder: Some("home".into()),
+            open_last: false,
+            folders: vec![folder("work", "/srv/work"), folder("home", "/srv/home")],
+        };
+        let run = |target: &str, chosen| {
+            resolve_in(OsStr::new(target), Some(Path::new(CWD)), &projects, chosen)
+        };
+        assert_eq!(run("demo", None).unwrap(), at("/srv/home", "demo"));
+        assert_eq!(run("demo", Some("work")).unwrap(), at("/srv/work", "demo"));
+        assert_eq!(
+            run("demo", Some(" WORK ")).unwrap(),
+            at("/srv/work", "demo")
+        );
+        // A path goes where it says.
+        assert_eq!(run("./demo", Some("work")).unwrap(), at(CWD, "demo"));
+        let error = run("demo", Some("clients")).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Usage);
+        assert!(error.message.contains("clients"), "{error:?}");
+        assert!(error.hint.unwrap().contains("work, home"));
+        let none = ProjectsDefaults::default();
+        let error = resolve_in(OsStr::new("demo"), None, &none, None).unwrap_err();
+        assert!(error.message.contains("no project folders"), "{error:?}");
     }
 
     #[test]

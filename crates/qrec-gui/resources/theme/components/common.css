@@ -676,3 +676,14 @@ headerbar.qrec-minimal-header > windowhandle > box {
 headerbar.qrec-minimal-header .wordmark {
   color: var(--qrec-text);
 }
+
+/* A project folder's Default badge (Settings, the picker's folder menu). */
+.folder-badge {
+  padding: 1px 8px;
+  border-radius: var(--qrec-radius-pill);
+  background-color: var(--qrec-selected);
+  color: var(--qrec-accent-text);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+}

@@ -1,0 +1,30 @@
+<!-- <audio-row icon="mic" name="Yeti Nano" track="A1" level="64" peak="−16.0" gain="0.0" sync="+0" autocut></audio-row> -->
+<div class="l1">
+  <i class="ic i-{{icon}}"></i>
+  <b>{{name}}</b>
+  <span class="chip mono-xs">{{track}}</span>
+  <span class="ac caption"><i class="ic s12 i-scissors"></i>Autocut</span>
+  <span class="grow"></span>
+  <span class="m caption-strong">M</span>
+  <button class="icon-btn"><i class="ic i-more"></i></button>
+</div>
+<div class="l2"><span class="meter"><span class="fill" style="width: {{level}}%"></span></span><span class="mono-xs muted pk">{{peak}}</span></div>
+<div class="l3">
+  <span class="caption muted">Gain</span><span class="field mono v">{{gain}}<span class="muted">dB</span></span>
+  <span class="caption muted sy">Sync</span><span class="field mono v">{{sync}}<span class="muted">ms</span></span>
+</div>
+<style>
+  & { display: block; padding: 4px 0 12px; }
+  .l1 { display: flex; align-items: center; gap: 8px; height: 28px; }
+  .chip { padding: 1px 4px; border: 1px solid var(--qrec-border); border-radius: var(--qrec-radius-sm); color: var(--qrec-muted); }
+  .ac { display: none; align-items: center; gap: 4px; padding: 0 5px; height: 18px; border-radius: var(--qrec-radius-sm); background: var(--qrec-keycap); color: var(--qrec-muted); }
+  &[autocut] .ac { display: inline-flex; }
+  .m { width: 24px; text-align: center; }
+  .l2 { display: flex; align-items: center; gap: 12px; margin: 6px 0 8px; }
+  .meter { flex: 1; height: 8px; background: var(--qrec-field); }
+  .fill { display: block; height: 100%; background: repeating-linear-gradient(90deg, var(--qrec-meter-green) 0 2px, transparent 2px 3px); }
+  .pk { width: 40px; text-align: right; }
+  .l3 { display: grid; grid-template-columns: 34px 104px 1fr 104px; align-items: center; gap: 0 8px; }
+  .sy { justify-self: end; }
+  .v { justify-content: flex-end; }
+</style>

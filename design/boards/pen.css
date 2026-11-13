@@ -1,0 +1,6 @@
+/* Base for the boards ported from design/qrec.pen: what pen.dev's html-css export puts in every page.
+   Their markup is absolutely positioned, as pen drew it; colors are the theme tokens (themes.css). */
+@import url("https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@200..800&family=Fraunces:wght@100..900&family=JetBrains+Mono:wght@100..800&display=swap");
+
+*, ::before, ::after { box-sizing: border-box; }
+body { margin: 0; background-color: var(--qrec-bg); }

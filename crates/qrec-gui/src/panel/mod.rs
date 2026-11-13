@@ -23,6 +23,7 @@ pub mod header;
 pub mod inspector;
 pub mod menus;
 pub mod rows;
+pub mod scenes;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -56,6 +57,7 @@ struct Inner {
     root: gtk::Box,
     stack: gtk::Stack,
     header: HeaderView,
+    scene_bar: scenes::SceneBarView,
     banner: BannerView,
     layers_header: SectionHeader,
     layers: LayerList,
@@ -143,6 +145,7 @@ impl Panel {
         let add_layer_menu = Menu::new();
         let add_audio_menu = Menu::new();
         let header = HeaderView::new(ctx, &add_layer_menu);
+        let scene_bar = scenes::SceneBarView::new(ctx);
         let banner = BannerView::new(ctx);
         let layers_header = SectionHeader::new("Layers");
         let layers = LayerList::new(ctx);
@@ -154,6 +157,7 @@ impl Panel {
 
         let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
         column.add_css_class("panel-column");
+        column.append(&scene_bar.widget());
         column.append(&banner.widget());
         let section =
             |header: &SectionHeader, body: &gtk::Widget, add: Option<&gtk::MenuButton>| {
@@ -202,6 +206,7 @@ impl Panel {
             root: root.clone(),
             stack,
             header,
+            scene_bar,
             banner,
             layers_header,
             layers,
@@ -268,6 +273,7 @@ impl Panel {
                     let local = inner.ctx.store.local().clone();
                     inner.refresh(&change.next, &local);
                     inner.autocut.update(&change.next);
+                    inner.after_scene_switch(&change.prev, &change.next, &local);
                 }
             })
             .detach();
@@ -283,7 +289,130 @@ impl Panel {
     }
 }
 
+/// For each Live layer whose source isn't connected, the screens or
+/// cameras that are (and not in the scene yet), as `LayerSet`s giving the
+/// layer that source (the row's Replace…, SPEC §5.6).
+fn replace_items(
+    state: &State,
+    rows: &[panel::LayerRow],
+    local: &LocalUi,
+) -> std::collections::BTreeMap<qrec_core::ids::LayerId, Vec<(String, qrec_core::Command)>> {
+    use qrec_core::model::VideoSource;
+    use qrec_core::protocol::command::{LayerPatch, SceneTarget, VideoSourceArg};
+    let mut out = std::collections::BTreeMap::new();
+    let Some(inventory) = &local.sources else {
+        return out;
+    };
+    let scene = &state.project.scene;
+    let used = |source: &VideoSourceArg| {
+        scene.layers.iter().any(|l| match (&l.source, source) {
+            (VideoSource::Screen { output, .. }, VideoSourceArg::Screen { output: o }) => {
+                output == o
+            }
+            (VideoSource::Camera { device, .. }, VideoSourceArg::Camera { device: d }) => {
+                device == d
+            }
+            _ => false,
+        })
+    };
+    for row in rows.iter().filter(|r| r.not_connected) {
+        let Some(layer) = scene.layer(&row.layer) else {
+            continue;
+        };
+        let candidates: Vec<(String, VideoSourceArg)> = match layer.source {
+            VideoSource::Screen { .. } => inventory
+                .screens
+                .iter()
+                .map(|s| {
+                    let label = if s.description.is_empty() {
+                        s.output.clone()
+                    } else {
+                        format!("{} \u{b7} {}", s.output, s.description)
+                    };
+                    (
+                        label,
+                        VideoSourceArg::Screen {
+                            output: s.output.clone(),
+                        },
+                    )
+                })
+                .collect(),
+            VideoSource::Camera { .. } => inventory
+                .cameras
+                .iter()
+                .map(|c| {
+                    let label = if c.label.is_empty() {
+                        c.device.clone()
+                    } else {
+                        c.label.clone()
+                    };
+                    (
+                        label,
+                        VideoSourceArg::Camera {
+                            device: c.device.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        };
+        let items: Vec<(String, qrec_core::Command)> = candidates
+            .into_iter()
+            .filter(|(_, source)| !used(source))
+            .map(|(label, source)| {
+                (
+                    label,
+                    qrec_core::Command::LayerSet {
+                        target: SceneTarget::Project,
+                        layer: row.layer.clone(),
+                        patch: LayerPatch {
+                            source: Some(source),
+                            ..LayerPatch::default()
+                        },
+                    },
+                )
+            })
+            .collect();
+        out.insert(row.layer.clone(), items);
+    }
+    out
+}
+
 impl Inner {
+    /// After a switch to a saved scene (a new "Use scene" entry), a toast
+    /// names the sources that aren't connected, with Undo (board 01).
+    fn after_scene_switch(&self, prev: &State, next: &State, local: &LocalUi) {
+        if next.history.cursor <= prev.history.cursor {
+            return;
+        }
+        let Some(entry) = next
+            .history
+            .entries
+            .iter()
+            .find(|e| e.seq == next.history.cursor)
+        else {
+            return;
+        };
+        let Some(scene_name) = entry.label.strip_prefix("Use scene ") else {
+            return;
+        };
+        let _ = local;
+        // What discovery found may be old: look again, then say what the
+        // scene names that isn't here.
+        let scene = next.project.scene.clone();
+        let scene_name = scene_name.to_owned();
+        let store = self.ctx.store.clone();
+        menus::refresh_sources_then(&self.ctx, move |inventory| {
+            let gone: Vec<String> = scene
+                .layers
+                .iter()
+                .filter_map(|l| {
+                    panel::not_connected(&l.source, &inventory.screens, &inventory.cameras)
+                })
+                .collect();
+            switch_notice(&store, &scene_name, &gone);
+        });
+    }
+
     /// Shows `state` and `local` (skipped when neither changed).
     fn refresh(&self, state: &State, local: &LocalUi) {
         let shown = Shown {
@@ -305,8 +434,33 @@ impl Inner {
         let header = panel::header(state);
         let add = panel::add_enabled(state);
         self.header.update(&header, &add);
-        self.banner.update(&header, &panel::layout_enabled(state));
-        let layer_rows = panel::layer_rows(state, &live);
+        let saved = match qrec_core::ui_normalize::edit_target(&state.project, &state.ui) {
+            Some(qrec_core::protocol::command::SceneTarget::Take(take)) => {
+                panel::apply_saved_items(state, &take)
+            }
+            _ => Vec::new(),
+        };
+        self.banner
+            .update(&header, &panel::layout_enabled(state), &saved);
+        let mut layer_rows = panel::layer_rows(state, &live);
+        // A saved scene can name a screen or camera that isn't here (SPEC §5.6).
+        if let Some(inventory) = &local.sources {
+            panel::mark_not_connected(
+                &mut layer_rows,
+                state,
+                &inventory.screens,
+                &inventory.cameras,
+            );
+        }
+        let missing: std::collections::BTreeSet<qrec_core::ids::LayerId> = layer_rows
+            .iter()
+            .filter(|r| r.not_connected)
+            .map(|r| r.layer.clone())
+            .collect();
+        self.scene_bar
+            .update(panel::scene_bar(state).as_ref(), missing);
+        let replace = replace_items(state, &layer_rows, local);
+        self.layers.set_replace(replace);
         self.layers_header
             .set_caption(&layer_count(layer_rows.len()));
         self.layers.update(&layer_rows, state);
@@ -361,6 +515,34 @@ pub(crate) fn send_rename(
         }
         store.apply_default(&sent, reply);
     });
+}
+
+/// The toast after a switch to `scene_name` when sources in `gone` aren't
+/// connected (board 07-named-scenes/01): with Undo.
+fn switch_notice(store: &crate::store::Store, scene_name: &str, gone: &[String]) {
+    let Some(first) = gone.first() else { return };
+    use qrec_core::protocol::toast::{ToastAction, ToastLevel, UiAction};
+    use qrec_core::view::notices::{Notice, NoticeAction};
+    let title = if gone.len() == 1 {
+        format!("Switched to {scene_name}. {first}.")
+    } else {
+        format!(
+            "Switched to {scene_name}. {} sources aren't connected.",
+            gone.len()
+        )
+    };
+    let body = if gone.len() == 1 {
+        "Its layer stays in the scene, and new takes record without it until it's back or you replace it."
+    } else {
+        "Their layers stay in the scene, and new takes record without them until they're back or you replace them."
+    };
+    let notice = Notice::new(ToastLevel::Warning, title)
+        .with_body(body)
+        .with_action(NoticeAction::Core(ToastAction {
+            label: "Undo".to_owned(),
+            action: UiAction::Dispatch(Box::new(qrec_core::Command::Undo { steps: 1 })),
+        }));
+    store.notify(notice);
 }
 
 #[cfg(test)]

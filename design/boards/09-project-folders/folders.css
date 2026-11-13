@@ -1,0 +1,37 @@
+/* Named project folders (SPEC §4.4): the picker's folder menu and Settings' folder list. */
+.pf-line { display: flex; gap: 8px; align-items: center; }
+.pf-line .pk-field { flex: 1; min-width: 0; }
+.pk-field.pf-quiet { border-color: var(--qrec-border-strong); box-shadow: none; }
+.pf-in { display: inline-flex; align-items: center; gap: 6px; height: 40px; padding: 0 10px 0 12px; flex: none;
+  background: var(--qrec-raised); border: 1px solid var(--qrec-border); border-radius: var(--qrec-radius-md); font-weight: 600; color: var(--qrec-text); }
+.pf-in .muted { font-weight: 400; }
+.pf-in.open { border-color: var(--qrec-accent); box-shadow: 0 0 0 1px var(--qrec-accent); }
+.pk-body > div { position: relative; }
+.pf-menu { right: 0; top: 72px; width: 360px; }
+.pf-menu .menu-item { height: 44px; }
+.pf-menu .grow { display: flex; flex-direction: column; gap: 1px; }
+.pf-name { line-height: 18px; }
+.pf-badge { padding: 1px 8px; border-radius: var(--qrec-radius-pill); background: var(--qrec-selected); color: var(--qrec-accent-text);
+  font-size: 12px; line-height: 16px; font-weight: 600; }
+.pf-make { font-size: 12px; line-height: 16px; font-weight: 600; color: var(--qrec-accent-text); }
+
+/* Settings › Project: the folder list inside the All projects group */
+.pf-list { width: 100%; display: flex; flex-direction: column; border-bottom: 1px solid var(--qrec-border); padding: 12px 0; gap: 8px; }
+.pf-list-head { display: flex; align-items: flex-start; gap: 24px; }
+.pf-list-head .text { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.pf-rows { display: flex; flex-direction: column; border: 1px solid var(--qrec-border); border-radius: var(--qrec-radius-md); background: var(--qrec-surface); }
+.pf-row { display: flex; align-items: center; gap: 12px; height: 48px; padding: 0 8px 0 12px; }
+.pf-row + .pf-row { border-top: 1px solid var(--qrec-border); }
+.pf-row.hover { background: var(--qrec-hover); }
+.pf-row > .ic { color: var(--qrec-muted); }
+.pf-row .text { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 12px; }
+.pf-row .text .mono-sm { color: var(--qrec-muted); }
+.pf-row .acts { display: flex; align-items: center; gap: 4px; }
+.pf-row .acts .btn { height: 28px; padding: 0 10px; font-size: 13px; }
+.pf-row .field { width: 220px; }
+.pf-row.gone .pf-name { color: var(--qrec-disabled-text); }
+.pf-empty { padding: 14px 12px; color: var(--qrec-muted); font-size: 13px; line-height: 18px; }
+.pf-add { display: flex; gap: 8px; }
+.pf-gap { width: 14px; flex: none; }
+/* The settings page scrolled to its end: the folder list is below the fold of S18b's fixed-height dialog. */
+[data-pencil-name="Page Project"] { min-height: 0; overflow: hidden; justify-content: flex-end !important; }

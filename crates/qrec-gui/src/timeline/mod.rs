@@ -33,7 +33,7 @@ pub mod control;
 pub(crate) mod draw;
 mod headers;
 mod paint;
-mod root;
+pub(crate) mod root;
 mod surface;
 mod tips;
 mod toolbar;

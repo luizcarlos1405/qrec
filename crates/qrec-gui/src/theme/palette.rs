@@ -6,8 +6,8 @@
 //!
 //! Generated from design/tokens/qrec-tokens.json by
 //! crates/qrec-gui/tests/tokens.rs (QREC_UPDATE_TOKENS=1 cargo test -p
-//! qrec-gui --test tokens). Do not edit: change the variable in
-//! design/qrec.pen and regenerate.
+//! qrec-gui --test tokens). Do not edit: change the token in
+//! design/tokens/qrec-tokens.json and regenerate.
 
 use gtk::gdk;
 use qrec_core::config::Theme as ThemeId;

@@ -172,6 +172,104 @@ pub(crate) fn job(job: &Job) -> String {
     }
 }
 
+/// `qrec scene list`: the saved scenes in their order, with their `Alt`
+/// key, and which one the project uses.
+pub(crate) fn scenes(view: &qrec_core::scenes::ScenesView) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(why) = &view.unreadable {
+        lines.push(format!("scenes.json can't be read: {why}"));
+        return lines;
+    }
+    if view.scenes.is_empty() {
+        lines.push("No saved scenes. `qrec scene save <name>` saves the project scene.".to_owned());
+        return lines;
+    }
+    let table: Vec<Vec<String>> = view
+        .scenes
+        .iter()
+        .map(|s| {
+            let mark = match (s.in_use, view.current.edited) {
+                (true, true) => "in use, edited",
+                (true, false) => "in use",
+                _ => "",
+            };
+            vec![
+                s.key.map_or_else(String::new, |k| format!("Alt+{k}")),
+                s.name.clone(),
+                s.summary.clone(),
+                mark.to_owned(),
+            ]
+        })
+        .collect();
+    lines.extend(layout(
+        &["KEY", "SCENE", "SOURCES", ""],
+        &table,
+        &[Align::Left],
+    ));
+    if view.current.name.is_none() {
+        lines.push("The project scene is no saved scene.".to_owned());
+    }
+    lines
+}
+
+/// `qrec folders`: the project folders in their order, the default marked.
+pub(crate) fn folders(rows: &[qrec_core::project_folders::FolderRow]) -> Vec<String> {
+    if rows.is_empty() {
+        return vec![
+            "No project folders. `qrec folders add NAME /path/to/projects` adds one.".to_owned(),
+        ];
+    }
+    let table: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| {
+            vec![
+                r.name.clone(),
+                r.path.clone(),
+                if r.default { "default" } else { "" }.to_owned(),
+            ]
+        })
+        .collect();
+    layout(&["FOLDER", "PATH", ""], &table, &[Align::Left])
+}
+
+/// What a `qrec folders` edit did.
+pub(crate) fn folder_edited(
+    edit: &qrec_core::project_folders::FolderEdit,
+    projects: &qrec_core::config::ProjectsDefaults,
+) -> String {
+    use qrec_core::project_folders::FolderEdit;
+    let default = projects.default_folder().map(|f| f.name.as_str());
+    let is_default = |name: &str| {
+        projects
+            .find(name)
+            .is_some_and(|f| Some(f.name.as_str()) == default)
+    };
+    match edit {
+        FolderEdit::Add { name, path, .. } => {
+            let name = name.trim();
+            if is_default(name) {
+                format!("Added {name} ({path}), the default folder")
+            } else {
+                format!("Added {name} ({path})")
+            }
+        }
+        FolderEdit::Rename { name, new_name } => {
+            format!("Renamed {} to {}", name.trim(), new_name.trim())
+        }
+        FolderEdit::SetDefault { .. } => match default {
+            Some(name) => format!("{name} is the default folder"),
+            None => "No default folder".to_owned(),
+        },
+        FolderEdit::Remove { name } => {
+            let gone = format!("Forgot {} (the folder is untouched)", name.trim());
+            match default {
+                Some(now) => format!("{gone}; the default folder is {now}"),
+                None => format!("{gone}; there are no project folders left"),
+            }
+        }
+    }
+}
+
 /// `qrec take list`.
 pub(crate) fn take_list(rows: &[TakeRow]) -> Vec<String> {
     if rows.is_empty() {

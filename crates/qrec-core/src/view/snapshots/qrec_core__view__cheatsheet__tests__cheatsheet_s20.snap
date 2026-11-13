@@ -54,4 +54,5 @@ Redo                                     [Ctrl][Shift][Z] or [Ctrl][Y]
 Select all                               [Ctrl][A]
 ## Canvas
 Nudge layer 1 px (Shift: 10)             [←] / [→] / [↑] / [↓]
+Use saved scene 1 … 9                    [Alt][1] / [Alt][9]
 -- Keys come from ~/.config/qrec/keys.toml. Change them in Settings › Keyboard. | ["Ctrl", ","] Settings

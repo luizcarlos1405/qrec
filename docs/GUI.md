@@ -135,13 +135,14 @@ The draft frames, the icons and the art were exported the same day
 
 ### G§1.3 Precedence for visual values
 
-1. The approved pen frame or component (CLAUDE.md: `qrec-gui` follows
-   `design/qrec.pen`). Read it with the pencil MCP, read-only: `Get`,
-   `GetVariables`, `Print` with `filePath
-   /home/luizcarlos1405/RSensato/Qrec/qrec/design/qrec.pen`, and only
-   after `get_app_state` shows that file as the active document (G§0.6).
-   Never call SetVariables, Insert, Update, Delete, Replace, Move,
-   Generate or Export. Otherwise use the PNG in `design/screens/`.
+1. The approved board (CLAUDE.md: `qrec-gui` follows `design/boards/`).
+   The ported boards are pen.dev's html-css export of each approved frame
+   (2026-11-10), so exact positions, sizes, paddings, fonts and token names
+   are in the HTML: read the file, or `npx htmlboard@0.10.0 shot <file>` to
+   see it. Each names its pen frame id; the node ids in this document are
+   the `data-pencil-id`s in it. `design/qrec.pen` was deleted (git history
+   has it): the pen MCP isn't needed any more. The PNGs in `design/screens/` stay as the approved
+   pictures.
 2. DESIGN.md for what pen can't express: font axes, motion, real link
    underlines, contrast and focus rules, reduced motion.
 3. BRIEF for copy and sample data, except where an approved PNG differs:
@@ -151,8 +152,8 @@ Resolved conflicts (don't re-decide):
 
 | Topic | Build |
 | --- | --- |
-| Fit-zoom end inset (README known gap) | `(W − 8) / total` (G§4.5); never measure clip x off a fit-zoom mock |
-| Zoom to selection | the selection fills the time area exactly, no margin: S12 is 1040 / 3105 = 0.335 px/frame |
+| Fit-zoom pads (README known gap) | `(W − 40) / total`: 8 px before frame 0 and 32 px after the end (G§4.5); never measure clip x off a fit-zoom mock |
+| Zoom to selection | the selection fills the time area between the pads, as fit fills it with the timeline: S12 is 1000 / 3105 = 0.322 px/frame |
 | Transport row | anchored to the stage bottom: top = stage height − 44 (window y 612 in S02 and in S14) |
 | Fraunces axes | DESIGN: `SOFT` 50 (display, display-sm), 100 (wordmark); `WONK` 1; optical size = font size. The PNGs show default axes; the PO checks it (G§8.7) |
 | Countdown dim | `video-scrim` at 65 % opacity = black at 40 % (S03) |
@@ -2558,7 +2559,19 @@ As built (WP6, round 3):
 
 - **Viewport** `{ width: f64 /* time area */, px_per_frame: f64,
   scroll_px: f64, lanes_scroll_px: f64 }`, logical px at 100 % (D-46).
-  - Fit: `(width − 8) / total` (an empty timeline has no viewport).
+  - Pads: the timeline scrolls with 8 px before frame 0 and 32 px after
+    its end (`START_PAD_PX`, `END_PAD_PX`): frame f is at x = 8 + f × ppf
+    − scroll, and the scroll runs from 0 to 8 + total × ppf + 32 − width.
+    The playhead parked at either end shows whole (its 13 px head was cut
+    in half at frame 0), and the last clip's end edge, with its trim zone
+    (4 px past it when selected), stays left of the lanes' overlay
+    scrollbar. That one takes the time area's right 24 px once the
+    pointer comes within 16 px of the edge (libadwaita's), and it took
+    the press when fit put the end 8 px in: the owner couldn't trim the
+    last take's end with five lanes (2026-11-11;
+    `the_last_clip_end_trims_beside_the_lanes_scrollbar`).
+  - Fit: `(width − 40) / total`, the pads around the frames (an empty
+    timeline has no viewport).
   - Range `[fit, 128]` px/frame; frame level ≥ 24.
   - Slider: `s ∈ [0, 1] ↦ fit · (128 / fit)^s`.
   - `ui.zoom = None` ⇔ fit, with scroll 0.
@@ -2569,23 +2582,25 @@ As built (WP6, round 3):
     notch, anchored at the pointer, taken from the scroll event itself, over
     the rows and over the ruler (review: the ruler recorded no pointer and
     zoomed at the time area's left edge); `\` fits.
-  - `z` (zoom to selection): ppf = width ÷ the selection's frame span,
-    scroll = span start × ppf: the selection fills the time area exactly,
-    no margin (S12: 1040 / 3105 = 0.335 px/frame, c3e9 from x 176 to
-    1216, readout "10 px/s"). With no selection it is unavailable
+  - `z` (zoom to selection): ppf = (width − 40) ÷ the selection's frame
+    span, scroll = span start × ppf: the selection fills the time area
+    between the pads, as fit fills it with the timeline, so its edges
+    trim clear of the scrollbar too (S12: 1000 / 3105 = 0.322 px/frame,
+    c3e9 from x 184 to 1184, readout "10 px/s"; it filled the time area
+    exactly until 2026-11-11). With no selection it is unavailable
     (`hint_enabled`, S07) and the key toasts "Select the clips to zoom to"
     (D-34).
   - Animation: 200 ms `EASE_OUT_EXPO` in log(px/frame), keeping the anchor
     time's x fixed; instant under reduced motion (followed live through
     `Theme::follow_motion`, round 3) and in test mode. A pure `ZoomAnim`
     on the frame clock, not `adw::TimedAnimation` (WP3).
-  - Fit uses the inset rule (G§1.3): c8a1 is 63.8 px wide and reads "1";
-    S07 and S11 show "Take 1" at 64.3 px (WP3).
+  - Fit uses the pads (G§1.3): c8a1 is 61.8 px wide and reads "1"; S07
+    and S11 show "Take 1" at 64.3 px (WP3).
   - While recording, fit includes the ghost (total + elapsed frames) as
     it grows on the frame clock between record clocks, at once
     (`ViewModel::follow_ghost`; a clock behind that growth never shrinks
     it), so the ghost's end and the playhead parked there stay inside the
-    8 px inset and the clips glide. The fit eases (200 ms, instant under
+    32 px end pad and the clips glide. The fit eases (200 ms, instant under
     reduced motion) when the ghost starts or ends. (Review: refitted only
     at each `RecordClock`, 4 Hz, with a 200 ms ease, they ran up to 25 %
     past the time area between clocks early in a take.) The timeline runs
@@ -2599,8 +2614,8 @@ As built (WP6, round 3):
   the event) and sets the lanes' offset from the press's: the canvas moves
   with the scroll the pan sets, so its own y fed back (review: the lanes
   moved half the pointer's travel, or swung back and forth).
-- **Clip boxes** (time-area x = start × ppf − scroll; w = len × ppf, no
-  minimum):
+- **Clip boxes** (time-area x = 8 + start × ppf − scroll; w = len × ppf,
+  no minimum):
 
   | Width | Label |
   | --- | --- |
@@ -2667,7 +2682,7 @@ As built (WP6, round 3):
     tick and the full timecode in `text` (y 1, 4 px right). The current
     frame's cell has an `accent-2-20` band.
   - Corner cell: the playhead timecode, `mono` `text`, at (12, 5).
-  - Checks against the mocks: fit 0.1396 → 30 s / 30 s / 10 s; 48 px/s →
+  - Checks against the mocks: fit 0.1353 → 30 s / 30 s / 10 s; 48 px/s →
     2 s / 1 s / 10 f; 10 px/s → 10 s / 10 s / 5 s (S12); recording fit
     0.0850 → 1 min / 1 min / 10 s (S04, S05, S05b). The table said 5 s / 1 s
     for 10 s and 30 s / 10 s for 1 min, which drew 1 s ticks and a 10 px
@@ -2682,8 +2697,8 @@ As built (WP6, round 3):
   passes the right edge − 8 px, jump one page. While recording, the
   playhead parks at the ghost's end (the corner shows it).
 - **Hit test**: trim zones per D-45; a clip body → select (D-37) and move;
-  the ruler → seek and scrub; an empty row → `Select{Clear}`. Lane headers
-  are widgets.
+  the ruler → seek and scrub (frame 0 in the start pad); an empty row or a
+  pad → `Select{Clear}`. Lane headers are widgets.
 - **Snapping** (`ui.snapping`): targets = the playhead and every clip edge
   but the dragged ones; 8 px threshold; a 1 px `snap-guide` flash for
   300 ms.
@@ -3097,6 +3112,41 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
   its tag 22 px above the lane; the toolbar's settings icon runs
   `autocut.page` (`autocut.preview`, G§3.8 step 10).
 
+**Saved scenes** (SPEC §5.6, `panel::scenes`, boards
+`design/boards/07-named-scenes/`, approved 2026-11-10). In Live with the
+project scene, `view::panel::scene_bar` puts a 40 px bar at the top of the
+panel's column (`#scene-bar`, a `gtk::MenuButton`): a 32×18 thumbnail of
+the scene drawn from its rects (`DrawingArea`: screens `muted-40`, cameras
+`take-moss`, a source that isn't connected outlined in `warning`), the
+saved scene's name or a muted "No saved scene", "Edited" with a 6 px
+`accent-2` dot, the chevron; Save (`SceneSave{None}`) beside it when
+edited, Save as… when no saved scene is in use. Its popover lists the
+saved scenes (48 px rows: thumbnail, name, `scenes::summary`, the check on
+the one in use, `Alt` and its digit for the first nine; activating a row
+sends `SceneUse`) with each row's ⋮ (revealed on hover): Rename… (the save
+popover in rename mode), Replace with current scene (`SceneSave{name}`:
+the core's modal confirms), Duplicate, Delete… (`SceneDelete`: "Peel off
+this scene?", `view::confirm`); then Save changes (edited only), Save as
+new scene… and Revert to saved (`SceneUse{None}`, enabled when edited).
+The save popover (`#scene-name`, under the bar, 320 px) names a new scene
+after what it shows ("Screen + camera", then "… 2"), says what a scene
+holds, and turns Save into Replace with the warning "A scene named “X”
+exists. Saving replaces it." when the name is taken (sent confirmed: the
+person just read it). The palette's "Save scene as…" (`scene.save-as`, a
+GUI action) opens it. A Live layer whose screen or camera discovery didn't
+find reads "DP-2 isn't connected" (`view::panel::mark_not_connected`) with
+Replace… (the connected sources of its kind not in the scene, as
+`LayerSet{source}`). After a new "Use scene" entry the panel discovers the
+sources again and, when some aren't connected, toasts "Switched to X. DP-2
+isn't connected." with Undo. In Program, the take banner's Layout menu
+ends with "Apply a saved scene ▸" (`view::panel::apply_saved_items`: each
+scene with what it matches or hides, disabled when it shares no layer).
+`Alt+1` … `Alt+9` are `scene.use-N` (the palette names each by its scene
+and leaves out keys with none; the cheat sheet shows them as one row). The
+settings watcher also follows `scenes.json`: each settled change sends
+`ScenesReload`. Not done yet: renaming inline in the menu (the popover
+renames), and "Save this layout as a scene…" from a take's banner.
+
 ### G§4.8 `view::bin` and `view::export` (WP7)
 
 - **The fact `Take.recovered`** (WP0a): `#[serde(default,
@@ -3405,7 +3455,7 @@ info toast titled with the reason. (`palette.open` and `keys.help` toasted
 
 What `qrec` shows with nothing to open (SPEC §4.4). `Shell::gui` decides: `--project` opens that folder; otherwise `qrec_shell::projects::bare_launch` looks at the cwd, `projects.open_last` and the recent list, and says open that project or show the picker. `qrec --pick` (`Plan::Picker`) always shows it. It logs to `state/picker.log`.
 
-**Not drawn.** There is no frame for it in `design/qrec.pen`: it is built from X2's shell (the minimal header `Xba2H`, the storybook title) and S21's rows, like Settings › Recording and Autocut. Swamp Night's tokens carry to the other themes. It still needs a frame and the owner's approval.
+**Design.** It was built from X2's shell (the minimal header `Xba2H`, the storybook title) and S21's rows before any frame existed. Its boards are `design/boards/08-project-picker/` (2026-11-10): the list and its states, no projects, New project, X3's Open another project, and Settings › Project's All projects group. Approved on 2026-11-10 and implemented (paths in mono, the selected row's accent stroke, × revealed on hover, selection or a gone folder, the gone-folder warning pattern, "Recent" over the list, bold matches, C31's empty state, Enter on Create; rows still waiting after 500 ms say "Checking…" with a spinner).
 
 **One startup path.** The picker is a small window of its own: no lock, host or GStreamer. Picking a project `exec`s `qrec --project <dir>` over the process, so the project goes through G§3.3 unchanged, logs to its own log and the shell still gets the window's exit code; the pid stays the same. The `xdg_activation` token goes along in `XDG_ACTIVATION_TOKEN`, as GTK already consumed the one this process got. An `exec` that fails comes back as an error line in the picker.
 
@@ -3415,11 +3465,11 @@ What `qrec` shows with nothing to open (SPEC §4.4). `Shell::gui` decides: `--pr
 
 **Keys.** The search has the focus: typing filters, `↑` `↓` move the selection, `Enter` opens it. `Ctrl+N` New project, `Ctrl+O` Open folder, `Ctrl+Q` quits, `Esc` clears the search or leaves New project. They are fixed, not `keys.toml` bindings: no project is open to run them.
 
-**New project.** One field, a name or a path (`new_project::resolve`, A§9.10). Under it `view::picker::new_project_hint` says where it would go, from the text alone; Create follows. A link chooses `projects.folder`, which the picker is the only place to set before any project exists.
+**New project.** One field, a name or a path (`new_project::resolve_in`, A§9.10), and beside it the folder a name goes in (design/boards/09-project-folders, approved 2026-11-11): "in 📁 work ▾", the default project folder to begin with. Its popover (`view::picker::folder_menu`) lists the folders, the chosen one checked, the default one's badge and *Make default* on the others (hover or focus), then *Add a folder…* (the folder chooser; the folder is named after its last part, `videos 2` when taken, and becomes the chosen one). Choosing a folder is for this project only: the default changes only through *Make default*, Settings or `qrec folders default`. `Alt+↓` opens the menu on the chosen folder; a path dims the button (it goes where it says). Under the field `view::picker::new_project_hint` says where it would go, from the text alone; Create follows. With no folders the button gives way to *Add a project folder…*, so one can be added before any project exists.
 
 **Never a dead end.** A last project that is gone is the picker. One that can't be read is X3 with one more button, "Open another project…" (`BlockingAction::ChooseProject`): only when the window wasn't asked for with `--project` (`picker::offered`), so X3 under `--project` stays the approved frame.
 
-**Settings.** Settings › Project ends with an "All projects" group (`view::settings::all_projects`, not drawn: S18b's rows): "Open the last project on start" and "Projects folder" (Choose…, Clear), both in `config.toml`.
+**Settings.** Settings › Project ends with an "All projects" group (`view::settings::all_projects`, design/boards/09-project-folders): "Open the last project on start" and "Project folders": the list in the order added (no reordering), each row its name, path (mono), the *Default* badge or *Make default* on hover, rename in place (Enter saves, Esc or leaving cancels) and forget (×, no question: nothing on disk changes; a toast says so). *Add folder…* above the list is primary while there are none. All of it is `config.toml`, written as `qrec folders` writes it (`config_file::edit_folders`).
 
 `gui_picker` covers each launch in a nested compositor.
 
@@ -3429,8 +3479,9 @@ What `qrec` shows with nothing to open (SPEC §4.4). `Shell::gui` decides: `--pr
 
 ### G§5.1 C01–C34
 
-Metrics are in DESIGN Components and in the pen component sheets (node ids
-below; read them with `Get` while `design/qrec.pen` is active).
+Metrics are in DESIGN Components and in the component sheets
+(`design/boards/01-components/`; the node ids below are their
+`data-pencil-id`s).
 
 | Component | Pen base node | Implementation | WP |
 | --- | --- | --- | --- |
@@ -4271,14 +4322,16 @@ same where not named; `tmp/fix12/notes/`, `tmp/icons-art/measure/`,
   slider's track ends at x 1003 for 1007. At the fit zoom (every fit
   shot) zoom out is unavailable (G§4.3: px/frame > fit) and drawn dimmed
   (85 % of the frame's ink), where the frames draw it enabled.
-- Every fit shot (G§1.3's fit inset: the timeline fits into 8 px less
-  than the frames' 1040): clip edges, the playhead and S11's caret sit
-  up to 8 px left of the frames' (S11's caret at 403 for 404.9), the end
-  playhead whole at x 1207–1208 where the frames' is cut at 1215 (S02,
-  S03, S04, S05, S05b), and in the 10-clip timeline (S02, S03, S04b,
-  S06, S07, S11, S13, S14, S15a, S15b, S17, S18, S18b) take 1's second
-  clip reads "1" where the frame reads "Take 1" (c8a1 is 63.8 px wide,
-  the frames' 64.3, G§4.5).
+- Every fit shot (G§1.3's pads: the timeline fits into 40 px less than
+  the frames' 1040, from 8 px in): clip edges, the playhead and S11's
+  caret sit from 8 px right of the frames' at the start to 32 px left at
+  the end (S11's caret at 404.1 for 404.9), the end playhead whole at x
+  1184 where the frames' is cut at 1215 (S02, S03, S04, S05, S05b), and
+  in the 10-clip timeline (S02, S03, S04b, S06, S07, S11, S13, S14,
+  S15a, S15b, S17, S18, S18b) take 1's second clip reads "1" where the
+  frame reads "Take 1" (c8a1 is 61.8 px wide, the frames' 64.3, G§4.5).
+  S12's `z` leaves the same pads around c3e9 (x 184 → 1184), where the
+  frame fills the time area with it.
 - S01a: the frame's "Add a layer or audio track first" tooltip is not in
   its compare: gui_chrome's `s01a-header-tooltip` shoots it.
 - S01b: the first run names its layers and tracks after their sources
@@ -4831,8 +4884,8 @@ Writes `LocalUi.{drag, viewport, hover_clip, trim_frame}`.
 
 **Acceptance.**
 - Snapshots of the four zoom levels on `design_state`: clip x, w and
-  labels with the inset rule; S12's zoom to c3e9 (0.33494 px/frame, x 176
-  → 1216, readout "10 px/s"); the ruler checks of G§4.5; `z` unavailable
+  labels with the pads; S12's zoom to c3e9 (0.32206 px/frame, x 184 →
+  1184, readout "10 px/s"); the ruler checks of G§4.5; `z` unavailable
   with no selection.
 - GTK-free `decide_*` functions with a fake dispatcher: one undoable
   command per gesture and none on `Esc`; press, Shift+click, Ctrl+click and

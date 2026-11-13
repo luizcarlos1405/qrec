@@ -122,9 +122,9 @@ impl ZoomAnim {
         let scroll = if (p0 - p1).abs() > p0 * 1e-9 {
             // The fixed point of the two viewports: t·p0 − s0 = t·p1 − s1.
             let anchor = (s0 - s1) / (p0 - p1);
-            let x = anchor * p0 - s0;
+            let x = self.from.x_of(anchor);
             if (-self.from.width..=2.0 * self.from.width).contains(&x) {
-                anchor * ppf - x
+                tl::START_PAD_PX + anchor * ppf - x
             } else {
                 lerp
             }
@@ -430,7 +430,7 @@ impl ViewModel {
     /// The frames shown grew on the frame clock: a recording's ghost
     /// between record clocks (G§4.5). The view follows at once, never
     /// easing (an ease in flight lands on it), so at fit the ghost's end
-    /// and the playhead parked there stay inside the 8 px inset.
+    /// and the playhead parked there stay inside the 32 px end pad.
     pub fn follow_ghost(&mut self, total: Frame) {
         if total <= self.total {
             return;
@@ -1111,7 +1111,7 @@ fn lifted_boxes(state: &State, view: &Viewport, block: &[ClipId], pointer_x: f64
 pub fn box_places(boxes: &[ClipBox], view: &Viewport) -> Vec<(ClipId, f64)> {
     boxes
         .iter()
-        .map(|b| (b.clip.clone(), (b.x + view.scroll_px) / view.px_per_frame))
+        .map(|b| (b.clip.clone(), view.time_at_x(b.x)))
         .collect()
 }
 

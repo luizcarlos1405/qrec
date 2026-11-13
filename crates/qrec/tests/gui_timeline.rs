@@ -27,6 +27,7 @@ use gui_support::{
 };
 use qrec_core::ClipId;
 use qrec_core::state::{CanvasMode, UiState};
+use qrec_core::view::timeline::{END_PAD_PX, START_PAD_PX};
 use qrec_shell::testkit::design::{DesignVariant, design_fixture, perf_fixture, write_ui};
 use qrec_shell::testkit::run_tool;
 use serde_json::{Value, json};
@@ -66,7 +67,9 @@ fn program(selection: &[&str], playhead: u64, zoom: Option<(f64, u64)>) -> UiSta
         selection: selection.iter().map(|s| id(s)).collect(),
         playhead,
         zoom: zoom.map(|(z, _)| z),
-        scroll_px: zoom.map_or(0.0, |(z, from)| z * from as f64),
+        // Frame `from` at the time area's left edge, as the frames draw
+        // it: past the 8 px before frame 0.
+        scroll_px: zoom.map_or(0.0, |(z, from)| START_PAD_PX + z * from as f64),
         ..UiState::default()
     }
 }
@@ -166,7 +169,7 @@ const S11_Y: f64 = 766.0;
 // ------------------------------------------------------------- fit (S07)
 
 /// S07: fit zoom, nothing selected, the clip tooltip on c1b6; labels
-/// collapse with width (with the 8 px inset c8a1 is 63.8 px: "1").
+/// collapse with width (between the pads c8a1 is 61.8 px: "1").
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s07_fit() {
@@ -175,7 +178,7 @@ fn s07_fit() {
     open(&mut nested, &project, Launch::a11y());
     check_regions(&mut nested, &["lane-A2"]);
     assert_a11y(&mut nested);
-    // c1b6 is at window x 445.3 → 466.9 at fit.
+    // c1b6 is at window x 445.0 → 466.0 at fit.
     nested.pointer().move_to(452.0, 784.0);
     let gui = nested.window(0);
     gui.wait_idle();
@@ -596,7 +599,7 @@ fn s11_drag_move() {
     assert_tooltip(&mut nested, (413.0, 774.0), 46.0);
     let shot = shoot(&nested, "drag-move", Some("S11-drag-move.png"));
     // The caret over the lifted copy, as S11 draws it (BRIEF's x 404.9;
-    // 403 with the fit inset): `caret` across the video row, where the
+    // 404.1 between the fit's pads): `caret` across the video row, where the
     // copy hid it under its 85 % until WP10's fixes.
     let caret = gui_support::token_rgb("swamp-night", "caret");
     for y in [730.0, 750.0, 770.0, 785.0] {
@@ -641,17 +644,7 @@ fn a_middle_drag_pans_the_lanes() {
     let mut nested = Nested::start(AREA, "middle-pan", Options::default());
     let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
     open(&mut nested, &project, Launch::a11y());
-    for n in 3..=5 {
-        let command = json!({
-            "cmd": "audioAdd", "target": "project", "role": "mic",
-            "source": format!("alsa_input.fake-{n}"), "label": format!("Mic {n}"),
-        });
-        let reply = nested
-            .window(0)
-            .ctl(json!({"op": "dispatch", "command": command}));
-        assert_eq!(reply["ok"], true, "{reply}");
-        nested.window(0).wait_idle();
-    }
+    five_lanes(&mut nested);
     let a1 = |nested: &mut Nested| {
         let regions = nested.window(0).regions(&["lane-A1", "lane-A5"]);
         assert!(regions.contains_key("lane-A5"), "five lanes: {regions:?}");
@@ -681,6 +674,60 @@ fn a_middle_drag_pans_the_lanes() {
     assert_clean(&mut nested);
 }
 
+/// Mics 3 to 5 in the project scene: five lanes, more than the rows show,
+/// so the lanes scroll (D-25) under GTK's overlay scrollbar.
+fn five_lanes(nested: &mut Nested) {
+    for n in 3..=5 {
+        let command = json!({
+            "cmd": "audioAdd", "target": "project", "role": "mic",
+            "source": format!("alsa_input.fake-{n}"), "label": format!("Mic {n}"),
+        });
+        let reply = nested
+            .window(0)
+            .ctl(json!({"op": "dispatch", "command": command}));
+        assert_eq!(reply["ok"], true, "{reply}");
+        nested.window(0).wait_idle();
+    }
+}
+
+/// The last clip's end trims beside the lanes' scrollbar (the owner's
+/// report, 2026-11-11). With five lanes the rows scroll (D-25), and GTK's
+/// overlay scrollbar over the time area's right edge takes its right 24 px
+/// once the pointer nears it. Fit put c3e9's end 8 px from that edge, its
+/// trim zone under the scrollbar, which took the press; 32 px from it the
+/// zone is the canvas's: the press starts the trim, the release trims.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_last_clip_end_trims_beside_the_lanes_scrollbar() {
+    let mut nested = Nested::start(AREA, "end-trim-scrollbar", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
+    open(&mut nested, &project, Launch::a11y());
+    five_lanes(&mut nested);
+    let regions = nested.window(0).regions(&["lane-A5"]);
+    assert!(regions.contains_key("lane-A5"), "five lanes: {regions:?}");
+    let [tx, _, tw, _] = regions["time-area"];
+    let [_, vy, _, vh] = regions["video-row"];
+    // c3e9's end at fit, its zone the 4 px left of it.
+    let end = tx + tw - END_PAD_PX;
+    let y = vy + vh / 2.0;
+    let before = clip_rows(&nested, &project);
+    // Over the scrollbar first (it widens), then onto the zone.
+    nested.pointer().move_to(tx + tw - 4.0, y);
+    nested.window(0).wait_idle();
+    press_and_drag(&mut nested, (end - 2.0, y), end - 42.0, 8);
+    wait_drag(&mut nested, json!("trimEnd"));
+    release(&mut nested);
+    wait_drag(&mut nested, Value::Null);
+    nested.window(0).wait_idle();
+    let after = clip_rows(&nested, &project);
+    let out = |rows: &[(String, u64, u64)]| rows.iter().find(|r| r.0 == "c3e9").map(|r| r.2);
+    assert!(
+        out(&after) < out(&before),
+        "c3e9's end stayed: {before:?} → {after:?}"
+    );
+    assert_clean(&mut nested);
+}
+
 /// Ctrl+wheel zooms ×1.25 per notch at the pointer (D-39): one notch at
 /// time-area x 700 keeps the frame under it there, over the ruler (where
 /// nothing records the pointer: it zoomed at the time area's left edge),
@@ -697,12 +744,14 @@ fn ctrl_wheel_zooms_at_the_pointer() {
     let project = fixture(&nested, DesignVariant::Base, &program(&[], 2437, None));
     open(&mut nested, &project, Launch::a11y());
     let ruler_y = center_of(&mut nested, "ruler").1;
-    // At fit: (1040 − 8) / 7391 px per frame, no scroll.
-    let fit = 1032.0 / 7391.0;
+    // At fit: (1040 − 40) / 7391 px per frame, no scroll.
+    let fit = 1000.0 / 7391.0;
     let mut view = (fit, 0.0);
+    // The frame under time-area x 700 (frame 0 is 8 px in, unscrolled).
+    let frame_under = |(zoom, scroll): (f64, f64)| (700.0 - START_PAD_PX + scroll) / zoom;
     let wheel_at = |nested: &mut Nested, (x, y): (f64, f64), from: (f64, f64), what: &str| {
         // The frame under time-area x 700 before.
-        let frame = (700.0 + from.1) / from.0;
+        let frame = frame_under(from);
         nested.pointer().move_to(x, y);
         nested.window(0).wait_idle();
         // Ctrl held by a `wtype` from 400 ms after it starts for 2.5 s; the
@@ -728,7 +777,7 @@ fn ctrl_wheel_zooms_at_the_pointer() {
             ui["zoom"].as_f64().unwrap_or_default(),
             ui["scrollPx"].as_f64().unwrap_or_default(),
         );
-        let under = (700.0 + scroll) / zoom;
+        let under = frame_under((zoom, scroll));
         assert!(
             (under - frame).abs() <= 0.5,
             "{what}: frame {under:.1} under x 700, was {frame:.1} ({ui})"
@@ -831,7 +880,7 @@ fn s12_zoom_to_c3e9() {
     loop {
         let status = nested.cli_json(&project, &["status"]);
         let zoom = status["data"]["ui"]["zoom"].as_f64().unwrap_or_default();
-        if (zoom - 1040.0 / 3105.0).abs() < 1e-6 {
+        if (zoom - 1000.0 / 3105.0).abs() < 1e-6 {
             break;
         }
         assert!(Instant::now() < deadline, "SetUi never came: {status}");
@@ -856,8 +905,9 @@ fn s12_zoom_to_c3e9() {
     let ui = nested.cli_json(&project, &["status"])["data"]["ui"].clone();
     let zoom = ui["zoom"].as_f64().expect("a zoom");
     let scroll = ui["scrollPx"].as_f64().unwrap_or_default();
-    // Window x of a timeline frame (the time area starts at 176).
-    let x_of = |f: &Value| 176.0 + f.as_f64().expect("a frame") * zoom - scroll;
+    // Window x of a timeline frame (the time area starts at 176, frame 0
+    // 8 px into it unscrolled).
+    let x_of = |f: &Value| 176.0 + START_PAD_PX + f.as_f64().expect("a frame") * zoom - scroll;
     let xs: Vec<(f64, f64)> = spans
         .iter()
         .map(|s| (x_of(&s["from"]), x_of(&s["to"])))
@@ -1067,7 +1117,7 @@ fn the_frame_clock_comes_back_after_a_caught_panic() {
             .expect("ui.scrollPx")
     };
     let before = scroll(&nested);
-    assert_eq!(before, 32.0 * 3160.0);
+    assert_eq!(before, START_PAD_PX + 32.0 * 3160.0);
     let gui = nested.window(0);
     let play = gui.ctl(json!({"op": "dispatch", "command": {"cmd": "play"}}));
     assert_eq!(play["ok"], true, "{play}");

@@ -13,6 +13,7 @@ use qrec_core::protocol::{
     HistoryRow, Progress, Query, RecordStartedView, StatusView, TakeFinalizedView, TakeRow, Toast,
     ToastLevel, WireBody,
 };
+use qrec_core::scenes::ScenesView;
 use qrec_core::{CoreError, ErrorCode};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -63,9 +64,18 @@ pub(crate) fn execute(
         Ok(Plan::Local(local)) => run_local(&local, cli, backend, env, &mut ui),
         Ok(Plan::Project(plan)) => project_dir(cli, env.cwd.as_deref())
             .map(|(dir, explicit)| run_project(&plan, &dir, explicit, backend, &mut ui)),
-        Ok(Plan::Create { target, plan }) => {
-            run_create(&target, &plan, backend, env.cwd.as_deref(), &mut ui)
-        }
+        Ok(Plan::Create {
+            target,
+            folder,
+            plan,
+        }) => run_create(
+            &target,
+            folder.as_deref(),
+            &plan,
+            backend,
+            env.cwd.as_deref(),
+            &mut ui,
+        ),
     };
     let code = match result {
         Ok(code) => code,
@@ -193,6 +203,46 @@ fn run_local(
                 ui.print(&format!("Set {key} = {}", config::display(&new)));
             }
         }
+        Local::Folders(edit) => {
+            let path = config::file(&backend.config_dir()?);
+            let text = backend.settings_text(&path)?.unwrap_or_default();
+            let projects = match edit {
+                None => config::load(&text, &path)?.projects,
+                Some(edit) => {
+                    let edit = config::checked_folder(edit)?;
+                    let (new_text, projects) = qrec_core::project_folders::edit_text(&text, &edit)
+                        .map_err(|e| {
+                            if e.code == ErrorCode::Invalid && e.message.starts_with("config.toml")
+                            {
+                                e.with_hint(
+                                    "fix config.toml first; `qrec config` says what is wrong",
+                                )
+                            } else {
+                                e
+                            }
+                        })?;
+                    if new_text != text {
+                        backend.write_settings(&path, &new_text)?;
+                    }
+                    if !ui.json && !ui.quiet {
+                        ui.print(&human::folder_edited(&edit, &projects));
+                    }
+                    projects
+                }
+            };
+            let rows = qrec_core::project_folders::rows(&projects);
+            if ui.json {
+                ui.print_ok(&json!({
+                    "file": path.display().to_string(),
+                    "folders": rows,
+                    "defaultFolder": projects.default_folder().map(|f| f.name.clone()),
+                }));
+            } else if edit.is_none() {
+                for line in human::folders(&rows) {
+                    ui.print(&line);
+                }
+            }
+        }
         Local::Doctor => {
             let report = backend.doctor()?;
             let (lines, failed) = human::doctor(&report, ui.verbose);
@@ -304,20 +354,21 @@ impl Events for Live<'_, '_, '_> {
 /// says what becomes of a folder that was already there.
 fn run_create(
     target: &Path,
+    chosen: Option<&str>,
     plan: &ProjectPlan,
     backend: &mut dyn Backend,
     cwd: Option<&Path>,
     ui: &mut Ui<'_>,
 ) -> Result<u8, CoreError> {
     // Only a name needs the settings: a broken config.toml can't stop a path.
-    let folder = if new_project::is_path(target.as_os_str()) {
-        None
+    let projects = if new_project::is_path(target.as_os_str()) {
+        Default::default()
     } else {
         let path = config::file(&backend.config_dir()?);
         let text = backend.settings_text(&path)?.unwrap_or_default();
-        config::load(&text, &path)?.projects.folder
+        config::load(&text, &path)?.projects
     };
-    let path = new_project::resolve(target.as_os_str(), cwd, folder.as_deref())?;
+    let path = new_project::resolve_in(target.as_os_str(), cwd, &projects, chosen)?;
     let dir = backend.make_project_folder(&path)?;
     Ok(run_project(plan, &dir, true, backend, ui))
 }
@@ -547,6 +598,13 @@ fn answer_empty(plan: &ProjectPlan, dir: &Path, ui: &mut Ui<'_>) -> u8 {
             }
         }
         View::TakeList => print_rows::<TakeRow>(ui, &[], human::take_list),
+        // Saved scenes are listed by a project's host, which reads them.
+        View::Scenes => {
+            return ui.fail(
+                &CoreError::not_project()
+                    .with_hint("saved scenes are listed from a project folder: run it in one"),
+            );
+        }
         View::ClipList => print_rows::<ClipRow>(ui, &[], human::clip_list),
         View::History => print_rows::<HistoryRow>(ui, &[], human::history),
         View::TakeShow => {
@@ -611,6 +669,7 @@ fn render(
             parse::<StatusView>(&data).map(|view| human::status(&view, &dir_text, host))
         }
         View::TakeList => parse::<Vec<TakeRow>>(&data).map(|rows| human::take_list(&rows)),
+        View::Scenes => parse::<ScenesView>(&data).map(|view| human::scenes(&view)),
         View::TakeShow => Some(human::take_show(&data)),
         View::ClipList => parse::<Vec<ClipRow>>(&data).map(|rows| human::clip_list(&rows)),
         View::History => parse::<Vec<HistoryRow>>(&data).map(|rows| human::history(&rows)),

@@ -384,9 +384,17 @@ fn blend(opts: &Options) -> u8 {
 }
 
 /// The x of frame `frame` on the 7,391-frame design timeline at fit zoom
-/// (G§4.5: (1040 − 8) / 7391 px a frame from the time area's x 176).
+/// (G§4.5: (1040 − 40) / 7391 px a frame, 8 px into the time area at x
+/// 176).
 fn frame_x(frame: u64) -> f64 {
-    176.0 + frame as f64 * (1040.0 - qrec_core::view::timeline::FIT_INSET_PX) / 7391.0
+    176.0 + fit_x(1040.0, 7391.0, frame as f64)
+}
+
+/// The x of `frames` in a time area `width` wide fit to `total` frames
+/// (time-area px; G§4.5's pads around them).
+fn fit_x(width: f64, total: f64, frames: f64) -> f64 {
+    qrec_core::view::timeline::Viewport::fit(width, total as u64)
+        .map_or(0.0, |view| view.x_of(frames))
 }
 
 /// What S02 and S06 draw from video at 1600×1000: the preview and the
@@ -404,9 +412,10 @@ fn grounds(t: &Tokens, playhead: u64) -> Vec<Probe> {
         probe("the panel's surface", 1592.0, 940.0, t.rgb("surface")),
         probe("the track headers' surface", 90.0, 940.0, t.rgb("surface")),
         probe("the lanes' bg", 600.0, 950.0, t.rgb("bg")),
+        // The pixel column the 2 px line (x − 1 to x + 1) covers whole.
         probe(
             "the playhead over A2",
-            frame_x(playhead),
+            frame_x(playhead).floor(),
             900.0,
             t.rgb("playhead"),
         ),
@@ -506,7 +515,7 @@ fn clip_start_x(nested: &Nested, project: &Path, clip: &str) -> f64 {
         .iter()
         .find(|c| c["id"] == clip)
         .unwrap_or_else(|| panic!("no {clip}: {list}"));
-    176.0 + frames(c, "start") * (1040.0 - qrec_core::view::timeline::FIT_INSET_PX) / total
+    176.0 + fit_x(1040.0, total, frames(c, "start"))
 }
 
 /// S06 in every theme: Program with c2d0 selected and the pointer over

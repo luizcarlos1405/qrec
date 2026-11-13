@@ -389,7 +389,11 @@ fn settings_relevant(event: &Event, dir: &Path) -> bool {
                 && path
                     .file_name()
                     .and_then(OsStr::to_str)
-                    .is_some_and(|name| name == CONFIG_FILE || name == KEYS_FILE);
+                    .is_some_and(|name| {
+                        name == CONFIG_FILE
+                            || name == KEYS_FILE
+                            || name == crate::scenes_file::SCENES_FILE
+                    });
             settings_file || dir.starts_with(path)
         }),
     }

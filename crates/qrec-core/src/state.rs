@@ -67,6 +67,10 @@ pub struct UiState {
     /// Set whole by `SetUi`; ids that no scene has are dropped.
     pub lane_mute: BTreeSet<TrackId>,
     pub panels: BTreeMap<String, f64>,
+    /// The saved scene last used, saved or renamed to (A§9.11): with the
+    /// library, it says which scene is in use and whether it was edited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scene: Option<String>,
 }
 
 impl Default for UiState {
@@ -84,6 +88,7 @@ impl Default for UiState {
             solo: None,
             lane_mute: BTreeSet::new(),
             panels: BTreeMap::new(),
+            scene: None,
         }
     }
 }
@@ -273,6 +278,9 @@ pub struct Runtime {
     /// `TakeProbed(Recover)`. A host isn't idle while one is (A§8.6).
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub recovering: BTreeSet<TakeId>,
+    /// `scenes.json` as last read (A§9.11): what the views list.
+    #[serde(default)]
+    pub saved_scenes: crate::scenes::ScenesFile,
 }
 
 impl Runtime {
@@ -290,6 +298,7 @@ impl Runtime {
             disk_invalid: None,
             engine_stuck: None,
             recovering: BTreeSet::new(),
+            saved_scenes: crate::scenes::ScenesFile::default(),
         }
     }
 

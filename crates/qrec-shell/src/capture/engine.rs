@@ -483,6 +483,10 @@ struct TakeRun {
     hold_until: Option<Instant>,
     /// `QREC_FAKE_CAMERA_STALL_MS`: when the take's cameras stall.
     camera_stall_at: Option<Instant>,
+    /// Layers left out because their source isn't connected (SPEC §5.6):
+    /// each is a `StreamLost` right after `CaptureStarted`, so the take
+    /// marks it missing. `(layer id, why)`.
+    absent: Vec<(String, String)>,
 }
 
 struct Engine {
@@ -1583,7 +1587,7 @@ impl Engine {
 
     // ------------------------------------------------------------ takes
 
-    fn start(&mut self, plan: CapturePlan) {
+    fn start(&mut self, mut plan: CapturePlan) {
         let take = plan.take.clone();
         let fail = |engine: &mut Engine, source: Option<String>, message: String| {
             engine.emit(Event::CaptureFailed {
@@ -1607,8 +1611,19 @@ impl Engine {
         if self.exiting {
             return fail(self, None, "the capture engine is shutting down".into());
         }
+        // A saved scene can name a screen or camera this machine doesn't
+        // have now: the take records without it (SPEC §5.6).
+        let absent = self.absent_sources(&plan);
+        if !absent.is_empty() {
+            plan.video
+                .retain(|r| !absent.iter().any(|(id, _)| id == r.id.as_str()));
+        }
         if plan.video.is_empty() && plan.audio.is_empty() {
-            return fail(self, None, "the scene has nothing to record".into());
+            let why = match absent.first() {
+                Some((_, why)) => format!("nothing to record: {why}"),
+                None => "the scene has nothing to record".into(),
+            };
+            return fail(self, None, why);
         }
         if let Err(e) = self.ensure_gst() {
             let stuck = e == InitError::Stuck;
@@ -1661,6 +1676,7 @@ impl Engine {
             cancel: false,
             hold_until: None,
             camera_stall_at: None,
+            absent,
         };
         run.log.line(format!(
             "start {} ({:?} backend): {}",
@@ -1670,6 +1686,38 @@ impl Engine {
         ));
         self.take = Some(run);
         self.prepare_take();
+    }
+
+    /// The plan's layers whose source isn't connected now: a camera whose
+    /// device node is gone, a screen the outputs don't list (when they can
+    /// be listed at all). `(layer id, why)`.
+    fn absent_sources(&self, plan: &CapturePlan) -> Vec<(String, String)> {
+        let mut screens: Option<Vec<String>> = None;
+        let mut absent = Vec::new();
+        for rec in &plan.video {
+            let why = match &rec.source {
+                VideoSource::Camera { device, .. } => (!is_fake_camera(device)
+                    && !std::path::Path::new(device).exists())
+                .then(|| format!("{device} isn't connected")),
+                VideoSource::Screen { output, .. } => {
+                    if is_fake_screen(output) {
+                        None
+                    } else {
+                        let known = screens.get_or_insert_with(|| {
+                            self.opts.devices.as_ref().map_or_else(Vec::new, |d| {
+                                d.screens().into_iter().map(|s| s.output).collect()
+                            })
+                        });
+                        (!known.is_empty() && !known.contains(output))
+                            .then(|| format!("{output} isn't connected"))
+                    }
+                }
+            };
+            if let Some(why) = why {
+                absent.push((rec.id.as_str().to_owned(), why));
+            }
+        }
+        absent
     }
 
     /// Makes sure the live pipeline has every source of the plan (asking
@@ -2474,12 +2522,23 @@ impl Engine {
                     }
                     let take = run.plan.take.clone();
                     let t0 = run.t0;
+                    let absent = std::mem::take(&mut run.absent);
+                    for (stream, why) in &absent {
+                        run.log.line(format!("left out {stream}: {why}"));
+                    }
                     self.emit(Event::CaptureStarted {
                         take: take.clone(),
                         t0_ns: t0,
                         files,
                         start_offset_ns,
                     });
+                    for (stream, message) in absent {
+                        self.emit(Event::StreamLost {
+                            take: take.clone(),
+                            stream,
+                            message,
+                        });
+                    }
                     self.emit_clock(&take, t0);
                 } else if !all_written && now >= first_buffer_by {
                     let silent = run.bins.iter().find(|b| !b.written());
@@ -2877,6 +2936,7 @@ mod tests {
             cancel: false,
             hold_until: None,
             camera_stall_at: None,
+            absent: Vec::new(),
         });
         let grab = x11.x11_grab(std::slice::from_ref(&screen), Some(&scene));
         assert_eq!(

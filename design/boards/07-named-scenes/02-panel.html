@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Onion layers panel</title>
+  <meta name="description" content="The scene picker under the panel header, in Live mode. Default: a saved scene, unchanged since it was loaded.">
+  <meta name="htmlboard" content="width=384, height=920">
+  <meta name="htmlboard:label" content="saved scene">
+  <meta name="htmlboard:variant" content="?state=unsaved · no saved scene yet">
+  <meta name="htmlboard:variant" content="?state=edited · edited since loaded">
+  <meta name="htmlboard:variant" content="?state=menu · scene menu">
+  <meta name="htmlboard:variant" content="?state=menu-edited · scene menu, edited">
+  <meta name="htmlboard:variant" content="?state=row-menu · a scene's actions">
+  <meta name="htmlboard:variant" content="?state=rename · renaming in the menu">
+  <meta name="htmlboard:variant" content="?state=save · save as">
+  <meta name="htmlboard:variant" content="?state=save-exists · save as, name taken">
+  <meta name="htmlboard:variant" content="?state=missing · switched, a source is missing">
+  <meta name="htmlboard:variant" content="?state=recording · while recording">
+  <link rel="stylesheet" href="../styles.css">
+  <script type="module" src="../components.js"></script>
+</head>
+<body>
+<scene-panel></scene-panel>
+<script>
+  document.querySelector('scene-panel').setAttribute('state', new URLSearchParams(location.search).get('state') || 'clean');
+</script>
+</body>
+</html>

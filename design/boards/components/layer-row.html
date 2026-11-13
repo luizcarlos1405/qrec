@@ -1,0 +1,21 @@
+<!-- <layer-row icon="webcam" name="Face" source="Camera · Logitech C920"></layer-row> <layer-row icon="monitor-x" name="Right screen" source="DP-2 isn't connected" error></layer-row> -->
+<span class="grip"></span>
+<span class="eye"></span>
+<i class="ic i-{{icon}} src-ic"></i>
+<span class="text"><span class="nm">{{name}}</span><span class="caption sub">{{source}}</span></span>
+<slot></slot>
+<button class="icon-btn" aria-label="More"><i class="ic i-more"></i></button>
+<style>
+  & { display: flex; align-items: center; height: 44px; padding: 0 4px 0 8px; border-radius: var(--qrec-radius-md); }
+  .grip { width: 16px; margin-right: 4px; }
+  .eye { width: 24px; margin-right: 8px; }
+  .src-ic { margin-right: 18px; }
+  .text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+  .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub { color: var(--qrec-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  &[selected] { background: var(--qrec-selected); box-shadow: inset 0 0 0 1px var(--qrec-accent); }
+  &[selected] .sub { color: var(--qrec-text); }
+  &[error] .src-ic, &[error] .sub { color: var(--qrec-record-text); }
+  &[warning] .src-ic, &[warning] .sub { color: var(--qrec-warning-text); }
+  &[changed] .nm::after { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--qrec-accent-2); margin: 0 0 2px 8px; vertical-align: middle; }
+</style>

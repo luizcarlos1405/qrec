@@ -135,6 +135,32 @@ pub fn layer_add(
     Ok(Outcome::done(committed, result))
 }
 
+/// The source `arg` names, with its label from the facts (`NotFound` when
+/// discovery didn't find it).
+fn resolve_source(facts: &Facts, arg: VideoSourceArg) -> Result<VideoSource, CoreError> {
+    match arg {
+        VideoSourceArg::Screen { output } => {
+            let Some(screen) = facts.screens.iter().find(|s| s.output == output) else {
+                let known: Vec<&str> = facts.screens.iter().map(|s| s.output.as_str()).collect();
+                let why = facts.screens_unavailable.as_deref();
+                return Err(CoreError::not_found(format!("no screen named {output:?}"))
+                    .with_hint(known_sources("screens", &known, why)));
+            };
+            let label = non_empty(&screen.description).unwrap_or(&output).to_owned();
+            Ok(VideoSource::Screen { output, label })
+        }
+        VideoSourceArg::Camera { device } => {
+            let Some(camera) = facts.cameras.iter().find(|c| c.device == device) else {
+                let known: Vec<&str> = facts.cameras.iter().map(|c| c.device.as_str()).collect();
+                return Err(CoreError::not_found(format!("no camera at {device:?}"))
+                    .with_hint(known_sources("cameras", &known, None)));
+            };
+            let label = non_empty(&camera.label).unwrap_or(&device).to_owned();
+            Ok(VideoSource::Camera { device, label })
+        }
+    }
+}
+
 /// A camera's default rect (A§2.1): 20 % of the canvas width at 4:3 (even
 /// sizes), bottom-right with a margin of 2 % of the canvas width.
 fn camera_rect(canvas: &Canvas) -> Rect {
@@ -188,6 +214,7 @@ pub fn layer_set(
         crop,
         fit,
         locked,
+        source,
     } = patch;
     if name.is_none()
         && visible.is_none()
@@ -196,6 +223,7 @@ pub fn layer_set(
         && crop.is_none()
         && fit.is_none()
         && locked.is_none()
+        && source.is_none()
     {
         return Err(CoreError::usage("nothing to change").with_hint(
             "qrec scene layer set <id> [--rect X,Y,W,H] [--crop T,R,B,L] [--opacity 0-1] \
@@ -209,12 +237,38 @@ pub fn layer_set(
     if let Some(rect) = rect {
         check_rect(rect)?;
     }
+    let source = match source {
+        Some(arg) => {
+            project_only(&target, "a layer's source")?;
+            let source = resolve_source(&ctx.facts, arg)?;
+            if let Some(other) = state
+                .project
+                .scene
+                .layers
+                .iter()
+                .find(|l| l.id != layer && same_video_source(&l.source, &source))
+            {
+                return Err(CoreError::invalid(format!(
+                    "{} {} is already layer {}",
+                    source.kind_str(),
+                    video_source_name(&source),
+                    other.id
+                )));
+            }
+            Some(source)
+        }
+        None => None,
+    };
 
     let mut next = state.clone();
     let scene = scene_mut(&mut next.project, &target)?;
     let index = layer_index(scene, &target, &layer)?;
     let l = &mut scene.layers[index];
     let mut changes = Vec::new();
+    if let Some(v) = source.filter(|v| *v != l.source) {
+        changes.push(format!("source {} {}", v.kind_str(), video_source_name(&v)));
+        l.source = v;
+    }
     if let Some(v) = name.filter(|v| *v != l.name) {
         changes.push(format!("name {v:?}"));
         l.name = v;

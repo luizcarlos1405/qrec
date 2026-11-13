@@ -92,9 +92,14 @@ the same commands, and every edit is undoable. Always pass `--json`.
   (hidden files such as `.git` count). An empty folder becomes a project with
   `qrec init`, a `project set`/`scene` change or `record start`; other
   commands there exit 3 (`not_project`) and write nothing.
-- `qrec create NAME|PATH` makes a new folder and starts a project in it. A
-  path has a slash (`./demo`, `/mnt/videos/demo`) and its parent must exist; a
-  name goes in `projects.folder` and is a usage error when that isn't set.
+- `qrec create NAME|PATH [--in FOLDER]` makes a new folder and starts a
+  project in it. A path has a slash (`./demo`, `/mnt/videos/demo`) and its
+  parent must exist; a name goes in the project folder `--in` names, else the
+  default one, and is a usage error when there are none.
+- `qrec folders` lists the named project folders (`--json`: `folders` with
+  `name`, `path`, `default`); `qrec folders add NAME PATH [--default]`,
+  `rename NAME NEW`, `default NAME` and `rm NAME` change them. `rm` only
+  forgets the folder; nothing on disk is touched.
 - Inside a project's subfolder, commands exit 3 (`not_project`) and name the
   project: pass `--project DIR` or run them there.
 - Elsewhere, without `--project`, commands use the single running Qrec (so
@@ -410,6 +415,7 @@ mod tests {
             "pause",
             "project",
             "config",
+            "folders",
             "keys",
             "schema",
             "agent-guide",

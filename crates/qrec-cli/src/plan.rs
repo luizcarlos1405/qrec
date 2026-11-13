@@ -11,6 +11,8 @@
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
+use qrec_core::new_project;
+use qrec_core::project_folders::FolderEdit;
 use qrec_core::protocol::{
     AudioPatch, AutocutOverrides, AutocutPatch, CanvasSpec, ClipScope, Command, ExportFormat,
     InsertAt, LayerPatch, MoveTo, Nullable, Quality, Query, RecordModeArg, SceneDest, SceneTarget,
@@ -37,6 +39,8 @@ pub enum Plan {
     Create {
         /// The name or path as typed (`qrec_core::new_project`).
         target: PathBuf,
+        /// `--in`: the project folder a name goes in.
+        folder: Option<String>,
         plan: Box<ProjectPlan>,
     },
 }
@@ -58,6 +62,9 @@ pub enum Local {
         key: String,
         value: String,
     },
+    /// `qrec folders`: the project folders (`None` lists them). An added
+    /// path is absolute here; the folder check is the executor's.
+    Folders(Option<FolderEdit>),
     /// The hidden `qrec host --headless`.
     Host(HostArgs),
 }
@@ -131,6 +138,8 @@ pub enum View {
     Record,
     /// `qrec create`: the new `Project` in `result`, and where it is.
     Create,
+    /// `Query::Scenes`: the saved scenes.
+    Scenes,
 }
 
 /// What to do about a GUI-only command (`seek`, `play`, `pause`) when no
@@ -161,8 +170,16 @@ pub fn plan(cli: &Cli, cwd: Option<&Path>) -> Result<Plan, CoreError> {
                 )
                 .with_hint("give the folder as the argument: qrec create /path/to/project"));
             }
+            if args.in_folder.is_some() && new_project::is_path(args.target.as_os_str()) {
+                return Err(CoreError::usage(format!(
+                    "--in goes with a name, and {} is a path (it has a slash)",
+                    args.target.display()
+                ))
+                .with_hint("give a name to go in a project folder, or a path without --in"));
+            }
             Ok(Plan::Create {
                 target: args.target.clone(),
+                folder: args.in_folder.clone(),
                 plan: Box::new(builder.create(args)?),
             })
         }
@@ -181,11 +198,44 @@ pub fn plan(cli: &Cli, cwd: Option<&Path>) -> Result<Plan, CoreError> {
                 value: set.value.clone(),
             },
         }),
+        Cmd::Folders(args) => local(Local::Folders(match &args.command {
+            None => None,
+            Some(command) => Some(folder_edit(command, cwd)?),
+        })),
         Cmd::Host(args) => local(Local::Host(args.clone())),
         other => builder
             .project(other, cwd)
             .map(|plan| Plan::Project(Box::new(plan))),
     }
+}
+
+/// The edit a `qrec folders` subcommand asks for; an added path is made
+/// absolute against `cwd`.
+fn folder_edit(command: &FoldersCmd, cwd: Option<&Path>) -> Result<FolderEdit, CoreError> {
+    Ok(match command {
+        FoldersCmd::Add(add) => {
+            let path = absolute_from(cwd, &add.path, "the folder")?;
+            let path = path.to_str().map(str::to_owned).ok_or_else(|| {
+                CoreError::usage(format!("the path {} is not valid UTF-8", path.display()))
+                    .with_hint("project folders need a path made of UTF-8 text")
+            })?;
+            FolderEdit::Add {
+                name: add.name.clone(),
+                path,
+                make_default: add.default,
+            }
+        }
+        FoldersCmd::Rename(rename) => FolderEdit::Rename {
+            name: rename.name.clone(),
+            new_name: rename.new_name.clone(),
+        },
+        FoldersCmd::Default(one) => FolderEdit::SetDefault {
+            name: one.name.clone(),
+        },
+        FoldersCmd::Rm(one) => FolderEdit::Remove {
+            name: one.name.clone(),
+        },
+    })
 }
 
 /// Builds project plans with the global flags that shape every request.
@@ -284,7 +334,7 @@ impl Builder {
                 },
                 Msg,
             ),
-            Cmd::Scene(scene) => self.scene(scene),
+            Cmd::Scene(scene) => self.scene(scene)?,
             Cmd::Record(record) => self.record(record),
             Cmd::Take(take) => self.take(take),
             Cmd::Clip(clip) => self.clip(clip)?,
@@ -313,6 +363,7 @@ impl Builder {
             | Cmd::AgentGuide
             | Cmd::Keys
             | Cmd::Config(_)
+            | Cmd::Folders(_)
             | Cmd::Create(_)
             | Cmd::Host(_) => {
                 return Err(CoreError::internal(
@@ -356,9 +407,9 @@ impl Builder {
         plan
     }
 
-    fn scene(&self, scene: &SceneCmd) -> ProjectPlan {
+    fn scene(&self, scene: &SceneCmd) -> Result<ProjectPlan, CoreError> {
         use View::Command as Msg;
-        match scene {
+        Ok(match scene {
             SceneCmd::Layer(LayerCmd::Add(add)) => {
                 let (source, layout) = match add {
                     LayerAddCmd::Screen(a) => (
@@ -400,6 +451,7 @@ impl Builder {
                             crop: p.crop,
                             fit: p.fit.map(Into::into),
                             locked: p.locked,
+                            source: None,
                         },
                     },
                     Msg,
@@ -458,6 +510,21 @@ impl Builder {
                 },
                 Msg,
             ),
+            SceneCmd::Apply(args) if args.scene.is_some() => {
+                let [take] = args.take.as_slice() else {
+                    return Err(CoreError::usage(
+                        "`qrec scene apply --scene` applies to one take: give one --take",
+                    ));
+                };
+                self.command(
+                    "scene apply",
+                    Command::SceneApplySaved {
+                        name: args.scene.clone().unwrap_or_default(),
+                        take: take.clone(),
+                    },
+                    Msg,
+                )
+            }
             SceneCmd::Apply(args) => {
                 let from = args
                     .from_take
@@ -472,7 +539,45 @@ impl Builder {
                 };
                 self.command("scene apply", Command::SceneApply { from, to }, Msg)
             }
-        }
+            SceneCmd::List => self.query("scene list", Query::Scenes, View::Scenes),
+            SceneCmd::Save(args) => self.command(
+                "scene save",
+                Command::SceneSave {
+                    name: args.name.clone(),
+                },
+                Msg,
+            ),
+            SceneCmd::Use(args) => self.command(
+                "scene use",
+                Command::SceneUse {
+                    name: if args.revert { None } else { args.name.clone() },
+                },
+                Msg,
+            ),
+            SceneCmd::Rename(args) => self.command(
+                "scene rename",
+                Command::SceneRename {
+                    name: args.name.clone(),
+                    to: args.to.clone(),
+                },
+                Msg,
+            ),
+            SceneCmd::Duplicate(args) => self.command(
+                "scene duplicate",
+                Command::SceneDuplicate {
+                    name: args.name.clone(),
+                    to: args.to.clone(),
+                },
+                Msg,
+            ),
+            SceneCmd::Rm(args) => self.command(
+                "scene rm",
+                Command::SceneDelete {
+                    name: args.name.clone(),
+                },
+                Msg,
+            ),
+        })
     }
 
     fn record(&self, record: &RecordCmd) -> ProjectPlan {

@@ -45,9 +45,12 @@ timing-sensitive case says `Options::exclusive` and runs alone
 - Don't initialize GStreamer for commands that only need ffmpeg. Never let
   VA-API choose its own device: NVIDIA's renderD128 hangs on the dev machine
   (ARCHITECTURE §8.7).
-- `qrec-gui` (GTK views) follows the pen.dev designs in `design/qrec.pen`,
-  approved by the product owner on 2026-10-15 (SPEC §15.1). The Swamp Night
-  slice is the reference; other themes are token swaps (`design/tokens/`).
+- `qrec-gui` (GTK views) follows the htmlboard designs in `design/boards/`
+  (SPEC §15.1; `design/README.md` says how to open the canvas). The Swamp
+  Night slice, approved on 2026-10-15 and ported from pen.dev's
+  `design/qrec.pen` (deleted, in git history), is the reference; other
+  themes are token swaps (`design/tokens/qrec-tokens.json`). Design new UI
+  as boards there.
 - Scratch work (manual checks, recordings, experiments) goes in the
   gitignored `tmp/` at the repo root, never in `/tmp` paths others share.
 - JSON is camelCase; error codes are snake_case; CLI `--json` output is

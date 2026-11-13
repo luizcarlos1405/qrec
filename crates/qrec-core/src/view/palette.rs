@@ -142,16 +142,33 @@ fn rows(keymap: &Keymap, state: &State) -> Vec<(&'static str, PaletteItem)> {
     let mut out = Vec::new();
     for group in GROUPS {
         for b in keymap.bindings.iter().filter(|b| b.group == group) {
-            out.push((
-                b.group,
-                item(
-                    b.id,
-                    b.label,
-                    &usable_keys(keymap, b),
-                    b.cli,
-                    availability(b.id, state),
-                ),
-            ));
+            if b.id.starts_with("scene.use-") {
+                // Named by its scene; a key with no scene behind it isn't listed.
+                if let Some(name) = crate::keymap::scene_for_key(b.id, state) {
+                    let cli = format!("qrec scene use {}", shell_word(&name));
+                    out.push((
+                        b.group,
+                        item(
+                            b.id,
+                            &format!("Use scene \u{201c}{name}\u{201d}"),
+                            &usable_keys(keymap, b),
+                            Some(&cli),
+                            availability(b.id, state),
+                        ),
+                    ));
+                }
+            } else {
+                out.push((
+                    b.group,
+                    item(
+                        b.id,
+                        b.label,
+                        &usable_keys(keymap, b),
+                        b.cli,
+                        availability(b.id, state),
+                    ),
+                ));
+            }
             for keyless in KEYLESS.iter().filter(|k| k.after == b.id) {
                 out.push((
                     keyless.group,
@@ -167,6 +184,18 @@ fn rows(keymap: &Keymap, state: &State) -> Vec<(&'static str, PaletteItem)> {
         }
     }
     out
+}
+
+/// `name` as one shell word: quoted when it has spaces or quotes.
+fn shell_word(name: &str) -> String {
+    if name
+        .chars()
+        .all(|c| c.is_alphanumeric() || "-_.".contains(c))
+    {
+        name.to_owned()
+    } else {
+        format!("\"{}\"", name.replace('"', "\\\""))
+    }
 }
 
 fn item(

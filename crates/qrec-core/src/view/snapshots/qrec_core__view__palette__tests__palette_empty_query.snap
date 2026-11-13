@@ -70,3 +70,6 @@ Nudge layer left 10 px                       [Shift][←]       qrec scene layer
 Nudge layer right 10 px                      [Shift][→]       qrec scene layer set --rect  (off: Select a layer on the canvas)
 Nudge layer up 10 px                         [Shift][↑]       qrec scene layer set --rect  (off: Select a layer on the canvas)
 Nudge layer down 10 px                       [Shift][↓]       qrec scene layer set --rect  (off: Select a layer on the canvas)
+Save scene as…                                                qrec scene save <name>
+Save changes to the scene                                     qrec scene save  (off: The scene in use has no changes)
+Revert scene to saved                                         qrec scene use --revert  (off: The scene in use has no changes)

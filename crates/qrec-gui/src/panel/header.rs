@@ -2,8 +2,9 @@
 //! Add layer button), the take banner ("Changes here only affect take 5."
 //! and `Layout ▾`, S06) and the section headers ("Layers 2").
 
+use gtk::gio;
 use gtk::prelude::*;
-use qrec_core::view::panel::PanelHeader;
+use qrec_core::view::panel::{ApplySavedItem, PanelHeader};
 
 use super::menus::{self, Menu};
 use crate::Ctx;
@@ -120,20 +121,38 @@ impl BannerView {
     }
 
     /// Shows the banner of `header` (hidden without one); `enabled`: the
-    /// gates of `SceneApply`.
-    pub fn update(&self, header: &PanelHeader, enabled: &Result<(), String>) {
+    /// gates of `SceneApply`; `saved`: the saved scenes this take can take
+    /// (SPEC §5.6, board 03).
+    pub fn update(
+        &self,
+        header: &PanelHeader,
+        enabled: &Result<(), String>,
+        saved: &[ApplySavedItem],
+    ) {
         let Some(banner) = &header.banner else {
             self.root.set_visible(false);
             return;
         };
         self.text.set_text(banner);
-        let signature = format!("{:?}{enabled:?}", header.layout_menu);
+        let signature = format!("{:?}{enabled:?}{saved:?}", header.layout_menu);
         let items = header.layout_menu.clone();
         let ok = enabled.is_ok();
+        let saved = saved.to_vec();
         self.menu.update(signature, |menu| {
             for item in &items {
                 let cmd = item.command();
                 menu.append_item(&menus::command_item(&item.label, ok.then_some(&cmd)));
+            }
+            if !saved.is_empty() {
+                let sub = gio::Menu::new();
+                for item in &saved {
+                    let label = format!("{} \u{b7} {}", item.name, item.detail);
+                    let cmd = item.command.as_ref().filter(|_| ok);
+                    sub.append_item(&menus::command_item(&label, cmd));
+                }
+                let section = gio::Menu::new();
+                section.append_submenu(Some("Apply a saved scene"), &sub);
+                menu.append_section(None, &section);
             }
         });
         set_enabled_with_reason(self.layout.upcast_ref(), enabled, "Take layout actions");

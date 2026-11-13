@@ -1,29 +1,37 @@
-# Qrec design: the Swamp Night slice
+# Qrec design
 
-The GTK GUI is designed in pen.dev before any UI code is written ([SPEC](../SPEC.md) §15.1). This round is a **vertical slice in the main theme, Swamp Night**: 26 frames covering what the GUI milestone M4 (SPEC §18) needs first. That means first run, the record loop, the timeline editor, layer editing, the bin, export and the destructive confirmations.
+The GTK GUI is designed before any UI code is written ([SPEC](../SPEC.md) §15.1). **The designs are HTML boards in [`boards/`](boards/)**, shown on an [htmlboard](https://www.npmjs.com/package/htmlboard) canvas. Until 2026-11-10 they were drawn in pen.dev (`qrec.pen`); every frame of that document was ported then, and `qrec.pen` was deleted (git history has it).
 
-- **Why one theme first.** Every color on the canvas is a themed variable, so Swamp Day, Dragon's Keep and Ogre Mode will be copies of approved frames with a `theme` override, not redraws ([BRIEF](BRIEF.md) §0, §7). Settling layout, copy and behavior once, in the default theme, avoids reviewing everything four times.
-- **What approval unlocks.** The team can implement these screens from the slice, and [`tokens/swamp-night.css`](tokens/swamp-night.css) becomes the source of the GTK theme CSS in `crates/qrec-gui/resources/theme/`.
-- **Your decisions** are listed at the end: color proposals, open product questions, engineering calls, and calls made while polishing.
+The first round was a **vertical slice in the main theme, Swamp Night**: 26 frames covering what the GUI milestone M4 (SPEC §18) needed first (first run, the record loop, the timeline editor, layer editing, the bin, export and the destructive confirmations), approved by the product owner on 2026-10-15, plus the drafts S19–S25 and X1–X3, approved as drawn the same day. The tables below still describe them.
 
-## Open the design
+## Open the canvas
 
-- The design is **`design/qrec.pen`** (open it with pen.dev; it isn't a text file). The product owner approved it on 2026-10-15.
-- Frames are named `Sxx · Title · Swamp Night`. The node ids below identify them in the document.
-- The PNGs in [`screens/`](screens/) are 1:1 exports: 1600×1000, except S13b (384×920) and S15c (1040×769).
-- All sample data is synthetic (BRIEF §3). The screen content and the webcam person are AI-generated images. The icon, the REC glyph and the illustrations are generated SVGs.
+```sh
+npx htmlboard@0.10.0 design/boards --root . -p 3060   # from the repo root, then open http://localhost:3060
+```
 
-| Canvas y | What is there |
+`--root .` because the boards load the sample screen and webcam images from `DESIGN-assets/`. The canvas's theme switch shows every board in Swamp Night, Swamp Day, Dragon's Keep and Ogre Mode.
+
+| Folder | What is there |
 | --- | --- |
-| 0 | `Tokens` (`mSTv0`) and the nine `Components · …` sheets (C01–C34) |
-| 3412 | `Artwork` (`w7Qg8`) |
-| 4900 | `T · Main window template` (`IgZQQ`); the main-window screens are copies of it |
-| 6400 | Row 1: record loop |
-| 7416 | `S04 notes · REC torch flicker` (`d4rx6s`), under S04 |
-| 7600 | Row 2: timeline |
-| 8800 | Row 3: layers, bin and export |
-| 10000 | Row 4: S18 at x 0 and S18b at x 8600 (the other frames in this row are later drafts) |
-| 11200 | Later drafts |
+| `00-foundations/` | Tokens (all four themes side by side) and the artwork |
+| `01-components/` | The nine component sheets, C01–C34 |
+| `02-record-loop/` | The main window template, S01a–S06 and the S04 torch notes |
+| `03-timeline/` | S07–S12 |
+| `04-layers-bin-export/` | S13–S17 |
+| `05-dialogs-and-settings/` | S18, S18b, S19–S22 |
+| `06-errors-and-notices/` | S23–S25, X1–X3 |
+| `07-named-scenes/` | Issue #3, named scenes (not approved yet; its notes board lists the open questions) |
+| `08-project-picker/` | The project picker, Settings › Project's All projects and X3's Open another project (not approved yet; the notes board lists what changes from the build) |
+| `09-project-folders/` | Named project folders with a default: the picker's folder menu and Settings' folder list (approved 2026-11-11; the notes board has the decisions) |
+
+- **The ported boards** (00–06) are pen.dev's html-css export of each frame: absolutely positioned, as pen drew them, with every color a theme token (`var(--qrec-*)`). Each file names its pen frame id in a comment. Rendered in a browser they match pen's own export of the same frame to within 0.3% of pixels (text antialiasing). Edit them in place for small changes; new work is better written as new boards.
+- **New boards** (07 on) are written by hand on the shared chrome: `boards/styles.css` (type roles, buttons, key caps, fields, popovers, toasts, modals) and `boards/components/` (`<layer-row>`, `<audio-row>`, `<scene-thumb>`, `<scene-panel state="…">`, `<project-row>`). Where approved chrome exists they splice the ported markup instead of redrawing it (the named-scenes windows are S02 and S06 with pen's panel replaced; the picker uses X3's header), so they follow the theme switch too. `npx htmlboard@0.10.0 catalog design/boards` lists them.
+- **Tokens:** [`tokens/qrec-tokens.json`](tokens/qrec-tokens.json) is the source. `QREC_UPDATE_TOKENS=1 cargo test -p qrec-gui --test tokens` regenerates `boards/themes.css` with the GTK theme CSS and `palette.rs`, and the test fails when they drift.
+- **Agents:** the htmlboard skills are in `.claude/skills/htmlboard*` (and `.agents/skills/`). After an htmlboard upgrade, run `npx htmlboard@<version> skills install` and bump the version above.
+- The PNGs in [`screens/`](screens/) are 1:1 exports of the approved pen frames: 1600×1000, except S13b (384×920) and S15c (1040×769).
+- All sample data is synthetic (BRIEF §3). The screen content and the webcam person are AI-generated images. The icon, the REC glyph and the illustrations are generated SVGs.
+- The node ids below are the pen frames the boards came from.
 
 ## Screens in the slice
 
@@ -78,10 +86,10 @@ The GTK GUI is designed in pen.dev before any UI code is written ([SPEC](../SPEC
 
 | File | What it holds |
 | --- | --- |
-| [`tokens/qrec-tokens.json`](tokens/qrec-tokens.json) | All 93 pen.dev variables: 75 colors with their four theme values, 15 numbers (spacing and radii, in px) and 3 font families |
-| [`tokens/swamp-night.css`](tokens/swamp-night.css) | Swamp Night only, as `--qrec-<token>` custom properties on `:root` |
+| [`tokens/qrec-tokens.json`](tokens/qrec-tokens.json) | The source: 75 colors with their four theme values, 15 numbers (spacing and radii, in px) and 3 font families |
+| [`boards/themes.css`](boards/themes.css) | Generated from it: the four themes as `--qrec-<token>` custom properties, Swamp Night on `:root` |
 
-Both files were generated from the pen.dev variables on 2026-10-14, and every color, spacing and radius value matches the frontmatter of [DESIGN.md](../DESIGN.md). The type scale, font fallbacks, shadow geometry, the 0.45 disabled opacity and the motion timings aren't variables; they stay in DESIGN.md.
+The JSON was generated from the pen.dev variables on 2026-10-14 and is edited by hand since 2026-11-10. Every color, spacing and radius value matches the frontmatter of [DESIGN.md](../DESIGN.md). The type scale, font fallbacks, shadow geometry, the 0.45 disabled opacity and the motion timings aren't variables; they stay in DESIGN.md.
 
 ## Later, not in this review
 
@@ -94,7 +102,7 @@ Both files were generated from the pen.dev variables on 2026-10-14, and every co
 
 ## Exports for tools (2026-10-17)
 
-`qrec.pen` is encrypted: read it through the pen MCP. [`export/`](export/INDEX.md) keeps what the build and tests need from it: one SVG per icon and size and the art as PNG (frames are exported as HTML on demand, uncommitted). [`export/INDEX.md`](export/INDEX.md) lists what is where and how the exports were checked (the slice PNGs and the tokens still match the document).
+`qrec.pen` was deleted on 2026-11-10; the boards replace it. [`export/`](export/INDEX.md) keeps what the build and tests need from it: one SVG per icon and size and the art as PNG (frames are exported as HTML on demand, uncommitted). [`export/INDEX.md`](export/INDEX.md) lists what is where and how the exports were checked (the slice PNGs and the tokens still match the document).
 
 ## Decisions (product owner, 2026-10-15)
 
@@ -163,6 +171,6 @@ In this slice, `record-text` draws **Cancel [R]** (S03), the Broken chip and **P
 
 ## Known gaps
 
-- **Fit-zoom end inset.** DESIGN.md (Timeline) and BRIEF §2.6 set px/frame = (time-area width − 8) ÷ total frames, but the mocks still use 1040 ÷ 7391. A playhead parked at the end is therefore half clipped in S02, S03, S04, S05, S05b and S13. Build from the formula and don't measure clip positions off the fit-zoom mocks. Redrawing them takes one pass over `C15 Ruler/Fit` (`I8Owg`) and every fit-zoom frame.
+- **Timeline pads.** DESIGN.md (Timeline) and BRIEF §2.6 pad the timeline with 8 px before frame 0 and 32 px after its end: px/frame at fit = (time-area width − 40) ÷ total frames, and `Z` fits the selection between the same pads. The mocks still use 1040 ÷ 7391 from the time area's left edge, and S12 fills the time area with c3e9. A playhead parked at the end is therefore half clipped in S02, S03, S04, S05, S05b and S13. Build from the formula and don't measure clip positions off the fit-zoom mocks. Redrawing them takes one pass over `C15 Ruler/Fit` (`I8Owg`), every fit-zoom frame and S12.
 - **`C01 Button/Destructive flat · pressed`** (`h7trs`): its label is about 3.9:1 on `surface`, below AA. No slice screen uses it. `record` at 16% (the value `ghost-fill` already has) would reach about 4.6:1.
 - **Links:** pen.dev doesn't keep `underline`, so "Open log" (S14) and "Open full log" (S17) draw a 1 px rule under the text. GTK should use a real underline.

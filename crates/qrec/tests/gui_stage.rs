@@ -2399,7 +2399,8 @@ fn s10_trim_scrub_on_the_stage() {
     let mut nested = Nested::start(AREA, "S10", Options::default());
     let mut preset = selecting(ui(CanvasMode::Program, 2437), &["c2d0"]);
     preset.zoom = Some(1.6);
-    preset.scroll_px = 1950.0 * 1.6;
+    // 00:01:05:00 at the time area's left edge, past the start pad.
+    preset.scroll_px = qrec_core::view::timeline::START_PAD_PX + 1950.0 * 1.6;
     let project = fixture(&nested, DesignVariant::Base, Some(preset));
     open(&mut nested, &project, Launch::a11y());
     let regions = nested.window(0).regions(&[]);

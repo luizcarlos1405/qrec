@@ -83,6 +83,9 @@ pub enum Effect {
         timer: TimerId,
     },
 
+    /// Write `scenes.json` (atomically: a temp file renamed over it, A§9.11).
+    WriteScenes(crate::scenes::SavedScenes),
+
     // -- people and requesters
     Notify(Toast),
     Progress {

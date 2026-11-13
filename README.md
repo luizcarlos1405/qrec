@@ -68,8 +68,8 @@ share one layout: Swamp Night, Swamp Day, Dragon's Keep and Ogre Mode.
 
 ![Settings › Appearance with the four theme cards](design/screens/S21-settings-appearance.png)
 
-_The screenshots are the approved designs in `design/qrec.pen` (exported
-to `design/screens/`). The GUI tests compare the running window against
+_The screenshots are the approved designs (`design/screens/`; the boards in
+`design/boards/` hold them as HTML). The GUI tests compare the running window against
 these frames (docs/GUI.md G§7.2)._
 
 ## Documentation
@@ -78,7 +78,7 @@ these frames (docs/GUI.md G§7.2)._
 - `docs/ARCHITECTURE.md` — the engineering contract (types, protocols, rules).
 - `docs/GUI.md` — the window's plan: its architecture, work packages and tests.
 - `docs/RECORDING.md` — capture lessons from the earlier `qrec-tui`.
-- `design/README.md` — the pen.dev designs and the decisions waiting for review.
+- `design/README.md` — the designs (htmlboard boards in `design/boards/`) and the product owner's decisions.
 
 ## Supported setups
 
@@ -215,7 +215,8 @@ Wayland and X11 alike.
 
 ```sh
 qrec create ./my-video && cd my-video
-# a bare name goes in the projects folder: qrec config set projects.folder DIR
+# a bare name goes in a project folder: qrec folders add videos ~/Videos, then
+# qrec create my-video (the default folder) or qrec create my-video --in videos
 qrec sources list                    # screens, cameras, mics, system-audio monitors
 qrec scene layer add screen --output DP-4
 qrec scene layer add camera --device /dev/video0

@@ -20,7 +20,8 @@ expression: screens
         "locked": false,
         "error": null,
         "missing": null,
-        "enabled": true
+        "enabled": true,
+        "notConnected": false
       },
       {
         "layer": "L1",
@@ -31,7 +32,8 @@ expression: screens
         "locked": false,
         "error": null,
         "missing": null,
-        "enabled": true
+        "enabled": true,
+        "notConnected": false
       }
     ],
     "audio": [
@@ -85,7 +87,8 @@ expression: screens
         "locked": false,
         "error": null,
         "missing": null,
-        "enabled": false
+        "enabled": false,
+        "notConnected": false
       },
       {
         "layer": "L1",
@@ -96,7 +99,8 @@ expression: screens
         "locked": false,
         "error": null,
         "missing": null,
-        "enabled": false
+        "enabled": false,
+        "notConnected": false
       }
     ],
     "audio": [
@@ -170,7 +174,8 @@ expression: screens
         "locked": false,
         "error": null,
         "missing": null,
-        "enabled": true
+        "enabled": true,
+        "notConnected": false
       },
       {
         "layer": "L1",
@@ -181,7 +186,8 @@ expression: screens
         "locked": false,
         "error": null,
         "missing": null,
-        "enabled": true
+        "enabled": true,
+        "notConnected": false
       }
     ],
     "audio": [
@@ -250,7 +256,8 @@ expression: screens
         "locked": false,
         "error": null,
         "missing": null,
-        "enabled": false
+        "enabled": false,
+        "notConnected": false
       },
       {
         "layer": "L1",
@@ -261,7 +268,8 @@ expression: screens
         "locked": false,
         "error": null,
         "missing": null,
-        "enabled": false
+        "enabled": false,
+        "notConnected": false
       }
     ],
     "audio": [
@@ -315,7 +323,8 @@ expression: screens
         "locked": false,
         "error": null,
         "missing": null,
-        "enabled": true
+        "enabled": true,
+        "notConnected": false
       },
       {
         "layer": "L1",
@@ -326,7 +335,8 @@ expression: screens
         "locked": false,
         "error": null,
         "missing": null,
-        "enabled": true
+        "enabled": true,
+        "notConnected": false
       }
     ],
     "audio": [

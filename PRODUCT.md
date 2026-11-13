@@ -64,7 +64,7 @@ Success looks like this:
   - Missing dependencies: _"The swamp is missing something"_
   - Bad folder: _"Not my swamp: this folder isn't empty and has no qrec.json"_
 - **Binding visual constraints** (SPEC §15). Four themes with a fixed token table: Swamp Night (default), Swamp Day, Dragon's Keep and Ogre Mode. Three fonts, all bundled: a storybook serif for display moments only, a hyperlegible UI sans, and a tabular monospace for timecodes. The icon is an onion with ogre-ear trumpets, also used as the REC badge motif. Motion is subtle: a torch-flicker REC pulse, a bubbling mud export bar and eased zoom. An optional "squelch" sound on record start and stop is off by default. Details live in `DESIGN.md`.
-- **Process gate.** Every screen and state is designed in pen.dev (`design/qrec.pen`) and approved before any GTK UI code is written. Tokens flow from pen.dev variables into the GTK CSS.
+- **Process gate.** Every screen and state is designed as an htmlboard board (`design/boards/`) and approved before any GTK UI code is written. Tokens flow from `design/tokens/qrec-tokens.json` into the GTK CSS and the boards. (The approved slice was drawn in pen.dev, `design/qrec.pen`, and ported to boards on 2026-11-10.)
 
 ## Evidence on Hand
 

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Named scenes · notes</title>
+  <meta name="description" content="Issue #3: what the boards show, the calls made while designing, and the questions for the product owner.">
+  <meta name="htmlboard" content="width=880">
+  <link rel="stylesheet" href="../styles.css">
+  <style>
+    body { padding: 40px 48px 48px; }
+    h1 { font-family: var(--display); font-weight: 600; font-size: 32px; line-height: 38px; font-variation-settings: "SOFT" 50, "WONK" 1; }
+    h2 { font-family: var(--ui); font-weight: 700; font-size: 14px; line-height: 20px; margin: 32px 0 8px; color: var(--qrec-accent-text); text-transform: uppercase; letter-spacing: 0.06em; font-size: 12px; }
+    p, li { color: var(--qrec-text); max-width: 72ch; }
+    p + p { margin-top: 8px; }
+    ol, ul { padding-left: 20px; display: grid; gap: 8px; }
+    li::marker { color: var(--qrec-muted); }
+    code { font-family: var(--mono); font-weight: 500; font-size: 12px; line-height: 16px; background: var(--qrec-field); padding: 1px 5px; border-radius: var(--qrec-radius-sm); }
+    b { font-weight: 600; }
+    .lede { margin-top: 8px; color: var(--qrec-muted); }
+    .q { padding: 12px 16px; border: 1px solid var(--qrec-border); border-radius: var(--qrec-radius-md); background: var(--qrec-surface); }
+    .q + .q { margin-top: 8px; }
+    .q .rec { display: block; margin-top: 4px; color: var(--qrec-muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>Named scenes</h1>
+  <p class="lede">Issue #3 · save the layers you set up under a name, and switch back to them at any time. Swamp Night, on the approved S02, S06 and S19 crops: only the onion layers panel, the menus and the dialogs are new.</p>
+
+  <h2>What's on the board</h2>
+  <ol>
+    <li><b>Live · named scene</b>: a <b>scene picker</b> sits under the panel header, where Program puts the take banner. It shows a thumbnail of the layout and the scene's name. Variants: the menu open, and switching to a scene whose screen isn't connected.</li>
+    <li><b>Onion layers panel</b>, every state: no saved scene yet (<i>Save as…</i>), edited since loaded (a gold dot, <i>Edited</i>, a <i>Save</i> button and a dot on the changed layer), the scene menu, a scene's own actions (Rename, Replace with current scene, Duplicate, Delete…), renaming in place, Save as (with a name that's taken), a missing source, and while recording (picker locked).</li>
+    <li><b>Program · apply a scene to a take</b>: the take banner's Layout menu gets <i>Apply a saved scene</i> and <i>Save this layout as a scene…</i>.</li>
+    <li><b>Delete a scene</b>: a confirmation, Cancel focused.</li>
+    <li><b>Command palette</b>: every saved scene is a command with its key and CLI form.</li>
+  </ol>
+
+  <h2>Calls made while designing</h2>
+  <ul>
+    <li><b>Scenes belong to the computer, not the project</b> (<code>~/.config/qrec/scenes.json</code>), so a setup saved once works in every project, as presets do. The project still keeps its own scene in <code>qrec.json</code>, plus the name of the saved scene it came from, which is what drives <i>Edited</i>.</li>
+    <li><b>What a scene holds:</b> the layers (source, rect, crop, opacity, fit, order, visibility, name) and the audio tracks (source, gain, mute, sync offset, the autocut track). Not the canvas size or fps: those belong to the project.</li>
+    <li><b>Switching</b> replaces the project scene in one undoable command through <code>Session::dispatch</code>. Takes already recorded keep their snapshot. It's Live only, and locked while recording.</li>
+    <li><b>Edited</b> compares the project scene with the saved one. <i>Save</i> overwrites it, the menu offers <i>Save as new scene…</i> and <i>Revert to saved</i>. The gold dot is a mark, not text (accent-2 stays out of text, DESIGN.md).</li>
+    <li><b>A missing source</b> (DP-2 unplugged) doesn't block the switch. The layer stays in the scene with the error row, a dashed placeholder on the canvas and <i>Replace…</i> (pick another screen or camera). New takes record without it. A toast says so, with Undo.</li>
+    <li><b>Applying a scene to a take</b> can only move what the take recorded. Layers are matched by source (screen output, camera device). Layers the scene lacks are hidden, the scene's extra layers are skipped, and a scene with no layer in common is disabled. One undo step.</li>
+    <li><b>Keys:</b> <code>Alt</code>+<code>1</code>…<code>9</code> use the first nine scenes in the menu's order (Live only). <code>Alt</code> is free apart from <code>Alt</code>+<code>[</code> <code>]</code> and Alt-drag.</li>
+    <li><b>Delete asks first.</b> Saved scenes live outside the project's undo history, so a confirmation replaces Undo here. The title gets the swamp voice, the lead sentence the facts.</li>
+    <li><b>CLI:</b> <code>qrec scene save &lt;name&gt; [--update]</code>, <code>qrec scene use &lt;name&gt; [--revert]</code>, <code>qrec scene list</code>, <code>qrec scene rename &lt;old&gt; &lt;new&gt;</code>, <code>qrec scene rm &lt;name&gt;</code>, all with <code>--json</code>, next to the existing <code>qrec scene layer …</code>.</li>
+  </ul>
+
+  <h2>Approved and built (2026-11-10)</h2>
+  <p>Approved as drawn, with the answers the design assumed: per computer, Record without the missing source, scenes in the order they were saved. Built in the core, the CLI (<code>qrec scene list | save | use | rename | duplicate | rm</code>, <code>apply --scene</code>) and the window. Two parts aren't built yet: renaming inline in the menu (Rename opens the save popover instead) and the take banner's <i>Save this layout as a scene…</i>.</p>
+
+  <h2>Questions (answered)</h2>
+  <div class="q"><b>1. Per computer, or per project?</b><span class="rec">The design assumes per computer. Per project would drop the missing-source case and keep the scenes in the folder you share.</span></div>
+  <div class="q"><b>2. With a source missing, should Record still work?</b><span class="rec">The design records without the missing layer. The alternative is to disable Record until it's replaced or removed, as S01a does with no sources.</span></div>
+  <div class="q"><b>3. Do scenes need a manual order?</b><span class="rec">The design orders by creation, so Alt+1 stays stable. Dragging rows in the menu would let you choose which nine get a key.</span></div>
+  <div class="q"><b>4. Settled: the boards are the reference.</b><span class="rec">The designs moved from qrec.pen to htmlboard on 2026-11-10, so once approved these boards are what the GTK views follow.</span></div>
+</body>
+</html>

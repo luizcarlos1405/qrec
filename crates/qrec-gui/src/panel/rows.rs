@@ -68,6 +68,9 @@ struct Inner {
     line: gtk::Box,
     rows: RefCell<Vec<RowView>>,
     drag: RefCell<Option<Drag>>,
+    /// Replace… for the layers whose source isn't connected: the sources
+    /// that are, as the commands that give them (SPEC §5.6).
+    replace: RefCell<std::collections::BTreeMap<LayerId, Vec<(String, qrec_core::Command)>>>,
 }
 
 /// The lifted copy of a dragged row.
@@ -89,6 +92,9 @@ struct RowView {
     lock: gtk::Button,
     menu_button: gtk::MenuButton,
     menu: Menu,
+    /// Replace…: shown on a row whose source isn't connected.
+    replace: gtk::MenuButton,
+    replace_menu: Menu,
     model: RefCell<Option<LayerRow>>,
     /// The scene the row's rename edits (`edit_target`).
     edits: RefCell<Option<Option<SceneTarget>>>,
@@ -145,6 +151,7 @@ impl LayerList {
                 line,
                 rows: RefCell::new(Vec::new()),
                 drag: RefCell::new(None),
+                replace: RefCell::default(),
             }),
         };
         let weak = Rc::downgrade(&layers.inner);
@@ -174,8 +181,10 @@ impl LayerList {
             self.rebuild(rows);
         }
         let n = rows.len();
+        let replace = inner.replace.borrow();
         for (view, row) in inner.rows.borrow().iter().zip(rows) {
             view.show(row, state, n);
+            view.show_replace(replace.get(&row.layer).map(Vec::as_slice));
         }
         inner.empty.set_visible(rows.is_empty());
         inner.overlay.set_visible(!rows.is_empty());
@@ -188,6 +197,14 @@ impl LayerList {
         if gone {
             self.end_drag(false);
         }
+    }
+
+    /// The Replace… items of the next [`LayerList::update`].
+    pub fn set_replace(
+        &self,
+        replace: std::collections::BTreeMap<LayerId, Vec<(String, qrec_core::Command)>>,
+    ) {
+        *self.inner.replace.borrow_mut() = replace;
     }
 
     /// Starts the inline rename of `layer` (the overflow's Rename).
@@ -709,10 +726,29 @@ impl RowView {
         menu_button.set_valign(gtk::Align::Center);
         menu_button.set_widget_name(&format!("layer-menu-{layer}"));
         menus::track_menu(ctx, &menu_button, None);
+        let replace_menu = Menu::new();
+        let replace = menus::menu_button(
+            &replace_menu,
+            &["flat", "sm", "replace-source"],
+            "Replace source",
+        );
+        replace.set_label("Replace\u{2026}");
+        replace.set_valign(gtk::Align::Center);
+        replace.set_widget_name(&format!("layer-replace-{layer}"));
+        replace.set_visible(false);
+        menus::track_menu(
+            ctx,
+            &replace,
+            Some({
+                let ctx = ctx.clone();
+                Rc::new(move || menus::refresh_sources(&ctx)) as Rc<dyn Fn()>
+            }),
+        );
         content.append(&grip);
         content.append(&eye);
         content.append(&icon);
         content.append(&texts);
+        content.append(&replace);
         content.append(&lock);
         content.append(&menu_button);
         row.set_child(Some(&content));
@@ -727,10 +763,36 @@ impl RowView {
             lock,
             menu_button,
             menu,
+            replace,
+            replace_menu,
             model: RefCell::new(None),
             edits: RefCell::new(None),
             dropping: Rc::new(Cell::new(false)),
         }
+    }
+
+    /// Replace…: shown with the sources that can take the layer's place
+    /// (`None`: the source is connected).
+    fn show_replace(&self, items: Option<&[(String, qrec_core::Command)]>) {
+        let Some(items) = items else {
+            self.replace.set_visible(false);
+            return;
+        };
+        self.replace.set_visible(true);
+        let signature = items
+            .iter()
+            .map(|(label, cmd)| format!("{label}|{}", cmd.to_json()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let items = items.to_vec();
+        self.replace_menu.update(signature, |menu| {
+            if items.is_empty() {
+                menu.append_item(&menus::command_item("Nothing else is connected", None));
+            }
+            for (label, cmd) in &items {
+                menu.append_item(&menus::command_item(label, Some(cmd)));
+            }
+        });
     }
 
     /// Ends a rename in progress without saving it (the old name back).

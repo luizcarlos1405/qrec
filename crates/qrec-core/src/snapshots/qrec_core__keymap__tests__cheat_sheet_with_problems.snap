@@ -69,6 +69,15 @@ Canvas
   Shift+→               Nudge layer right 10 px       layer.nudge-right-10
   Shift+↑               Nudge layer up 10 px          layer.nudge-up-10
   Shift+↓               Nudge layer down 10 px        layer.nudge-down-10
+  Alt+1                 Use scene 1                   scene.use-1
+  Alt+2                 Use scene 2                   scene.use-2
+  Alt+3                 Use scene 3                   scene.use-3
+  Alt+4                 Use scene 4                   scene.use-4
+  Alt+5                 Use scene 5                   scene.use-5
+  Alt+6                 Use scene 6                   scene.use-6
+  Alt+7                 Use scene 7                   scene.use-7
+  Alt+8                 Use scene 8                   scene.use-8
+  Alt+9                 Use scene 9                   scene.use-9
 
 Problems
   x is bound to clip.remove and autocut.run in global; neither runs until keys.toml changes one

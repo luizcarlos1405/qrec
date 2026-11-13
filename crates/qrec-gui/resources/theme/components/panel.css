@@ -474,3 +474,139 @@ popover.qrec-value-tooltip > contents {
 .panel-medium .region-row .region-n {
   min-width: 14px;
 }
+
+/* ------------------------------------------- the scene bar (SPEC §5.6) */
+/* Board 07-named-scenes/02-panel: a 40 px field under the header with the
+   layout's thumbnail, the saved scene's name, Edited (a 6 px accent-2 dot)
+   and the chevron; Save / Save as… beside it. */
+
+.qrec-panel .scene-row {
+  margin-bottom: 8px;
+}
+
+.qrec-panel menubutton.scene-bar > button {
+  min-height: 38px;
+  padding: 0 8px 0 10px;
+  border-radius: 6px;
+  background-color: var(--qrec-field);
+  box-shadow: inset 0 0 0 1px var(--qrec-border-strong);
+}
+
+.qrec-panel menubutton.scene-bar > button:hover {
+  background-image: image(var(--qrec-hover));
+}
+
+.qrec-panel menubutton.scene-bar > button:checked {
+  box-shadow: inset 0 0 0 2px var(--qrec-accent);
+}
+
+.qrec-panel .scene-edited-dot {
+  min-width: 6px;
+  min-height: 6px;
+  border-radius: 3px;
+  background-color: var(--qrec-accent-2);
+}
+
+.qrec-panel button.scene-save {
+  min-height: 38px;
+}
+
+/* A layer whose source isn't connected: Replace… in accent-text. */
+.qrec-panel button.replace-source {
+  min-height: 24px;
+  padding: 0 8px;
+  color: var(--qrec-accent-text);
+  font-weight: 600;
+}
+
+/* The scene menu (board 02's menu): 48 px rows, the row's ⋮ revealed on
+   hover, the foot's flat items. */
+popover.scene-menu > contents {
+  padding: 6px;
+}
+
+popover.scene-menu .scene-menu-head {
+  padding: 6px 10px 4px 10px;
+}
+
+popover.scene-menu list.scene-list {
+  background-color: transparent;
+}
+
+popover.scene-menu list.scene-list > row {
+  padding: 0;
+  border-radius: 6px;
+}
+
+popover.scene-menu list.scene-list > row:hover {
+  background-color: var(--qrec-hover);
+}
+
+popover.scene-menu list.scene-list > row:focus:focus-visible {
+  outline: 2px solid var(--qrec-focus-ring);
+  outline-offset: -2px;
+}
+
+popover.scene-menu .scene-item {
+  min-height: 48px;
+  padding: 0 4px 0 10px;
+}
+
+popover.scene-menu .scene-more {
+  opacity: 0;
+}
+
+popover.scene-menu list.scene-list > row:hover .scene-more,
+popover.scene-menu .scene-more:checked,
+popover.scene-menu .scene-more:focus-within {
+  opacity: 1;
+}
+
+popover.scene-menu .scene-menu-note {
+  padding: 4px 10px 8px 10px;
+}
+
+popover.scene-menu separator.scene-menu-sep {
+  margin: 6px -6px;
+  background-color: var(--qrec-border);
+  min-height: 1px;
+}
+
+popover.scene-menu button.scene-menu-item {
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+}
+
+/* Save as / Rename (board 02's save state): 16 px in, the name's helper
+   in warning-text, what is saved on `field`. */
+popover.scene-save-pop > contents {
+  padding: 16px;
+}
+
+popover.scene-save-pop .scene-field-label {
+  margin: 12px 0 4px 0;
+}
+
+popover.scene-save-pop entry.warning {
+  box-shadow: inset 0 0 0 1px var(--qrec-warning-text);
+}
+
+popover.scene-save-pop .scene-helper {
+  margin-top: 6px;
+}
+
+popover.scene-save-pop .scene-what {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background-color: var(--qrec-field);
+}
+
+popover.scene-save-pop .scene-where {
+  margin-top: 10px;
+}
+
+popover.scene-save-pop .scene-pop-foot {
+  margin-top: 16px;
+}

@@ -14,7 +14,8 @@ expression: rows
         "locked": false,
         "error": "The camera stopped sending frames",
         "missing": null,
-        "enabled": true
+        "enabled": true,
+        "notConnected": false
       },
       {
         "layer": "L1",
@@ -25,7 +26,8 @@ expression: rows
         "locked": true,
         "error": "Access denied by the desktop portal",
         "missing": null,
-        "enabled": true
+        "enabled": true,
+        "notConnected": false
       }
     ],
     [
@@ -68,7 +70,8 @@ expression: rows
         "locked": false,
         "error": null,
         "missing": "Missing in this take",
-        "enabled": true
+        "enabled": true,
+        "notConnected": false
       },
       {
         "layer": "L1",
@@ -79,7 +82,8 @@ expression: rows
         "locked": false,
         "error": null,
         "missing": null,
-        "enabled": true
+        "enabled": true,
+        "notConnected": false
       }
     ],
     [
@@ -122,7 +126,8 @@ expression: rows
         "locked": false,
         "error": null,
         "missing": null,
-        "enabled": true
+        "enabled": true,
+        "notConnected": false
       },
       {
         "layer": "L1",
@@ -133,7 +138,8 @@ expression: rows
         "locked": true,
         "error": "Screen picker closed",
         "missing": null,
-        "enabled": true
+        "enabled": true,
+        "notConnected": false
       }
     ],
     [
