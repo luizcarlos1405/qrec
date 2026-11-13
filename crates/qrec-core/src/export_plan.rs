@@ -62,13 +62,14 @@
 //!   project-relative `out` is an auto name (loop `-2`, `-3` on EEXIST); an
 //!   absolute one was picked by hand (and confirmed if it existed).
 //! - A failing VA segment switches the whole export to [`without_vaapi`]
-//!   (libx264, other keys; nothing mixes).
+//!   (libx264, else libopenh264; other keys, nothing mixes).
 //!
 //! `crates/qrec-shell/tests/plans_ffmpeg.rs` does all of this with real
 //! ffmpeg and checks the frames and samples that come out.
 
 use std::collections::BTreeSet;
 
+use crate::capture_plan::OPENH264_MAX_PIXELS;
 use crate::config::UserConfig;
 use crate::error::{CoreError, ErrorCode};
 use crate::hash::sha256_hex;
@@ -111,34 +112,60 @@ pub struct ExportOptions {
     /// The output path: absolute when picked by hand, project-relative
     /// (`exports/…`) for auto names.
     pub out: String,
-    /// Use the VA export chain when `caps.vaapi.ffmpeg_h264`; false re-plans
-    /// with libx264 after a VA failure. An export sets it from
-    /// [`export_vaapi`].
+    /// The VA export chain may encode when `caps.vaapi.ffmpeg_h264`: H.264
+    /// is h264_vaapi's then, unless `x264_only`. An export sets it from
+    /// [`vaapi_node`]; false re-plans in software after a VA failure.
     pub allow_vaapi: bool,
+    /// The effective encoder preference is x264 (A§2.1, [`prefers_x264`]):
+    /// H.264 is libx264's alone, never h264_vaapi's or libopenh264's, as
+    /// recordings are x264enc's alone then.
+    pub x264_only: bool,
+}
+
+/// Whether the effective encoder preference is x264 (A§2.1): the project's
+/// `recording.encoder` unless `auto`, else the config's
+/// `encoder.preference`. It turns the VA chain off ([`export_vaapi`]) and
+/// asks for libx264 by name ([`ExportOptions::x264_only`]).
+pub fn prefers_x264(project: &Project, config: &UserConfig) -> bool {
+    let preference = match project.recording.encoder {
+        EncoderPref::Auto => config.encoder.preference,
+        explicit => explicit,
+    };
+    preference == EncoderPref::X264
 }
 
 /// The VA-API node an H.264 export of `project` encodes on, or `None` for
-/// libx264 (A§2.1, A§9.3): the effective encoder (the project's, else the
-/// user config's preference) isn't x264, the node the shell verified is the
-/// effective device (the project's pin, else the config's; no pin takes
-/// it), and its ffmpeg chain works (`VaapiCaps::ffmpeg_h264`). The export
-/// (`apply::output::export`) and the GUI's caption of it
-/// (`view::export::caption`) both ask this, so the caption names the
-/// encoder the export uses. A VA segment that fails at run time still
-/// switches the export to libx264 ([`without_vaapi`]).
+/// the software encoders ([`exports_with_openh264`]) (A§2.1, A§9.3): the
+/// effective encoder (the project's, else the user config's preference)
+/// isn't x264 ([`prefers_x264`]), and VA-API may encode on the node
+/// ([`vaapi_node`]). The export (`apply::output::export`, whose options
+/// carry both answers) and the GUI's caption of it
+/// (`view::export::caption`) agree on it, so the caption names the encoder
+/// the export uses. A VA segment that fails at run time still switches the
+/// export to software ([`without_vaapi`]).
 pub fn export_vaapi<'a>(
     project: &Project,
     config: &UserConfig,
     caps: &'a Capabilities,
 ) -> Option<&'a VaapiCaps> {
-    let va = caps.vaapi.as_ref().filter(|va| va.ffmpeg_h264)?;
-    let preference = match project.recording.encoder {
-        EncoderPref::Auto => config.encoder.preference,
-        explicit => explicit,
-    };
-    if preference == EncoderPref::X264 {
+    if prefers_x264(project, config) {
         return None;
     }
+    vaapi_node(project, config, caps)
+}
+
+/// The node H.264 exports of `project` may encode on with VA-API, whatever
+/// the encoder preference ([`ExportOptions::allow_vaapi`]; under an x264
+/// preference, the node auto would encode on, which an export refused for
+/// want of libx264 names): the node the shell verified is the effective
+/// device (the project's pin, else the config's; no pin takes it), and its
+/// ffmpeg chain works (`VaapiCaps::ffmpeg_h264`).
+pub fn vaapi_node<'a>(
+    project: &Project,
+    config: &UserConfig,
+    caps: &'a Capabilities,
+) -> Option<&'a VaapiCaps> {
+    let va = caps.vaapi.as_ref().filter(|va| va.ffmpeg_h264)?;
     let pinned = project
         .recording
         .vaapi_device
@@ -148,6 +175,17 @@ pub fn export_vaapi<'a>(
         Some(device) if va.device != *device => None,
         _ => Some(va),
     }
+}
+
+/// Whether an H.264 export that VA-API doesn't encode uses libopenh264
+/// rather than libx264 (A§9.3): ffmpeg lists libopenh264 and not libx264
+/// (Fedora's ffmpeg-free), and x264 wasn't asked for by name (`x264_only`).
+/// An ffmpeg whose encoders weren't listed exports with libx264, as before.
+pub fn exports_with_openh264(caps: &Capabilities, x264_only: bool) -> bool {
+    !x264_only
+        && caps.ffmpeg.as_ref().is_some_and(|ffmpeg| {
+            !ffmpeg.encoders.contains("libx264") && ffmpeg.encoders.contains("libopenh264")
+        })
 }
 
 /// A maximal run of continuous clips (same take, `out == next.in`).
@@ -625,26 +663,84 @@ pub(crate) fn audio_graph(
 
 // ---------------------------------------------------------------- encoders
 
+/// libopenh264's constant QP for Draft, Standard and High: VA's, the other
+/// fixed-QP encoder, so both quantize alike. OpenH264 encodes Constrained
+/// Baseline alone (CAVLC, no B-frames, no 8×8 transform), so it needs more
+/// bits than libx264 for the same quality. Measured with OpenH264 2.6 in
+/// ffmpeg 8.1.2 on 10 s of a 1920×1080 screen (still text, scrolling,
+/// cuts) with a 480×270 camera in a corner, against libx264's presets:
+/// Draft is 0.9 dB PSNR-Y below `veryfast -crf 23` for 22% more bits,
+/// Standard 2.2 dB below `medium -crf 20` for 9% more (QP 19 would match it
+/// for 37% more), High 1.8 dB below `slow -crf 18` for 7% more (SSIM 0.990,
+/// 0.994 and 0.996 against 0.994, 0.997 and 0.997). A noisy camera filling
+/// the canvas costs a fixed QP the most: 1.6× libx264's bits at Standard,
+/// for 2.7 dB more.
+const OPENH264_QP: [&str; 3] = ["26", "22", "19"];
+
+/// libopenh264's rate control: one that honors `-qmin`/`-qmax` (`off`
+/// ignores them and encodes at QP 26). There is no `-b:v`: with the QP
+/// pinned the target changed neither a decoded frame nor the size (from
+/// the default 2 Mbit/s to 100), only the level OpenH264 writes (100
+/// Mbit/s makes a 1080p30 stream level 5.0, past what some hardware
+/// decoders take); without one the level follows the frame size and rate
+/// (4.0 at 1080p30), as libx264's does.
+const OPENH264_RATE_CONTROL: &str = "quality";
+
+/// libopenh264's keyframe interval, libx264's default: without `-g`
+/// OpenH264 writes one IDR at the start, and players can't seek a long
+/// export.
+const OPENH264_GOP: &str = "250";
+
+/// libopenh264's threads: one, so one slice a frame. ffmpeg's default
+/// (`auto`) encodes the same single slice, as OpenH264 only spreads slices
+/// over threads; the segments render in parallel anyway, and four slices
+/// were no faster on the screen clip with its camera (1.6× on the noisy
+/// camera filling the canvas) for 3.6% more bits.
+const OPENH264_THREADS: &str = "1";
+
 /// The video encoder of one export (one per export: nothing mixes).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Encoder {
     X264,
-    Vaapi { device: String },
+    Vaapi {
+        device: String,
+    },
+    /// libopenh264, where ffmpeg has it and not libx264
+    /// ([`exports_with_openh264`]).
+    OpenH264,
     Vp9,
     Av1,
 }
 
 impl Encoder {
-    fn choose(codec: VideoCodec, caps: &Capabilities, allow_vaapi: bool) -> Self {
+    /// The encoder of `codec` ([`Encoder::h264`] for H.264).
+    fn choose(codec: VideoCodec, caps: &Capabilities, opts: &ExportOptions) -> Self {
         match codec {
-            VideoCodec::H264 => match &caps.vaapi {
-                Some(va) if allow_vaapi && va.ffmpeg_h264 => Encoder::Vaapi {
-                    device: va.device.clone(),
-                },
-                _ => Encoder::X264,
-            },
+            VideoCodec::H264 => Encoder::h264(caps, opts.allow_vaapi, opts.x264_only),
             VideoCodec::Vp9 => Encoder::Vp9,
             VideoCodec::Av1 => Encoder::Av1,
+        }
+    }
+
+    /// H.264: h264_vaapi on the VA node when allowed and verified, and x264
+    /// isn't asked for by name, else the software encoder
+    /// ([`Encoder::software`]).
+    fn h264(caps: &Capabilities, allow_vaapi: bool, x264_only: bool) -> Self {
+        match &caps.vaapi {
+            Some(va) if allow_vaapi && !x264_only && va.ffmpeg_h264 => Encoder::Vaapi {
+                device: va.device.clone(),
+            },
+            _ => Encoder::software(caps, x264_only),
+        }
+    }
+
+    /// The H.264 encoder without VA-API: libx264, else libopenh264
+    /// ([`exports_with_openh264`]).
+    fn software(caps: &Capabilities, x264_only: bool) -> Self {
+        if exports_with_openh264(caps, x264_only) {
+            Encoder::OpenH264
+        } else {
+            Encoder::X264
         }
     }
 
@@ -653,6 +749,7 @@ impl Encoder {
         match self {
             Encoder::X264 => "libx264",
             Encoder::Vaapi { .. } => "h264_vaapi",
+            Encoder::OpenH264 => "libopenh264",
             Encoder::Vp9 => "libvpx-vp9",
             Encoder::Av1 => "libsvtav1",
         }
@@ -664,7 +761,7 @@ impl Encoder {
     /// see [`plan_stitch`]).
     fn segment_container(&self) -> (&'static str, &'static str) {
         match self {
-            Encoder::X264 | Encoder::Vaapi { .. } => ("mov", "mov"),
+            Encoder::X264 | Encoder::Vaapi { .. } | Encoder::OpenH264 => ("mov", "mov"),
             Encoder::Vp9 | Encoder::Av1 => ("matroska", "mkv"),
         }
     }
@@ -699,6 +796,34 @@ impl Encoder {
                     Quality::High => 19,
                 };
                 return vaapi_h264_args(qp);
+            }
+            Encoder::OpenH264 => {
+                let qp = pick(OPENH264_QP[0], OPENH264_QP[1], OPENH264_QP[2]);
+                vec![
+                    "-c:v",
+                    "libopenh264",
+                    "-rc_mode",
+                    OPENH264_RATE_CONTROL,
+                    "-qmin",
+                    qp,
+                    "-qmax",
+                    qp,
+                    "-g",
+                    OPENH264_GOP,
+                    "-threads",
+                    OPENH264_THREADS,
+                    // Constrained Baseline has no B-frames; every H.264
+                    // segment says so (module docs, "Decode order").
+                    "-bf",
+                    "0",
+                    "-pix_fmt",
+                    "yuv420p",
+                    // Its one profile. ffmpeg 8.1.2 hands OpenH264 a number
+                    // (578) it logs it doesn't know, then encodes
+                    // Constrained Baseline anyway; so it does without this.
+                    "-profile:v",
+                    "constrained_baseline",
+                ]
             }
             Encoder::Vp9 => vec![
                 "-c:v",
@@ -795,10 +920,84 @@ fn check_ffmpeg<'a>(
     Ok(ffmpeg)
 }
 
+/// libx264, which [`Encoder::choose`] took, missing from the encoders
+/// ffmpeg listed: `missing_dependency`. Unless x264 was asked for by name
+/// ([`ExportOptions::x264_only`]) libopenh264 is missing too, and either
+/// one would export. Asked for by name, the hint says where to set auto
+/// and what auto would export with, h264_vaapi on the node
+/// ([`vaapi_node`]) else libopenh264 (as a recording's names what auto
+/// would record with, `on_event::record`), or to install libx264; to
+/// install a full ffmpeg where auto would need libx264 too.
+fn no_libx264(project: &Project, caps: &Capabilities, opts: &ExportOptions) -> Option<CoreError> {
+    let encoders = &caps.ffmpeg.as_ref()?.encoders;
+    if encoders.is_empty() || encoders.contains("libx264") {
+        return None;
+    }
+    const FULL: &str = "install a full ffmpeg build; `qrec doctor` lists what is missing";
+    let error = |message: String| CoreError::new(ErrorCode::MissingDependency, message);
+    if !opts.x264_only {
+        return Some(
+            error("ffmpeg has no libx264 or libopenh264 encoder".to_owned()).with_hint(FULL),
+        );
+    }
+    let auto = Encoder::h264(caps, opts.allow_vaapi, false);
+    let (width, height) = (project.canvas.width, project.canvas.height);
+    if auto == Encoder::X264
+        || (auto == Encoder::OpenH264 && openh264_canvas_too_large(width, height).is_some())
+    {
+        return Some(error("ffmpeg has no libx264 encoder".to_owned()).with_hint(FULL));
+    }
+    let (asks, set) = if project.recording.encoder == EncoderPref::X264 {
+        (
+            "the project's encoder is x264",
+            "qrec project set --encoder auto",
+        )
+    } else {
+        (
+            "the encoder preference is x264",
+            "set it to Auto in Settings › Recording (qrec config set encoder.preference auto)",
+        )
+    };
+    Some(
+        error(format!("{asks}, but ffmpeg has no libx264 encoder")).with_hint(format!(
+            "{set} to export with {}, or install ffmpeg with libx264; \
+             `qrec doctor` names this system's packages",
+            auto.name()
+        )),
+    )
+}
+
+/// `missing_dependency` for a canvas larger than libopenh264 encodes
+/// (`capture_plan::OPENH264_MAX_PIXELS`, the same library as openh264enc's;
+/// ffmpeg fails the segment at once otherwise). libx264 would encode it, and
+/// WebM exports it here.
+fn openh264_canvas_too_large(width: u32, height: u32) -> Option<CoreError> {
+    (u64::from(width) * u64::from(height) > OPENH264_MAX_PIXELS).then(|| {
+        CoreError::new(
+            ErrorCode::MissingDependency,
+            format!(
+                "can't export the {width}×{height} canvas to MP4: libopenh264, which encodes it \
+                 here, encodes at most {OPENH264_MAX_PIXELS} pixels a frame (4096×2304)"
+            ),
+        )
+        .with_hint(
+            "export WebM, or install ffmpeg with libx264, which encodes frames that large; \
+             `qrec doctor` names this system's packages",
+        )
+    })
+}
+
 // -------------------------------------------------------------------- plan
 
 /// The whole export plan. `Invalid` "nothing to export" for an empty
-/// timeline; `MissingDependency` without ffmpeg or one of its encoders.
+/// timeline; `MissingDependency` without ffmpeg or one of its encoders, or
+/// for a canvas larger than libopenh264 encodes when it would.
+///
+/// H.264 is h264_vaapi where `opts.allow_vaapi` and the chain works, else
+/// libx264, else libopenh264 where ffmpeg lists it and not libx264
+/// ([`exports_with_openh264`]); `opts.x264_only` takes libx264 alone. Each
+/// encoder renders its own segments: its name is in the argv, so in the
+/// cache key.
 pub fn plan_export(
     project: &Project,
     caps: &Capabilities,
@@ -811,8 +1010,18 @@ pub fn plan_export(
             "nothing to export: the timeline is empty",
         ));
     }
-    let encoder = Encoder::choose(codec, caps, opts.allow_vaapi);
+    let encoder = Encoder::choose(codec, caps, opts);
+    if encoder == Encoder::X264
+        && let Some(error) = no_libx264(project, caps, opts)
+    {
+        return Err(error);
+    }
     let ffmpeg = check_ffmpeg(caps, &encoder, opts.format)?;
+    if encoder == Encoder::OpenH264
+        && let Some(error) = openh264_canvas_too_large(project.canvas.width, project.canvas.height)
+    {
+        return Err(error);
+    }
     let mut segments = Vec::with_capacity(units.len());
     let mut files = BTreeSet::new();
     for unit in &units {
@@ -925,7 +1134,9 @@ fn plan_segment(
 }
 
 /// `sha256(PLAN_VERSION ‖ ffmpeg identity ‖ VA device for VA plans ‖ argv
-/// without the output path)`, the parts joined with `\0`.
+/// without the output path)`, the parts joined with `\0`. The argv names
+/// the encoder (`-c:v libx264`, `h264_vaapi`, `libopenh264`, …), so each
+/// one caches its own segments.
 pub fn cache_key(
     identity: &str,
     vaapi_device: Option<&str>,
@@ -1017,12 +1228,17 @@ fn stitch_with_list(list_content: String, format: ExportFormat, out: &str) -> St
     }
 }
 
-/// The libx264 plan of a VA plan (A§9.3 "one encoder per export"): when a
+/// The software plan of a VA plan (A§9.3 "one encoder per export"): when a
 /// VA segment fails, the runner throws the VA renders away and runs this
-/// instead. Equal to `plan_export` with `allow_vaapi: false` on the same
-/// project. `None` when `plan` doesn't use VA-API.
+/// instead, on libx264, else libopenh264 ([`exports_with_openh264`]: `caps`
+/// says which encoders ffmpeg has; none listed is libx264). Equal to
+/// `plan_export` with `allow_vaapi: false` (and `x264_only: false`: a VA
+/// plan is never x264's) on the same project. `None` when `plan` doesn't
+/// use VA-API, or when its canvas is larger than libopenh264 encodes and
+/// libopenh264 would (`plan_export` refuses that plan too).
 pub fn without_vaapi(plan: &ExportPlan, caps: &Capabilities) -> Option<ExportPlan> {
     let identity = caps.ffmpeg.as_ref()?.identity.as_str();
+    let software = Encoder::software(caps, false);
     let mut segments = Vec::with_capacity(plan.segments.len());
     for segment in &plan.segments {
         let argv = &segment.argv;
@@ -1041,22 +1257,28 @@ pub fn without_vaapi(plan: &ExportPlan, caps: &Capabilities) -> Option<ExportPla
         };
         let codec_at = argv.iter().position(|a| a == "-c:v")?;
         let codec_end = argv.iter().position(|a| a == "-color_range")?;
-        let mut x264: Vec<String> = argv[..hw].to_vec();
-        x264.extend_from_slice(&argv[hw + 4..codec_at]);
-        x264.extend(Encoder::X264.args(quality));
-        x264.extend_from_slice(&argv[codec_end..argv.len() - 1]);
-        let graph_at = x264.iter().position(|a| a == "-filter_complex")? + 1;
+        let mut cpu: Vec<String> = argv[..hw].to_vec();
+        cpu.extend_from_slice(&argv[hw + 4..codec_at]);
+        cpu.extend(software.args(quality));
+        cpu.extend_from_slice(&argv[codec_end..argv.len() - 1]);
+        let graph_at = cpu.iter().position(|a| a == "-filter_complex")? + 1;
+        if software == Encoder::OpenH264 {
+            let (width, height) = graph_canvas(&cpu[graph_at])?;
+            if openh264_canvas_too_large(width, height).is_some() {
+                return None;
+            }
+        }
         let upload = format!(";[v]{VAAPI_UPLOAD}[vv]");
-        x264[graph_at] = x264[graph_at].replacen(&upload, "", 1);
-        let map_at = x264.iter().position(|a| a == "[vv]")?;
-        x264[map_at] = "[v]".to_owned();
-        let key = cache_key(identity, None, &x264);
+        cpu[graph_at] = cpu[graph_at].replacen(&upload, "", 1);
+        let map_at = cpu.iter().position(|a| a == "[vv]")?;
+        cpu[map_at] = "[v]".to_owned();
+        let key = cache_key(identity, None, &cpu);
         let path = format!("{SEGMENTS_DIR}/{key}.mov");
-        x264.push(file_arg(&path));
+        cpu.push(file_arg(&path));
         segments.push(SegmentPlan {
             key,
             path,
-            argv: x264,
+            argv: cpu,
             ..segment.clone()
         });
     }
@@ -1086,6 +1308,17 @@ pub fn without_vaapi(plan: &ExportPlan, caps: &Capabilities) -> Option<ExportPla
     })
 }
 
+/// The canvas size of a segment's video graph: its `color` base,
+/// `color=c=<bg>:s=<W>x<H>:r=<rate>[base]` ([`video_graph`]).
+fn graph_canvas(graph: &str) -> Option<(u32, u32)> {
+    let base = graph.split(';').next()?;
+    let size = base
+        .split(':')
+        .find_map(|option| option.strip_prefix("s="))?;
+    let (width, height) = size.split_once('x')?;
+    Some((width.parse().ok()?, height.parse().ok()?))
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -1102,6 +1335,7 @@ pub(crate) mod tests {
             codec: VideoCodec::H264,
             out: out.to_owned(),
             allow_vaapi: true,
+            x264_only: false,
         }
     }
 
@@ -1193,6 +1427,7 @@ pub(crate) mod tests {
             vendor: 0x8086,
             ffmpeg_h264: true,
             gst_h264_factory: Some("vah264enc".into()),
+            gst_h264_lp_factory: None,
         });
         caps
     }
@@ -1603,6 +1838,285 @@ pub(crate) mod tests {
         }
     }
 
+    /// Fedora's ffmpeg-free: libopenh264, no libx264.
+    fn openh264_caps() -> Capabilities {
+        let mut caps = testkit::capabilities();
+        let encoders = &mut caps.ffmpeg.as_mut().unwrap().encoders;
+        encoders.remove("libx264");
+        encoders.insert("libopenh264".to_owned());
+        caps
+    }
+
+    /// The encoder of every segment of `plan` (its `-c:v`).
+    fn video_encoders(plan: &ExportPlan) -> BTreeSet<&str> {
+        plan.segments
+            .iter()
+            .filter_map(|s| s.argv.windows(2).find(|w| w[0] == "-c:v"))
+            .map(|w| w[1].as_str())
+            .collect()
+    }
+
+    /// Without libx264, MP4 exports encode with libopenh264 (A§9.3): a
+    /// fixed QP per preset (VA's), libx264's keyframe interval, one thread,
+    /// Constrained Baseline. The segments are cached apart from libx264's:
+    /// the encoder is in the argv, so in the key.
+    #[test]
+    fn mp4_without_libx264_exports_with_openh264() {
+        let project = spec_project();
+        let plan = plan_export(&project, &openh264_caps(), &opts("/home/me/out.mp4")).unwrap();
+        assert_eq!(video_encoders(&plan), BTreeSet::from(["libopenh264"]));
+        insta::assert_snapshot!("spec_project_openh264", render_plan(&plan));
+        let x264 = plan_export(
+            &project,
+            &testkit::capabilities(),
+            &opts("/home/me/out.mp4"),
+        )
+        .unwrap();
+        for (a, b) in plan.segments.iter().zip(&x264.segments) {
+            assert_ne!(a.key, b.key);
+            assert_eq!(a.path, format!("{SEGMENTS_DIR}/{}.mov", a.key));
+        }
+        // Only the video options differ.
+        let video_free = |argv: &[String]| -> Vec<String> {
+            let at = argv.iter().position(|a| a == "-c:v").unwrap();
+            let end = argv.iter().position(|a| a == "-color_range").unwrap();
+            [&argv[..at], &argv[end..argv.len() - 1]].concat()
+        };
+        assert_eq!(
+            video_free(&plan.segments[1].argv),
+            video_free(&x264.segments[1].argv)
+        );
+        // The stitch copies either: only its list, named by the segments'
+        // keys, differs.
+        let without_list = |argv: &[String]| -> Vec<String> {
+            argv.iter()
+                .filter(|a| !a.ends_with(".ffconcat"))
+                .cloned()
+                .collect()
+        };
+        assert_eq!(
+            without_list(&plan.stitch.argv),
+            without_list(&x264.stitch.argv)
+        );
+        for (quality, qp) in [
+            (Quality::Draft, "26"),
+            (Quality::Standard, "22"),
+            (Quality::High, "19"),
+        ] {
+            let mut o = opts("x.mp4");
+            o.quality = quality;
+            let argv = &plan_export(&project, &openh264_caps(), &o)
+                .unwrap()
+                .segments[0]
+                .argv;
+            let value = |name: &str| {
+                let at = argv.iter().position(|a| a == name).unwrap();
+                argv[at + 1].as_str()
+            };
+            assert_eq!(
+                [value("-qmin"), value("-qmax"), value("-rc_mode")],
+                [qp, qp, "quality"]
+            );
+            assert!(!argv.iter().any(|a| a == "-b:v"), "no target: {argv:?}");
+        }
+        // libx264 wins where ffmpeg has both, and an unlisted ffmpeg is
+        // libx264's, as before.
+        let mut both = openh264_caps();
+        both.ffmpeg
+            .as_mut()
+            .unwrap()
+            .encoders
+            .insert("libx264".to_owned());
+        assert_eq!(
+            plan_export(&project, &both, &opts("x.mp4")).unwrap(),
+            plan_export(&project, &testkit::capabilities(), &opts("x.mp4")).unwrap()
+        );
+        assert!(!exports_with_openh264(&both, false));
+        let mut unlisted = openh264_caps();
+        unlisted.ffmpeg.as_mut().unwrap().encoders.clear();
+        let plan = plan_export(&project, &unlisted, &opts("x.mp4")).unwrap();
+        assert_eq!(video_encoders(&plan), BTreeSet::from(["libx264"]));
+        // WebM is unchanged.
+        let mut webm = opts("x.webm");
+        (webm.format, webm.codec) = (ExportFormat::Webm, VideoCodec::Vp9);
+        assert_eq!(
+            plan_export(&project, &openh264_caps(), &webm).unwrap(),
+            plan_export(&project, &testkit::capabilities(), &webm).unwrap()
+        );
+    }
+
+    /// A VA plan's fallback is the software encoder ffmpeg has: libopenh264
+    /// without libx264, the same plan as without VA-API.
+    #[test]
+    fn a_vaapi_plan_falls_back_to_openh264_without_libx264() {
+        let project = spec_project();
+        let mut caps = openh264_caps();
+        caps.vaapi = va_caps().vaapi;
+        for quality in [Quality::Draft, Quality::Standard, Quality::High] {
+            let mut o = opts("exports/my-video-20261014-120000.mp4");
+            o.quality = quality;
+            let va = plan_export(&project, &caps, &o).unwrap();
+            assert_eq!(video_encoders(&va), BTreeSet::from(["h264_vaapi"]));
+            o.allow_vaapi = false;
+            let software = plan_export(&project, &caps, &o).unwrap();
+            assert_eq!(video_encoders(&software), BTreeSet::from(["libopenh264"]));
+            assert_eq!(without_vaapi(&va, &caps), Some(software));
+        }
+        // What the runner knows of ffmpeg decides: an unlisted one is
+        // libx264's, as before.
+        let va = plan_export(&project, &caps, &opts("x.mp4")).unwrap();
+        let mut unlisted = caps.clone();
+        unlisted.ffmpeg.as_mut().unwrap().encoders.clear();
+        let fallback = without_vaapi(&va, &unlisted).unwrap();
+        assert_eq!(video_encoders(&fallback), BTreeSet::from(["libx264"]));
+    }
+
+    /// No libx264, and no libopenh264 either: `missing_dependency` naming
+    /// both. x264 asked for by name exports with libx264 alone, as it
+    /// records with x264enc alone: where to set auto to export with what
+    /// auto would use, or install libx264.
+    #[test]
+    fn mp4_without_its_software_encoders() {
+        let project = spec_project();
+        let mut neither = openh264_caps();
+        neither
+            .ffmpeg
+            .as_mut()
+            .unwrap()
+            .encoders
+            .remove("libopenh264");
+        let err = plan_export(&project, &neither, &opts("x.mp4")).unwrap_err();
+        assert_eq!(
+            (err.code, err.message.as_str()),
+            (
+                ErrorCode::MissingDependency,
+                "ffmpeg has no libx264 or libopenh264 encoder"
+            )
+        );
+        assert_eq!(
+            err.hint.as_deref(),
+            Some("install a full ffmpeg build; `qrec doctor` lists what is missing")
+        );
+
+        let mut x264 = opts("x.mp4");
+        x264.x264_only = true;
+        assert!(!exports_with_openh264(&openh264_caps(), true));
+        let err = plan_export(&project, &openh264_caps(), &x264).unwrap_err();
+        assert_eq!(err.code, ErrorCode::MissingDependency);
+        assert_eq!(
+            err.message,
+            "the encoder preference is x264, but ffmpeg has no libx264 encoder"
+        );
+        assert_eq!(
+            err.hint.as_deref(),
+            Some(
+                "set it to Auto in Settings › Recording (qrec config set encoder.preference \
+                 auto) to export with libopenh264, or install ffmpeg with libx264; `qrec \
+                 doctor` names this system's packages"
+            )
+        );
+        let mut asks = project.clone();
+        asks.recording.encoder = EncoderPref::X264;
+        let err = plan_export(&asks, &openh264_caps(), &x264).unwrap_err();
+        assert_eq!(
+            err.message,
+            "the project's encoder is x264, but ffmpeg has no libx264 encoder"
+        );
+        assert!(
+            err.hint
+                .unwrap()
+                .starts_with("qrec project set --encoder auto to export with libopenh264, ")
+        );
+        let err = plan_export(&project, &neither, &x264).unwrap_err();
+        assert_eq!(err.message, "ffmpeg has no libx264 encoder");
+        // Nor where the canvas is larger than libopenh264 encodes.
+        let mut large = project.clone();
+        (large.canvas.width, large.canvas.height) = (5120, 2880);
+        let err = plan_export(&large, &openh264_caps(), &x264).unwrap_err();
+        assert_eq!(err.message, "ffmpeg has no libx264 encoder");
+        // With libx264 the preference changes nothing.
+        assert_eq!(
+            plan_export(&project, &testkit::capabilities(), &x264).unwrap(),
+            plan_export(&project, &testkit::capabilities(), &opts("x.mp4")).unwrap()
+        );
+
+        // Where VA-API may encode (`allow_vaapi`, from `vaapi_node`), x264
+        // by name still takes libx264 alone, and auto would export with
+        // h264_vaapi, libopenh264 there or not: the hint says so. Not
+        // allowed (the pin names another node), auto is what it was.
+        let plan = plan_export(&project, &va_caps(), &x264).unwrap();
+        assert_eq!(video_encoders(&plan), BTreeSet::from(["libx264"]));
+        let mut elsewhere = x264.clone();
+        elsewhere.allow_vaapi = false;
+        for (mut caps, without_va) in [(openh264_caps(), Some("libopenh264")), (neither, None)] {
+            caps.vaapi = va_caps().vaapi;
+            let hint = plan_export(&project, &caps, &x264)
+                .unwrap_err()
+                .hint
+                .unwrap();
+            assert!(
+                hint.starts_with(
+                    "set it to Auto in Settings › Recording (qrec config set \
+                     encoder.preference auto) to export with h264_vaapi, or install ffmpeg \
+                     with libx264; "
+                ),
+                "{hint}"
+            );
+            let err = plan_export(&project, &caps, &elsewhere).unwrap_err();
+            match without_va {
+                Some(encoder) => assert!(
+                    err.hint
+                        .unwrap()
+                        .contains(&format!(" to export with {encoder}, "))
+                ),
+                None => assert_eq!(err.message, "ffmpeg has no libx264 encoder"),
+            }
+        }
+    }
+
+    /// libopenh264 encodes at most 9,437,184 pixels a frame (4096×2304):
+    /// a larger canvas is refused before anything renders, and a VA plan of
+    /// one has no libopenh264 fallback. libx264 and WebM encode it.
+    #[test]
+    fn a_canvas_larger_than_openh264_encodes() {
+        let sized = |width, height| {
+            let mut project = spec_project();
+            project.canvas.width = width;
+            project.canvas.height = height;
+            project
+        };
+        let large = sized(5120, 2880);
+        let err = plan_export(&large, &openh264_caps(), &opts("x.mp4")).unwrap_err();
+        assert_eq!(err.code, ErrorCode::MissingDependency);
+        assert_eq!(
+            err.message,
+            "can't export the 5120×2880 canvas to MP4: libopenh264, which encodes it here, \
+             encodes at most 9437184 pixels a frame (4096×2304)"
+        );
+        assert!(
+            err.hint
+                .unwrap()
+                .starts_with("export WebM, or install ffmpeg with libx264")
+        );
+        for (width, height) in [(4096, 2304), (2304, 4096), (5120, 1440)] {
+            assert!(plan_export(&sized(width, height), &openh264_caps(), &opts("x.mp4")).is_ok());
+        }
+        assert!(plan_export(&large, &testkit::capabilities(), &opts("x.mp4")).is_ok());
+        let mut webm = opts("x.webm");
+        (webm.format, webm.codec) = (ExportFormat::Webm, VideoCodec::Vp9);
+        assert!(plan_export(&large, &openh264_caps(), &webm).is_ok());
+        let mut caps = openh264_caps();
+        caps.vaapi = va_caps().vaapi;
+        let va = plan_export(&large, &caps, &opts("x.mp4")).unwrap();
+        assert_eq!(without_vaapi(&va, &caps), None);
+        let va = plan_export(&sized(4096, 2304), &caps, &opts("x.mp4")).unwrap();
+        assert!(without_vaapi(&va, &caps).is_some());
+        assert_eq!(
+            graph_canvas("color=c=0x12170f:s=4096x2304:r=30000/1001[base];[0:v]fps=30/1[l0]"),
+            Some((4096, 2304))
+        );
+    }
+
     #[test]
     fn webm_plans() {
         let project = spec_project();
@@ -1703,7 +2217,7 @@ pub(crate) mod tests {
     #[test]
     fn h264_segments_have_no_b_frames() {
         let project = spec_project();
-        for caps in [testkit::capabilities(), va_caps()] {
+        for caps in [testkit::capabilities(), va_caps(), openh264_caps()] {
             for quality in [Quality::Draft, Quality::Standard, Quality::High] {
                 let mut o = opts("x.mp4");
                 o.quality = quality;

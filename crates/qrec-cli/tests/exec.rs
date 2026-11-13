@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use pretty_assertions::assert_eq;
 use qrec_cli::*;
 use qrec_core::error::NOT_MY_SWAMP;
+use qrec_core::keymap::{NIRI_SNIPPET, global_snippet};
+use qrec_core::platform::{Desktop, QREC};
 use qrec_core::protocol::{
     HelloInfo, Progress, ProgressPhase, Toast, ToastLevel, UiAction, WireBody,
 };
@@ -76,6 +78,9 @@ struct Fake {
     /// What the window's process exits with.
     gui_exit: u8,
     logging: Option<(u8, bool)>,
+    /// Where Qrec runs, and what runs it (an AppImage's path).
+    desktop: Desktop,
+    program: String,
 }
 
 impl Fake {
@@ -93,6 +98,8 @@ impl Fake {
             pickers: vec![],
             gui_exit: 0,
             logging: None,
+            desktop: Desktop::Unknown,
+            program: QREC.to_owned(),
         }
     }
 
@@ -167,6 +174,14 @@ impl Backend for Fake {
 
     fn sources(&mut self) -> Result<Value, CoreError> {
         self.sources.clone()
+    }
+
+    fn desktop(&mut self) -> Desktop {
+        self.desktop.clone()
+    }
+
+    fn program(&mut self) -> String {
+        self.program.clone()
     }
 
     fn host(&mut self, project: &Path, args: &HostArgs) -> Result<u8, CoreError> {
@@ -1461,32 +1476,65 @@ fn a_full_stdout_fails_the_run() {
 fn doctor_reports_and_exits_5_when_required_pieces_are_missing() {
     let tmp = Tmp::new();
     let mut fake = Fake::new(&tmp.dir("cfg"));
+    // On GNOME: its settings' steps, with the commands, and not niri's binds.
+    let gnome = global_snippet(&Desktop::Gnome, QREC);
     fake.doctor = Ok(json!({
-        "checks": [{"id": "ffmpeg", "required": true, "ok": true, "detail": "8.1.2", "hint": null}],
-        "niriSnippet": "binds {\n    Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }\n}",
+        "checks": [{"id": "ffmpeg", "required": true, "neededFor": ["app"], "ok": true,
+                    "detail": "8.1.2", "hint": null}],
+        "featuresOff": [],
+        "shortcuts": gnome,
+        "niriSnippet": NIRI_SNIPPET,
         "va": null
     }));
     let ok = run(&mut fake, &tmp.0, "qrec doctor");
     assert_eq!(ok.code, 0);
     assert!(
-        ok.out
-            .contains("Mod+Shift+R { spawn \"qrec\" \"record\" \"toggle\"; }"),
+        ok.out.contains(&format!(
+            "\nGlobal shortcuts for GNOME:\n\n{}\n\nEverything Qrec needs is here.\n",
+            gnome.text
+        )),
         "{}",
         ok.out
     );
+    assert!(!ok.out.contains("binds {"), "{}", ok.out);
     assert_eq!(
         run(&mut fake, &tmp.0, "qrec doctor --json").json()["ok"],
         true
     );
 
+    // Only a feature is off: exit 0, its line, and `--json` is the report.
+    fake.doctor = Ok(json!({
+        "checks": [{"id": "gst.x264enc", "required": false, "neededFor": ["recording"], "ok": false,
+                    "detail": "x264enc (H.264 recording) isn't in the GStreamer registry",
+                    "hint": "install gst-plugins-ugly"}],
+        "featuresOff": [{"feature": "recording", "checks": ["gst.x264enc"],
+                         "message": "Recording is off: x264enc (H.264 recording) isn't in the GStreamer registry"}]
+    }));
+    let off = run(&mut fake, &tmp.0, "qrec doctor");
+    assert_eq!(off.code, 0, "{}", off.out);
+    assert!(
+        off.out.contains("\nRecording is off: x264enc (H.264 recording) isn't in the GStreamer registry\nEverything else Qrec needs is here.\n"),
+        "{}",
+        off.out
+    );
+    let json = run(&mut fake, &tmp.0, "qrec doctor --json");
+    assert_eq!(json.code, 0);
+    assert_eq!(
+        json.json()["data"]["featuresOff"][0]["feature"],
+        "recording"
+    );
+
     fake.doctor = Ok(
-        json!({"checks": [{"id": "x264enc", "required": true, "ok": false,
-                                         "detail": "GStreamer element missing", "hint": "install gst-plugins-ugly"}]}),
+        json!({"checks": [{"id": "gst.h264dec", "required": true, "neededFor": ["app"], "ok": false,
+                           "detail": "no software H.264 decoder", "hint": "install gst-libav (avdec_h264)"}],
+               "featuresOff": []}),
     );
     let missing = run(&mut fake, &tmp.0, "qrec doctor");
     assert_eq!(missing.code, 5);
     assert!(
-        missing.out.contains("x264enc: install gst-plugins-ugly"),
+        missing
+            .out
+            .contains("gst.h264dec: install gst-libav (avdec_h264)"),
         "{}",
         missing.out
     );
@@ -1495,7 +1543,57 @@ fn doctor_reports_and_exits_5_when_required_pieces_are_missing() {
     assert_eq!(json.json()["error"]["code"], "missing_dependency");
     assert_eq!(
         json.json()["error"]["details"]["checks"][0]["id"],
-        "x264enc"
+        "gst.h264dec"
+    );
+}
+
+/// The agent guide gives the global shortcuts of the desktop the backend
+/// detected: niri's KDL on niri only.
+#[test]
+fn the_agent_guide_follows_the_desktop() {
+    let tmp = Tmp::new();
+    let mut fake = Fake::new(&tmp.dir("cfg"));
+    fake.desktop = Desktop::Niri;
+    let niri = run(&mut fake, &tmp.0, "qrec agent-guide");
+    assert_eq!(niri.code, 0, "{}", niri.err);
+    assert!(niri.out.contains(NIRI_SNIPPET), "{}", niri.out);
+    fake.desktop = Desktop::Kde;
+    let kde = run(&mut fake, &tmp.0, "qrec agent-guide");
+    assert!(!kde.out.contains(NIRI_SNIPPET), "{}", kde.out);
+    assert!(
+        kde.out.contains(&global_snippet(&Desktop::Kde, QREC).text),
+        "{}",
+        kde.out
+    );
+    // From an AppImage they run its path.
+    fake.program = "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage".to_owned();
+    let appimage = run(&mut fake, &tmp.0, "qrec agent-guide");
+    assert!(
+        appimage
+            .out
+            .contains(&global_snippet(&Desktop::Kde, &fake.program).text),
+        "{}",
+        appimage.out
+    );
+    // A build without the shell knows no desktop: the generic list.
+    let mut standalone = Standalone::default();
+    let env = RunEnv {
+        cwd: Some(tmp.0.clone()),
+        err_tty: false,
+    };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = run_with_backend(
+        ["qrec", "agent-guide"].map(OsString::from),
+        &mut standalone,
+        &env,
+        &mut out,
+        &mut err,
+    );
+    assert_eq!(code, 0);
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains(&global_snippet(&Desktop::Unknown, QREC).text),
+        "{out}"
     );
 }
 

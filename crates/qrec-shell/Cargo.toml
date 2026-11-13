@@ -15,7 +15,9 @@ thiserror.workspace = true
 chrono = { workspace = true, features = ["clock"] }
 crossbeam-channel.workspace = true
 notify.workspace = true
+wayland-protocols.workspace = true
 wayland-client.workspace = true
+x11rb.workspace = true
 rustix.workspace = true
 libc.workspace = true
 tempfile.workspace = true
@@ -38,6 +40,11 @@ futures-lite = { workspace = true, optional = true }
 
 # Test helpers for other crates' tests (feature `testkit`).
 assert_cmd = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The doctor's snapshots of fake machines.
+insta.workspace = true
+proptest.workspace = true
 
 [features]
 default = ["gst"]

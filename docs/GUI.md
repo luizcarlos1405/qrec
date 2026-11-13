@@ -235,7 +235,7 @@ requirement review's numbering; H-n are host and engine calls.
 | D-51 | **PO** A step while the program plays (`←` `→` a frame, `Shift+←` `Shift+→` 1 s, `↑` `↓` an edit point; a key or the transport's button) pauses it first and steps from the frame the picture shows, as an editor's frame step does (Resolve, Premiere): `Pause`, then one `Seek{To(f)}` to where the step lands from the player's frame (`apply::ui::seek_frame`). SPEC §10.2, DESIGN and BRIEF don't say what a step does while playing; before, a frame step barely moved (its seek landed within the sync's 2-frame tolerance of the playing player, which played on; R18's audit), and ±1 s and the edit jumps played on from where they landed (keeping that for them is the alternative). `Home`, `End`, a ruler click and the CLI's `qrec seek` still move a playing program on (the sync's once-a-second seek waits for the window's and loses to any seek that landed after the snapshot it read, G§3.10 step 3; the CLI's `--by` and `--edit` go from the player's frame). The sync leaves the playhead to the step's seek and holds the paused picture until it lands (G§3.10 step 2). | WP4 |
 | H-1 | Live preview: a `gtk4paintablesink` created on the GTK thread and handed to the engine (SPEC §5.2), composited at the preview size (≤ 960×540 × the device scale), BGRx. The RGBA appsink path stays for tests and as the picture before WP1 merges. | WP1 |
 | H-2 | Program playback: one GES timeline and pipeline per session, edited in place and committed; a second `gtk4paintablesink`. | WP1 |
-| H-3 | The GUI renders with GSK GL: `GDK_DISABLE=vulkan` is set unless the user set `GDK_DISABLE` or `GSK_RENDERER`, in which case both are left alone and doctor notes it (G§3.13). | WP0a |
+| H-3 | The GUI renders with GSK GL: `GDK_DISABLE=vulkan` is set unless the user set `GDK_DISABLE` or `GSK_RENDERER`, in which case both are left alone and doctor notes it (G§3.13). Inside an AppImage without a render node to open, `GDK_DISABLE=gl,vulkan`: Cairo. | WP0a |
 | H-4 | A GUI host keeps portal casts open for 60 s after the live pipeline stops (`EngineOptions.cast_grace`), so `Tab` back to Live doesn't re-open screencasts. | WP1 |
 | H-5 | Device facts come from a cache the GUI refreshes on a worker (`facts::SharedSources`), so `LayerAdd` and a take start never block the session thread on discovery. | WP0a |
 | H-6 | The Session calls its `StateObserver` after every assignment of its state, durable or not (`RecordClock`, export progress, `runtime.playing`, recovery, jobs), before that outcome's toasts, progress and replies (G§3.5). | WP0a |
@@ -270,8 +270,11 @@ Without `--project` the steps below run only once
 `projects::bare_launch` picked a project; otherwise the project picker runs
 instead (G§4.12).
 
-1. `main()` keeps its order (A§8.10): GPU probe child → `is_gui` (no
-   command) → `gpu::prepare_gpu_env(for_gui)` → `qrec_cli::run_process`.
+1. `main()` keeps its order (A§8.10): GPU probe child →
+   `platform::current()` (the session, desktop and distribution, read
+   before anything changes the environment) → `is_gui` (no command) →
+   `gpu::prepare_gpu_env(for_gui)` → for the GUI,
+   `qrec_gui::prepare_display()` (A§8.6) → `qrec_cli::run_process`.
 2. `exec::execute`: `Plan::Gui` → `project_dir(cli, cwd)` →
    `backend.gui(&dir, explicit)` → that exit code. `--json` with no command
    is `usage` "the GUI has no --json output; give a command" (exit 2).
@@ -316,10 +319,10 @@ queues in the GUI instead of spawning a headless recorder.
 
 | # | Thread | Work | On failure |
 | --- | --- | --- | --- |
-| 1 | main, before GTK | canonicalize `--project` or the cwd; `ipc::resolve::classify(dir, true)`; for `Other`, look for an ancestor with `qrec.json` (D-14); read `config.toml` and `keys.toml` (`qrec_shell::{config_file, keys_file}::read`, ≤ 1 MiB each); `keymap::resolve` | `Other` → X2 at step 2 (exit 3); unreadable folder → "Can't open this folder" page with the OS error (exit 1) |
-| 2 | GTK `startup`, `activate` | fonts; CSS providers with the theme, scale and motion from step 1; icon theme; the window (main layout, empty and disabled, title = folder name) or the X2 page; `keymap::problems` → one warning toast each, shown once the window maps; `SharedSources::refresh` spawned on `qrec-gui-io`, so the cache is warm before the Session needs it | — |
-| 3 | `qrec-gst`, spawned in `activate` | `gst_init::init()` (≤ 30 s), `ges_render::init()` | stuck → stuck page (exit 5) |
-| 4 | `qrec-startup`, spawned in `activate` (not for X2) | `ProjectLock::try_acquire`: free → `GuiHost::start` (lock record `starting`, `first` queued, socket published, `ready`; IPC requests queue); held → takeover (G§3.4.3), then `GuiHost::start` | takeover pages (exit 6); the host can't start → page with the error (exit 1) |
+| 1 | main, before GTK | `qrec_gui::prepare_display` while `main` has one thread (A§8.6), then the app id as GLib's program name (X11's `WM_CLASS`, the desktop entry's `StartupWMClass`); canonicalize `--project` or the cwd; `ipc::resolve::classify(dir, true)`; for `Other`, look for an ancestor with `qrec.json` (D-14); read `config.toml` and `keys.toml` (`qrec_shell::{config_file, keys_file}::read`, ≤ 1 MiB each); `keymap::resolve`; `app::window_target`: Wayland when its socket answers, else X11 when `DISPLAY` names a display (issue #9) | `Other` → X2 at step 2 (exit 3); unreadable folder → "Can't open this folder" page with the OS error (exit 1); no display → "can't open the window", naming `WAYLAND_DISPLAY` and `DISPLAY`, before anything is touched (exit 1) |
+| 2 | GTK `startup`, `activate` | `app::init_toolkit`: GDK gets exactly that backend, and the log names the display GTK opened; fonts; CSS providers with the theme, scale and motion from step 1; icon theme, and the app icon as every window's default icon (X11's `_NET_WM_ICON`); the window (main layout, empty and disabled, title = folder name, first size `window::first_size`: 90 % of the largest monitor, at most 1600×1000) or the X2 page; `keymap::problems` → one warning toast each, shown once the window maps; `SharedSources::refresh` spawned on `qrec-gui-io`, so the cache is warm before the Session needs it. The picker (G§4.12) starts GTK the same way | GTK can't connect → "can't open the window", saying where it tried and what else there is (exit 1) |
+| 3 | `qrec-gst`, spawned before GTK starts on Wayland, once it connected on X11 (`app::run`'s `start_workers`) | `gst_init::init()` (≤ 30 s), `ges_render::init()` | stuck → stuck page (exit 5) |
+| 4 | `qrec-startup`, spawned with step 3 (not for X2) | `ProjectLock::try_acquire`: free → `GuiHost::start` (lock record `starting`, `first` queued, socket published, `ready`; IPC requests queue); held → takeover (G§3.4.3), then `GuiHost::start` | takeover pages (exit 6); the host can't start → page with the error (exit 1) |
 | 5 | GTK, after 3 | create the live and the program `gtk4paintablesink`, read each `paintable` (main thread only: a sink created on a worker deadlocks *(spike)*); `MediaHub` keeps both elements until exit | — |
 | 6 | `qrec-doctor`, after 3 | `doctor::run(DoctorOptions { fake_backend, project/config VA device, probe_vaapi: false })` | a required check failed → `GuiHost::fail(missing_dependency)` and interim S23 (exit 5) |
 | 7 | `qrec-startup`, once 4, 5 and 6 succeeded | `GuiHost::open(GuiOpener)`: `qrec-session` opens the Session, attaches it (the `first` request runs, then the queued ones), posts the first snapshot and `HostEvent::Opened` | `Invalid` with the restore hint → interim X3 (exit 1) |
@@ -578,7 +581,7 @@ more than one region reads. Fields and their writers:
 ```rust
 pub struct LocalUi {
     pub startup: StartupPhase,                   // WP0b
-    pub doctor: Option<Arc<DoctorReport>>,       // WP0b (S23, wl-copy availability)
+    pub doctor: Option<Arc<DoctorReport>>,       // WP0b (S23; the first run's screens line)
     pub focus: FocusRegion,                      // WP0b, from the window's focus widget
     pub drag: Option<DragKind>,                  // WP3 trim/move/scrub, WP4 layer drags and nudges, WP5 row reorder, WP7 bin → timeline
     pub overlays: Vec<Overlay>,                  // a stack, top last: WP0b, WP6, WP7, WP9
@@ -763,10 +766,20 @@ pub enum SettingsPage { Appearance, Recording, Project, Autocut, Keyboard }
   - `OpenPath` → `gtk::FileLauncher::launch`;
   - `RevealPath` → `gtk::FileLauncher::open_containing_folder`;
   - `CopyText` → `gdk::Clipboard::set_text`;
-  - `CopyImage` → `wl-copy --type image/png` with the PNG on stdin, through
-    the shell's `proc` runner on a worker (`WL_COPY_TIMEOUT`, stderr to
-    `.qrec/logs/…-wl-copy.log`); hidden when doctor's `wl-copy` check
-    failed;
+  - `CopyImage` → the PNG read and decoded on `qrec-gui-io`, then put on
+    the display's `gdk::Clipboard` as one union of providers: the file's
+    bytes as `image/png`, its `gdk::Texture` (GTK serializes it for the
+    other image types a paste asks for) and its `file://` URI as
+    `text/uri-list`. The same on Wayland, XWayland and Xorg, with no helper
+    and no window that takes the focus, so the button always shows
+    (issue #9). At quit an image still on the clipboard is handed on
+    (`desktop::keep_copied_image`, within `MEDIA_STOP_WAIT`): on Wayland to
+    a detached `wl-copy --type image/png` whose stdin is the bytes as
+    copied, from a memfd (`proc::Spec::stdin_bytes`), through the shell's
+    `proc` runner on `qrec-gui-io` (`WL_COPY_TIMEOUT`, stderr to
+    `.qrec/logs/…-wl-copy.log`); on X11 to the clipboard manager
+    (`STORE_WAIT`, 1 s), else, when the session has a Wayland display too,
+    to `wl-copy` as on Wayland; otherwise it goes with Qrec;
   - `Dispatch(cmd)` → `store.dispatch`.
 
   A failure toasts ("Couldn't open <path>").
@@ -778,8 +791,11 @@ on the window in `PropagationPhase::Capture` and asks the GTK-free
 `keys::router::decide(&KeyInput, &RouterState) -> KeyDecision` (WP0b). For
 each key press, first match:
 
-1. Chord: `KeyChord::from_gdk(keyval.name(), ctrl, alt, shift, super)`;
-   `None` → let it propagate.
+1. Chord: `router::press_chord(keyval.name(), level, in_layout, mods)`:
+   `KeyChord::from_gdk` of the keyval, else, for a letter of a non-Latin
+   layout, the same physical key at the same level in the keyboard's other
+   layouts, so `R` records with a Russian layout active (issue #9).
+   `None`, and any press with Meta or Hyper held, → let it propagate.
 2. Focus in an editable (`gtk::Text`, `Entry`, `SearchEntry`,
    `EditableLabel` while editing, `NumericField`) → propagate. The field
    handles `Enter`, `Esc` and `Tab`, and a held key's repeats.
@@ -1393,7 +1409,7 @@ time; A§8.7 rules for every child).
 | `qrec-meters` | meter monitor pipelines |
 | `qrec-preview-<n>` | ffmpeg for thumbnails and peaks |
 | `qrec-preview-trim` | the preview caches' disk-cap trim when a cache starts (G§3.11) |
-| `qrec-gui-io` | bin sizes, silence keys, wl-copy, source discovery |
+| `qrec-gui-io` | bin sizes, silence keys, Copy image's PNG and the quit's `wl-copy`, source discovery |
 | `qrec-testctl` | the test control socket (G§3.18), test mode only |
 | `qrec-settings` | the settings watcher: inotify on the config dir, `config.toml` and `keys.toml` read after each change (G§3.14, WP10) |
 
@@ -1559,6 +1575,11 @@ time; A§8.7 rules for every child).
     Vulkan on the Intel iGPU;
   - compositor screenshots of a Vulkan-rendered window tore.
 - The existing EGL and Vulkan pins stay; `doctor` prints the note.
+- Inside an AppImage with no render node it may open (a container without
+  `/dev/dri`, a VM without 3D), `GDK_DISABLE=gl,vulkan` instead: GTK draws
+  with Cairo, as the pixman suites do, since the AppImage's Mesa has no
+  llvmpipe and GL on its softpipe is slow (A§8.10). The window's log says
+  so ("gpu: …", with the GPU variables `main()` set).
 - Nothing may start a thread before `prepare_gpu_env`, which runs first in
   `main`.
 - Check with an strace of the GUI start
@@ -2159,6 +2180,7 @@ with `fn widget(&self) -> gtk::Widget`) and
 | qrec | `tests/gui_support/**` (`mod.rs`, `pointer.rs`, `scripts/`), `tests/gui_smoke.rs`, `tests/gui_shell.rs` | harness (G§8.4), smoke (G§8.5), WP0b's flows | WP0b (smoke completed by WP10) |
 | qrec | `tests/preview.rs` | `CachedSilence` reads what `qrec autocut --dry-run` cached | WP2 |
 | qrec | `tests/gui_<area>.rs`, `tests/gui_<area>_data/` | screenshot cases and their data | each area's owner |
+| qrec | `tests/gui_support/x11.rs`, `tests/gui_x11.rs`, `tests/x11.rs` | the X11 session (G§8.4), the window on X11, X11 screens, doctor and takes on the real backend (a private Xvfb) | issue #9 |
 | root | `Cargo.toml`, `Cargo.lock`, `flake.nix` | G§6 (desktop file and icon install: WP10) | WP0b, WP10 |
 | docs | `ARCHITECTURE.md` | WP0a's list; A§1.2 after G§0.1 (WP0b); final pass (WP10) | WP0a, WP0b, WP10 |
 
@@ -2877,6 +2899,19 @@ anchor's frame under the anchor; a move preview's command, applied with
   takes the focus once per showing when it can be pressed, from GTK's
   initial focus (the header), the stage or nothing, never from another
   region.
+  Without screens (issue #9; no frame), a muted line under the list says
+  why, in the "Looking for…" line's style (`t-body` muted, 40 px tall,
+  12 px in, wrapped to the column): `first_run_screens_note` gives
+  "Screens: <why>" from discovery ("Screens: no Wayland (WAYLAND_DISPLAY)
+  or X11 (DISPLAY) display", "Screens: X11 (DISPLAY=:1): …"), else the
+  doctor's "Screen capture is off: …" (its `featuresOff` line), else
+  nothing. The caption is `first_run_caption(screen_backend)`: S01a's
+  "Screens ask for permission once. Your desktop shows a picker for each
+  one." under the portal and without a display, "Screens don't ask for
+  permission on X11: adding one lets Qrec record it." on X11 (no frame);
+  while discovery runs it is the session's backend's
+  (`sources::session_screen_backend`). An X11 monitor without an EDID,
+  whose description is its name, reads "Screen · VIRT-L".
 - Trim plate (S10): "Trim start" / "Trim end" + "· take 5 · frame" + mono
   "41", and the 2 px `accent` preview stroke.
 - Portal denied (S24, gated): each refused screen layer's box gets the
@@ -3179,8 +3214,10 @@ renames), and "Save this layout as a scene…" from a take's banner.
     gives `Ctx::preview`): MP4 "H.264 + AAC 192 kbps · VA-API on
     renderD129" (the node's basename) when
     `export_plan::export_vaapi(project, config, capabilities)` names a
-    node, else "H.264 + AAC 192 kbps · software encode (x264)". That is the
-    rule the export encodes by (the effective encoder isn't x264, the node
+    node, else "H.264 + AAC 192 kbps · software encode (x264)", or
+    "(OpenH264)" where ffmpeg has libopenh264 and not libx264
+    (`export_plan::exports_with_openh264`, unless x264 is asked for by name;
+    issue #9). That is the rule the export encodes by (the effective encoder isn't x264, the node
     is the pinned one, its chain works), so x264 preferred by
     `config.toml` or the project, or a pin on another node, reads x264
     even where VA-API works. (Changed in the WP0a review: the caption was
@@ -3353,15 +3390,27 @@ info toast titled with the reason. (`palette.open` and `keys.help` toasted
   Move focus · [Enter] Activate focused button · [Esc] Quit`, the rest
   `[Ctrl][Q] Quit`) and buttons (`PageButton { label, action: Flow(..) |
   CopyReport | CopyCommand, kind, focused, busy }`):
-  - `missing_deps(&[CheckView]) -> MissingDepsPage`: a row per failed
-    check (`CheckView { id, required, ok, detail, hint }`, the GUI's copy
-    of `doctor::Check` from `LocalUi.doctor`), the required ones first,
-    each group in the doctor's order; BRIEF S23's item, what-it-does,
-    command and note for `gst.gtk4paintablesink`, `portal.screencast` and
-    `ffmpeg.libsvtav1`; other ids: the id (mono), the doctor's detail and
-    its hint as the note; an optional failure warns (⚠, the Optional
-    chip); the others behind "N other checks passed"; Check again
-    (focused), Copy report, Quit (flat). `gst_stuck()`: its shape with
+  - `missing_deps(&[CheckView]) -> MissingDepsPage`: a row per failed app
+    check (`required`: SPEC §3.3's app tier), in the doctor's order
+    (`CheckView { id, required, ok, detail, hint, fix }`, the GUI's copy of
+    `doctor::Check` from `LocalUi.doctor`). A feature that is off makes no
+    row: `qrec doctor` and Copy report say it. BRIEF S23's item and
+    what-it-does for `gst.gtk4paintablesink` (and for `portal.screencast`,
+    "Needed to capture screens (desktop portal).", and `ffmpeg.libsvtav1`,
+    which aren't app checks any more, so they no longer show); other ids:
+    the id (mono) and the doctor's detail. Each row's command and note are
+    the doctor's `fix` for this machine (`platform::install_hint`, issue #9):
+    the family's install command in the mono box with Copy
+    (`sudo apt install gstreamer1.0-gtk4`, `sudo dnf install …`,
+    `sudo pacman -S …`, `sudo dnf swap ffmpeg-free ffmpeg --allowerasing`
+    from RPM Fusion, `nix develop` in a Nix shell) and its note as a
+    sentence ("The flake provides gst-plugins-rs."); where the family's
+    package isn't known, no command and a note that names what to install
+    with its package manager ("… with zypper."); on NixOS, no command and a
+    note that Qrec's Nix package ships it ("…, which ships
+    gst_all_1.gst-plugins-rs."); a check without a fix shows its hint as the
+    note. The checks that passed are behind "N other checks passed"; Check
+    again (focused), Copy report, Quit (flat). `gst_stuck()`: its shape with
     GStreamer's row and Quit alone.
   - `cli_recording(take, elapsed_secs, stopping, project) -> ModalPage`:
     the title, the lead ("Take 11 started from the terminal 00:01:12
@@ -3388,9 +3437,15 @@ info toast titled with the reason. (`palette.open` and `keys.help` toasted
   order, matched indices for bold; empty query: "Recent" (the last 3 ids
   run this session), then Record, Playback, Edit, Output, View, Canvas;
   the short CLI table of D-31); `view::cheatsheet` (three columns: Record,
-  Output, Global (niri) with "Copy niri snippet" │ Playback, View │ Edit,
+  Output, Global shortcuts with "Copy snippet" │ Playback, View │ Edit,
   Canvas; "default P" when rebound; search with bold matches; "3
-  shortcuts match “trim”");
+  shortcuts match “trim”"; the Global shortcuts group is
+  `keymap::global_snippet` of the desktop the window detected at startup,
+  run by `qrec` or the AppImage's path (`HostPlatform::program`), SPEC
+  §10.2: its rows' key caps (Mod on niri, sway and i3, Meta on KDE
+  Plasma, else Super), its note and the text Copy snippet copies, and
+  "Paste into <file>" only for a snippet with a file, so not for GNOME's,
+  KDE's or the generic list; issue #9);
   `view::preferences` (Appearance, Recording, Autocut and Keyboard pages,
   including the conflict banner "1 conflict in ~/.config/qrec/keys.toml",
   "X is bound to both Autocut and Remove clips. Neither runs until one is
@@ -3509,7 +3564,7 @@ a 32 px icon button's icon is 20 px.
 | Dropdowns (C29: S12's track, S18b's Size): the chevron; the open list's selected item | `chevron-down` (`muted`, CSS `-gtk-icon-source`); `check` (a list factory) | 16 |
 | Menus (C25): a submenu's arrow (Add layer's Screen ▸); the submenu's back arrow (no frame draws a submenu: the transport's chevrons) | `chevron-right`; `chevron-left` (CSS `-gtk-icon-source`) | 16 |
 | The palette's, the cheat sheet's and Settings › Keyboard's search fields (WP9) | `search` | 20; 16; 16 |
-| The cheat sheet: Close, Copy niri snippet (WP9) | `x`, `copy` | 16 |
+| The cheat sheet: Close, Copy snippet (WP9) | `x`, `copy` | 16 |
 | Settings › Keyboard: the banner's warning, Open keys.toml, Change shortcut, Reset to default, a conflicting key's flag (WP9) | `triangle-alert` (`warning-text`), `external-link`, `pencil`, `rotate-ccw`, `triangle-alert` (`warning-text`) | 20, 16, 16, 16, 12 |
 | Settings › Appearance: the selected theme card's check, drawn by the card (WP9) | `circle-check` (`accent`) | 16 |
 | Blocking pages (WP8): S23's passed checks and their disclosure, Copy report and a row's Copy; X2's folder (the open folder for D-13's and the not-responding page); X3's Copy command | `circle-check` (`success-text`), `chevron-right`, `copy`; `folder` / `folder-open`; `copy` | 16 |
@@ -3622,6 +3677,12 @@ devShells.default = pkgs.mkShell {
   icons in `share/icons/hicolor/{scalable,16x16,32x32,48x48,64x64,128x128,256x256,512x512}/apps/com.rsensato.qrec.*`
   and `share/icons/hicolor/symbolic/apps/com.rsensato.qrec-symbolic.svg`;
   Lucide's license in `share/licenses/qrec/LICENSE-lucide.txt`.
+- `postInstall` (issue #9): the AppStream metainfo,
+  `share/metainfo/com.rsensato.qrec.metainfo.xml` (`data/`: the app id,
+  the desktop entry as its launchable, the design frames as screenshots,
+  MIT), checked with `appstreamcli validate --no-net` (`appstream` in
+  `nativeBuildInputs`), and Qrec's own license in
+  `share/licenses/qrec/LICENSE`.
 - `cargoTestFlags` unchanged (core tests only in the sandbox).
 
 As built (WP10): the entry is `data/com.rsensato.qrec.desktop` (Name
@@ -4391,9 +4452,16 @@ same where not named; `tmp/fix12/notes/`, `tmp/icons-art/measure/`,
   search 320×32 at y 60, x 1083–1087 for the frame's 1086): it lists
   every binding, so it has two groups the frame doesn't draw, Window
   (Focus next / previous region `F6` / `Shift F6`, Quit `Ctrl Q`) under
-  Global (niri) and Canvas (Nudge layer 1 px, the arrows) under Edit, and
-  Remove selected clips shows its third key ("Del or X or Backspace").
-  Close's `Esc` cap is up to 2 px wider (whole-pixel advances).
+  Global shortcuts and Canvas (Nudge layer 1 px, the arrows) under Edit,
+  and Remove selected clips shows its third key ("Del or X or Backspace").
+  Close's `Esc` cap is up to 2 px wider (whole-pixel advances). The
+  global group reads "Global shortcuts" and its button "Copy snippet"
+  (`cheatsheet-copy-snippet`), where the frame draws "Global (niri)" and
+  "Copy niri snippet" (issue #9); the case runs as the frame's desktop
+  (`XDG_CURRENT_DESKTOP=niri`), so the note, the KDL and "Paste into
+  ~/.config/niri/config.kdl" are the frame's. On another desktop the
+  group is that desktop's (no frame): on GNOME, Super caps, GNOME's
+  longer note, wrapped, and no "Paste into" line.
 - S20b ("trim": 3 shortcuts in Edit, the bold matches, the palette tip):
   as drawn.
 - S21 (the dialog (380, 180, 840×640); the cards 180×132 at y 310 and x
@@ -4433,18 +4501,24 @@ same where not named; `tmp/fix12/notes/`, `tmp/icons-art/measure/`,
   in the keys search it clears the text first. Every Settings page keeps
   S18b's scrim (1600×968) and hint bar, where S21 and S22 draw the scrim
   over the hint bar.
-- S23 (its checks box (480, 432, 640, 260) and buttons (656, 716, 287,
-  40) as drawn): the rows are the test machine's failures, not the
-  frame's (no test env can lose gtk4paintablesink without a new
-  GStreamer registry scan): `ffmpeg.libx264` (✕, the id and the doctor's
-  words, the hint as the note, no command box), `libsvtav1 in ffmpeg` and
-  the ScreenCast portal (⚠ with the Optional chip: the fake backend makes
-  the portal optional), in the doctor's order, and "25 other checks
-  passed" for 14; BRIEF's copy for gtk4paintablesink and the portal is
-  the view model's snapshot (`drafted_pages`). A row whose description
-  fits one line centers its item 4–8 px lower than the frame's two-line
-  rows. Not drawn: the disclosure opens to a 28 px row per passed check;
-  Copy report and a row's Copy toast "Report copied", "Command copied".
+- S23 (its checks box at (480, 432), 640 wide, 72 px a row and 44 for the
+  disclosure, and its buttons 24 px under it, centered, as drawn): since
+  issue #9 the page lists the app's missing checks alone (SPEC §3.3), so the
+  frame's ScreenCast portal row (✕) and `libsvtav1 in ffmpeg` row (⚠,
+  Optional) can't show: each only turns a feature off (screens, AV1 export),
+  and no row is optional any more. The case hides gtk4paintablesink from
+  GStreamer (its plugin path, with a registry of the case's own) and
+  ffmpeg's matroska demuxer, both app checks, and runs as the frame's
+  machine, the dev shell (`IN_NIX_SHELL`): two rows, gtk4paintablesink with
+  BRIEF's copy and `nix develop` ("The flake provides gst-plugins-rs.") as
+  drawn, then `ffmpeg.demuxers` with the doctor's words and `nix develop`
+  ("The flake provides ffmpeg-full."), so the box is 188 high for the
+  frame's 260 and the buttons sit higher. The hidden libx264, libopenh264
+  and libsvtav1 and the nested bus's missing portal make no row; Copy report
+  says "MP4 export is off: …". A row whose description fits one line centers
+  its item 4–8 px lower than the frame's two-line rows. Not drawn: the
+  disclosure opens to a 28 px row per passed check; Copy report and a row's
+  Copy toast "Report copied", "Command copied".
   The GStreamer-stuck variant (S23's shape): "GStreamer didn't start",
   one row with no fix, no disclosure, Quit alone and focused.
 - S24 (the block's plate the frame's 190 rows, y 239–428, and center,
@@ -5222,8 +5296,10 @@ D-22, the D-30 caption, D-31. Re-registers `keys.help` and `palette.open`.
 - `cheatsheet.rs` (S20, S20b, D-22): `?` pushes `Overlay::CheatSheet`
   over `scrim-strong`; `view::cheatsheet`'s columns; each binding's keys
   ("or" between chords, "/" between bindings, "default P" when
-  rebound); Copy niri snippet (wl-copy through `desktop::run`, "Copied"
-  for 2 s); the footer's [Ctrl][,] opens Settings › Keyboard in its
+  rebound); Copy snippet (`cheatsheet-copy-snippet`: the desktop's
+  snippet on the GDK clipboard through `desktop::run`'s `CopyText`,
+  "Copied" for 2 s, then the core's label again; issue #9); the footer's
+  [Ctrl][,] opens Settings › Keyboard in its
   place; the search lists rows holding every word in one column with the
   count and the palette tip.
 - `settings/` (S21, S22, Recording, Autocut): every tab opens
@@ -5503,9 +5579,52 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   - guards: the private runtime dir is never under `/run/user/`, the
     nested display is a socket name right inside it, and a case can't give
     a window `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `WAYLAND_SOCKET`,
-    `DISPLAY` or `GDK_BACKEND` (`gui_support::DISPLAY_VARS`, a panic);
-    grim and wtype get the nested display with `WAYLAND_SOCKET` removed.
-    Never the user's `wayland-1`.
+    `DISPLAY`, `GDK_BACKEND` or `XAUTHORITY` (`gui_support::DISPLAY_VARS`,
+    a panic; `XAUTHORITY` since the X11 session, below); grim and wtype get
+    the nested display with `WAYLAND_SOCKET` removed. Never the user's
+    `wayland-1`.
+- **X11 session** (`gui_support/x11.rs`, issue #9). `QREC_TEST_DISPLAY=x11`
+  runs every case of a run on a private X server instead of sway, and
+  `Options::x11` one case (`gui_x11`'s, whatever the variable says); unset
+  (or `sway`, `wayland`), every case runs on sway, and a value the harness
+  doesn't know fails the case. The server is the testkit's `Xvfb`
+  (`qrec_shell::testkit::x11`): `-displayfd`, `-noreset` (a reset drops the
+  RandR monitors), its own cookie (`-auth`), RandR and GLX, no TCP, on a
+  free display from 64 on, never `:0` or the inherited `DISPLAY`'s (the
+  harness checks it again); its screen is the case's size in device px, and
+  the harness logs the server's number and pid and keeps its log with the
+  case's. There is no window manager: GTK maps the window at 0,0 at the size
+  it asks for (`window::first_size`: at most 1600×1000, and 90 % of the
+  screen) and focuses it as it presents it. With no compositing manager
+  either, GTK draws its solid frame around the editor, 5 px at scale 1, so a
+  1600×1000 window holds a 1590×990 editor (`X11Session::origin` reads the
+  frame from the window's own bounds).
+  - The window gets `DISPLAY`, `XAUTHORITY`, `GDK_BACKEND=x11` (none with
+    `Launch::session_backend`: the window picks the display itself) and
+    `GDK_SCALE`, 1 or 2 (GTK's X11 backend scales by whole numbers: no 1.5
+    run), no Wayland display, and the sway session's bus, settings, design
+    inventory and fake capture backend. Xvfb has no GPU: pixman's runs draw
+    with Cairo (`GDK_DISABLE=gl,vulkan`), gles2's with GL on llvmpipe
+    (`LIBGL_ALWAYS_SOFTWARE=1`, Mesa's EGL pinned), never on a render node.
+  - The helpers keep their names. `Nested::keys` turns the suites' `wtype`
+    arguments into one `xdotool` run, each text a `type --args 1` (a bare
+    `type` types the rest of the run, its keys and sleeps, as text), and
+    what a run leaves down goes up at its end, as when `wtype`'s keyboard
+    goes. The keyboard hold only waits until a window is active (giving the
+    newest one the focus meanwhile): X11's core keyboard is never added. A
+    shot is one `ffmpeg -f x11grab` frame of the screen. `window_rect` and
+    `close_window` find the window by its pid (`xdotool search --pid`), and
+    the close is a window manager's `WM_DELETE_WINDOW`, sent by
+    `Xvfb::delete_window` (`xdotool windowquit` asks a window manager,
+    which isn't there, and `windowclose` destroys the window under GTK).
+    The clipboard is `xclip`; `nested_tool` gives a tool the private
+    display.
+  - There is no virtual pointer yet: a case clicks with
+    `X11Session::click` (`xdotool mousemove --sync`) at the widget's place
+    on the screen, and `Nested::pointer()` panics. So only `gui_x11` runs
+    on X11 for now: the other suites click with the pointer, and their
+    1600×1000 regions don't hold where the first window on a 1600×1000
+    screen is 1440×900.
 - **Client env.** The `TestEnv` vars (`HOME`, `XDG_*`,
   `QREC_RUNTIME_DIR`, `QREC_CAPTURE_BACKEND=fake`, `TZ=UTC0`: the fixture's
   recording times are UTC, so the bin's local HH:MM reads BRIEF's 14:31 …
@@ -5686,10 +5805,13 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   S04b's 00:00:31:02); `QREC_FAKE_INVENTORY=design` (the fake sources carry
   BRIEF's labels and sizes: "GIGA-BYTE GS27QA" 2560×1440, "Dell U2720Q"
   3840×2160, "Logitech C920", "Yeti Nano", "Built-in Audio Analog
-  Stereo"); `QREC_FAKE_CAMERA_STALL_MS=<ms>` (M5: that long into each
-  take's recording the fake cameras it records stop sending frames, no
-  error and no EOS, so `STALL_LIMIT` later the take loses them and
-  records on: S25 #8's "Camera disconnected").
+  Stereo"); `QREC_FAKE_INVENTORY=noscreens` (issue #9: the plain camera,
+  mic and system audio and no screens, and discovery says why, as without
+  a display: the first run's screens line);
+  `QREC_FAKE_CAMERA_STALL_MS=<ms>` (M5: that long into each take's
+  recording the fake cameras it records stop sending frames, no error and
+  no EOS, so `STALL_LIMIT` later the take loses them and records on:
+  S25 #8's "Camera disconnected").
 - **Known differences** (by design; regions, hints and view-model
   snapshots cover them): `FAKE-1`, `FAKE-2` and `/dev/fake0` instead of
   `DP-4`, `HDMI-A-1` and `/dev/video0`; test patterns instead of the
@@ -5707,6 +5829,7 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
 | --- | --- | --- |
 | S01a | empty folder | launch |
 | S01b | empty folder | launch; `wtype -k Return`; `waitIdle` |
+| First run without screens (`gui_stage::the_first_run_says_why_it_has_no_screens`; no frame) | empty folder, `QREC_FAKE_INVENTORY=noscreens` | launch: the camera, mic and system audio rows, "Screens: no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display" between the list and "Add 3 sources", at least 40 px tall, S01a's caption; then an X server's inventory through the test channel's `sources` op: "Screen · VIRT-L", "Add 4 sources", no line, X11's caption |
 | S02 | Base, Live, playhead at the end | launch |
 | S03 | Base, `recording.countdownSecs` 3 | `qrec record start`; `waitIdle` (frozen at "3", full ring) |
 | S04 | Base, `QREC_FAKE_RECORD_OFFSET_FRAMES=4842` | `qrec record start`; wait for phase recording; `waitIdle` |
@@ -5731,7 +5854,7 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
 | S17 | Base, `tests/support/fail_ffmpeg.rs`'s wrapper first on the GUI's PATH (units 1 and 2 render, unit 3 fails after them and the case's go-ahead, the rest wait) | export; "Rendering clip 3/10" while unit 3 waits, then `fail_ffmpeg::go` (it waited a fixed 2 s until the WP7 integration audit); wait for Failed: "clip 3/10 (take 3, c1b2)", "Failed at 11%"; Try again sends it again, and the wrapper's second failure of unit 3 (`fail_ffmpeg::failures`) ends on Failed again (review fix: nothing pressed it) |
 | S18 | Base, bin open | click take 2, Ctrl+click take 4, click Purge from disk |
 | S18b | Base, Live | `wtype -M ctrl -k comma -m ctrl`; click Frame rate 25 |
-| S23 (`gui_blocking::s23_missing_dependency`) | Base; the GUI's `PATH` first has an `ffmpeg` whose `-encoders` leaves out libx264 and libsvtav1 and a `pactl` that answers as PipeWire's (the nested env has no sound server) | launch: rows `ffmpeg.libx264` (✕), `ffmpeg.libsvtav1` and `portal.screencast` (⚠, the nested bus has no portal; optional with the fake backend); open and close the disclosure; Copy report and the portal row's Copy, read back with `wl-paste`; Ctrl+Q exits 5 |
+| S23 (`gui_blocking::s23_missing_dependency`) | Base; gtk4paintablesink hidden from GStreamer (its folder out of `GST_PLUGIN_SYSTEM_PATH_1_0`, `GST_REGISTRY_1_0` a copy of the dev shell's registry, so the window's scan rewrites only that); the GUI's `PATH` first has an `ffmpeg` whose lists leave out libx264, libopenh264, libsvtav1 and the matroska demuxer and a `pactl` that answers as PipeWire's (the nested env has no sound server); `IN_NIX_SHELL=impure`, the frame's machine (issue #9) | launch: rows `gst.gtk4paintablesink` (BRIEF's copy, `nix develop`, "The flake provides gst-plugins-rs.") and `ffmpeg.demuxers` (the doctor's words, `nix develop`, "The flake provides ffmpeg-full."), none for what only turns a feature off (the hidden encoders, the nested bus's missing portal); open and close the disclosure; Copy report ("MP4 export is off: …") and gtk4paintablesink's Copy (`nix develop`), read back with `wl-paste`; Ctrl+Q exits 5 |
 | S23 stuck (`s23_gstreamer_stuck`) | Base, `QREC_GUI_TEST=1,stuck-gst` | launch; Return exits 5 |
 | X1 (`x1_cli_recording`) | Base; `qrec record start` with `QREC_FAKE_EOS_DELAY_MS=6000` (the headless host inherits it) | launch; the time goes on; Esc exits 6, the take goes on; launch again, Tab, Return: "Stopping…" while it finalizes, then the window opens with the take |
 | D-29 export wait (`x1_export_wait`) | Base; `qrec export --quality draft` in the background with `fail_ffmpeg::slow_path` (4 s per unit) | launch; Esc exits 6; launch again, Tab, Return: "Waiting…", then the window opens once the export is done |
@@ -5742,6 +5865,7 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
 | not responding (`a_holder_that_doesnt_respond`) | Base; the test holds the project's lock with a record (its own pid, `headless`, a socket that isn't there) | launch: the page after the 3 s a starting holder gets; Ctrl+Q exits 6 |
 | S24 | Base, Live, `QREC_FAKE_PORTAL=deny` (the live preview's screen refused at once), S06's meter levels; `cancel` for the variant (`gui_stage`'s `s24_*`, shots in `tmp/gui-shots/s24/`) | close the live preview's "Live preview problem" toast (its 8 s would have passed); `wtype -k r`; wait for take 10 broken (within 500 ms of its `recordToggle`, by the window's log) and idle; capture; click Try again: take 11 aborts too; `Tab`: no block in Program. A third case: `recording.countdownSecs` 10 and `qrec record start` in the background (a start of the window's own stays unanswered through the countdown, so `waitIdle` would wait it out): the block before any take, gone while it counts down, back once the take aborted |
 | S19–S22, S25 | per WP9 (`gui_overlays`) | — |
+| S20 on GNOME (`gui_overlays::the_cheat_sheet_on_gnome`; no frame) | Base, S06's presets, `XDG_CURRENT_DESKTOP=GNOME` (S20's own case runs as `niri`, the frame's desktop) | `?`: the Global shortcuts group's rows with Super caps, GNOME's note, no "Paste into"; click Copy snippet (`cheatsheet-copy-snippet`): "Copied", GNOME's steps and the three commands read back with `wl-paste`, then "Copy snippet" again; runs alone |
 | S25 #8 (`gui_overlays::s25_a_camera_lost_mid_take`) | Base, Live, `QREC_FAKE_CAMERA_STALL_MS=1000` | `qrec record start --countdown 0`; wait for "Camera disconnected" (take 10 still recording); capture next to S25's card; `qrec record stop`: take 10 lands with L2 missing |
 | S25 #6 from `c` (`s25_autocut_from_the_key`) | Take10Landed, S06's c3e9 selected | `wtype -k c`; wait for "Autocut take 8: removed …" with Undo [Ctrl][Z]; capture next to S25's card; the toast's Undo puts the clips back |
 | A two-digit countdown (`gui_stage::a_two_digit_countdown_fits_its_ring`; no frame) | Base, Live, `recording.countdownSecs` 10 | `qrec record start` in the background; capture on 10: the digits inside the ring's inner edge; `qrec record cancel` |
@@ -5856,7 +5980,25 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   (`a_panic_in_activate_quits_with_1`), the frame-time probe (G§8.6:
   `GTK_A11Y=none`, as measured) and
   `announcements_reach_the_accessibility_bus` (GTK's AT-SPI backend, not
-  the walk's test context).
+  the walk's test context). Issue #9 adds `gui_x11`, 7 cases on the X11
+  session above whatever `QREC_TEST_DISPLAY` says (shots in
+  `tmp/gui-shots/x11/`), on a 1920×1200 screen whose first window is the
+  default 1600×1000: with only `DISPLAY` naming a display (no
+  `GDK_BACKEND`, no Wayland display) the window picks X11, its log names
+  `GdkX11Display` and the display, and it opens at 0,0 at its default
+  size and closes with 0; Cairo and GL on llvmpipe both draw the empty
+  state (an empty folder's first run and the quiet timeline: the same
+  regions, BRIEF's layout for the editor's size, each top-level region of
+  the two shots mostly its theme ground, their mean colors within 3
+  levels); `WM_CLASS` is `com.rsensato.qrec` twice and `_NET_WM_ICON`
+  holds the icon from 16 to 128 px; holding R for 1.5 s records one take
+  (the GUI log has one press of `r`, then the repeats X sends as presses
+  with no release between, XKB's detectable auto-repeat, which the router
+  takes for repeats); the toast's Copy image puts the saved frame's exact
+  bytes on the X clipboard as `image/png` beside `text/uri-list` (`xclip`),
+  and the window still quits with 0 with no clipboard manager to take
+  them; Ctrl+Q quits with 0 and frees the lock; on a 1366×768 screen the
+  first window is 1229×691 at 0,0 and the editor tiles it inside the frame.
 - **Parallel runs** (2026-10-18, the dev loop's speed-ups). Cases run
   side by side: `cargo nextest run -p qrec --run-ignored only --test
   gui_<area>` (a process per case, every suite of the run in one pool,
@@ -5893,6 +6035,7 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
   | `gui_stage`'s `a_keys_seek_while_playing_never_pulls_the_player_back`, `a_step_while_playing_pauses_and_goes_from_the_frame_shown`, `a_playing_programs_playhead_is_saved_at_the_close`; `gui_bin_export`'s `a_bin_preview_parks_the_playing_program_where_it_showed` | the Program plays in real time while the case reads where it is: 2-, 6- and 15-frame bounds |
   | `gui_bin_export`'s `s18_purging_two_takes_from_the_bin`, `purging_from_the_bin_waits_for_the_recording`; `gui_themes`' `s18_the_purge_modal_in_swamp_day`; `gui_timeline`'s `ctrl_wheel_zooms_at_the_pointer` | Ctrl held by a `wtype` for a fixed time (400–1600 ms of its run; 2.5 s), the click or notch timed into it |
   | `gui_stage`'s `s05_the_saving_ghost_holds_still_under_reduced_motion` | three takes' ghosts compared pixel for pixel: a take's length, and so the view's fit, is its real recording time |
+  | `gui_overlays`' `the_cheat_sheet_on_gnome` | Copy snippet says "Copied" for 2 s, read after the click |
 
   What the parallel runs found: `gui_blocking`'s
   `d13_held_by_another_window` lost the reply to its `blocking.quit` once
@@ -5978,19 +6121,30 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
     `qrec`'s `cli` tests), and the nested suites named, else those of the
     areas changed (G§3.16's owners: a file under `timeline/` is
     `gui_timeline`'s, the harness every suite's), on pixman, 6 at once;
-    `--plan` prints what it would run.
+    `--plan` prints what it would run. Since issue #9, a change to the
+    harness's X11 session, the testkit's Xvfb, `app.rs`, `desktop.rs` or
+    `window/mod.rs` also runs `gui_x11`, and a change to the sources, the
+    capture engine or the testkit's Xvfb the X11 cases of `tests/x11.rs`
+    (not nested: the binary on a private Xvfb; `scripts/check-quick x11`
+    by hand).
   - `scripts/check-full`, the milestone gate: fmt, clippy, the workspace
     tests (nextest, then the doc-tests), `nix build` (4 cores, once the
-    workspace tests are done), every suite on gles2 and then on pixman
-    (the packaged case on the fresh build), at scale 1.5 and 2, G§8.6's
-    probes three times each alone on gles2 (the frame-time probe and the
-    smoke's stalls) and the cache bounds, into
+    workspace tests are done), the X11 cases (`tests/x11.rs`, a step of
+    their own), every suite on gles2 and then on pixman (the packaged case
+    on the fresh build), at scale 1.5 and 2, `gui_x11` apart from those
+    matrices (X11 has no 1.5 scale) in three steps, Cairo, GL on llvmpipe
+    (`QREC_TEST_WLR=gles2`) and `GDK_SCALE=2` (`QREC_TEST_SCALE=2`),
+    G§8.6's probes three times each alone on gles2 (the frame-time probe
+    and the smoke's stalls) and the cache bounds, into
     `tmp/check-full/<date>/summary.txt` (the gles2 shots copied to
     `shots-gles2/` there before the pixman run writes the same names).
     52 min, all green, on 2026-10-18 (the workspace tests 134 s, `nix
     build` 602 s, the four matrices 517–634 s each, the probes 2 min;
     the retry used twice, both the player's race), against some 2 h 17
-    min for the same steps one case at a time.
+    min for the same steps one case at a time. Both scripts unset
+    `QREC_TEST_DISPLAY` (and the session's `DISPLAY`, `WAYLAND_DISPLAY`,
+    `XAUTHORITY`, …), so the sway suites stay on sway whatever the shell
+    exports.
   - The workspace tests under nextest: a process per test, so
     `.config/nextest.toml` keeps qrec-shell's GStreamer pipeline tests one
     at a time across processes (the `gst-pipelines` group, scheduled
@@ -5998,7 +6152,9 @@ spike's `run-nested.sh`, copied to `gui_support/scripts/`):
     process (it fails a test that takes it outside the group). 133 s,
     against 236 s for `cargo test --workspace`; without the group 65 s,
     but up to 16 pipelines ran at once and one missed its frame beside
-    `nix build`.
+    `nix build`. The X11 take of `tests/x11.rs`
+    (`an_x11_screen_is_recorded_without_the_portal`) runs alone
+    (`threads-required`): it checks the take against the time it took.
 
 ### G§8.5 End-to-end smoke (SPEC §17)
 
@@ -6285,7 +6441,7 @@ At the M4 review:
     (`tmp/gui-shots/final/S19-compare.png` … `S25-compare.png`,
     `X1-compare.png` … `X3-compare.png`), and in the real session: `Ctrl+K`
     runs a row (Clear undo history through its modal, D-19); `?` and Copy
-    niri snippet; Settings' Appearance (a theme applies at once), Keyboard
+    snippet; Settings' Appearance (a theme applies at once), Keyboard
     (rebind a key; a conflict's banner, both keys inert), Recording and
     Autocut (each change writes `config.toml` and keeps its comments).
 15. The blocking pages for real: Qrec started in a non-empty folder (X2,
@@ -6321,7 +6477,7 @@ otherwise.
 | R15 | Q9: follow GNOME light/dark? | no; the theme is a manual choice |
 | R16 | Program playback may miss canvas fps (software decoding, canvas-size compositing) | WP1 measures first; the H-9 fallback; the PO decides on proxy files (G§0.4) |
 | R17 | The squelch sound has no asset | not built until an asset is approved |
-| R18 | A desktop launcher runs `qrec` in `$HOME`, which gets X2 | `Exec=qrec`; ask the PO whether the launcher should take a folder argument |
+| R18 | A desktop launcher runs `qrec` in `$HOME`, which got X2 | closed: `qrec` with nothing to open there shows the project picker (G§4.12), or the last project with `projects.open_last`, on Wayland and X11 alike; `Exec=qrec` stays |
 | R19 | A second GUI can't raise the first window | refuse with the D-13 page; raising is later work |
 | R20 | Lane `M` semantics (D-08) | playback only; ask the PO |
 | R21 | The meter monitor opens a mic a second time | PipeWire allows it; a device that refuses shows idle meters |

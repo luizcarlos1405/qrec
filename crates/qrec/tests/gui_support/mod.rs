@@ -1,5 +1,10 @@
 //! The GUI test harness (docs/GUI.md G§8.4): `qrec`'s window in a nested
-//! headless sway, never on the developer's display.
+//! headless sway, never on the developer's display. Or on a private Xvfb
+//! with no window manager ([`x11`]): `QREC_TEST_DISPLAY=x11` picks that
+//! session for every case of a run, and [`Options::x11`] for a case (the
+//! `gui_x11` suite's). The helpers below speak for both unless they say
+//! otherwise; on X11 the keys go through `xdotool`, the shots through
+//! `ffmpeg -f x11grab`, and there is no virtual pointer yet.
 //!
 //! - [`Nested::start`]: a private `TestEnv` (its own `XDG_RUNTIME_DIR`
 //!   under `/tmp`), a private session bus without service activation, and
@@ -50,6 +55,7 @@
 
 pub mod pointer;
 pub mod slot;
+pub mod x11;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -71,6 +77,7 @@ use qrec_shell::testkit::{TestEnv, run_tool};
 use serde_json::{Value, json};
 
 pub use pointer::VirtualPointer;
+pub use x11::X11Session;
 
 /// Mesa's EGL vendor file (A§8.10): glvnd never picks NVIDIA's.
 pub const MESA_EGL: &str = "/run/opengl-driver/share/glvnd/egl_vendor.d/50_mesa.json";
@@ -85,13 +92,15 @@ pub const CLI_TIMEOUT: Duration = Duration::from_secs(120);
 /// on to every window when the test run has it (G§3.14).
 pub const FONT_RENDERING: &str = "QREC_GUI_TEST_FONT_RENDERING";
 /// Variables a window can't be given ([`Launch::with_env`]): they would
-/// point it at another display than the nested one (G§8.4).
-pub const DISPLAY_VARS: [&str; 5] = [
+/// point it at another display than the nested one, or (`XAUTHORITY`)
+/// another cookie than the X11 session's (G§8.4).
+pub const DISPLAY_VARS: [&str; 6] = [
     "XDG_RUNTIME_DIR",
     "WAYLAND_DISPLAY",
     "WAYLAND_SOCKET",
     "DISPLAY",
     "GDK_BACKEND",
+    "XAUTHORITY",
 ];
 
 /// A CLI's extra variables ([`Nested::cli_with`]) name no display: the CLI
@@ -138,12 +147,14 @@ pub fn repo() -> PathBuf {
         .expect("the repository root")
 }
 
-/// The compositor's renderer.
+/// The compositor's renderer. An X11 session has no compositor (and Xvfb
+/// no GPU): there it is the window's, Cairo for pixman and GL on llvmpipe
+/// for gles2 ([`x11`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Renderer {
     /// Software: nothing opens a GPU node (the default; CI).
     Pixman,
-    /// `gles2` on [`GL_NODE`] (`QREC_TEST_WLR=gles2`).
+    /// `gles2` on [`gl_node`] (`QREC_TEST_WLR=gles2`).
     Gles2,
 }
 
@@ -156,15 +167,47 @@ impl Renderer {
     }
 }
 
+/// The display a case's window opens on (G§8.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionKind {
+    /// A nested headless sway (the default).
+    Sway,
+    /// A private Xvfb with no window manager ([`x11`]).
+    X11,
+}
+
+impl SessionKind {
+    /// `QREC_TEST_DISPLAY` ([`session_kind`]).
+    fn from_env() -> Self {
+        session_kind(std::env::var("QREC_TEST_DISPLAY").ok().as_deref())
+    }
+}
+
+/// The session a `QREC_TEST_DISPLAY` value picks: X11 for `x11`, sway when
+/// it is unset, empty, `sway` or `wayland`; anything else is a mistake,
+/// and the case fails rather than run on sway.
+fn session_kind(value: Option<&str>) -> SessionKind {
+    match value {
+        None | Some("" | "sway" | "wayland") => SessionKind::Sway,
+        Some("x11") => SessionKind::X11,
+        Some(other) => panic!("QREC_TEST_DISPLAY={other:?}: x11, or sway (the default)"),
+    }
+}
+
 /// The nested output.
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// The output's mode in device px (logical px × `scale`).
+    /// The output's mode in device px (logical px × `scale`). On X11 the
+    /// screen's size, which the window doesn't fill: it opens at its first
+    /// size (`window::first_size`), at 0,0.
     pub width: u32,
     pub height: u32,
-    /// The output's scale (`QREC_TEST_SCALE`, default 1).
+    /// The output's scale (`QREC_TEST_SCALE`, default 1); on X11
+    /// `GDK_SCALE`, 1 or 2.
     pub scale: f64,
     pub renderer: Renderer,
+    /// Sway, or X11 (`QREC_TEST_DISPLAY=x11`, [`Options::x11`]).
+    pub session: SessionKind,
     /// Why the case runs alone, if it does ([`Options::exclusive`]).
     pub exclusive: Option<&'static str>,
 }
@@ -225,8 +268,16 @@ impl Options {
             height: (f64::from(height) * scale).round() as u32,
             scale,
             renderer: Renderer::from_env(),
+            session: SessionKind::from_env(),
             exclusive: None,
         }
+    }
+
+    /// On a private Xvfb, whatever `QREC_TEST_DISPLAY` says (the `gui_x11`
+    /// suite's cases): the size is the X screen's ([`x11`]).
+    pub fn x11(mut self) -> Self {
+        self.session = SessionKind::X11;
+        self
     }
 
     /// The case runs alone in a parallel run ([`slot`]): it waits for the
@@ -240,7 +291,7 @@ impl Options {
         self
     }
 
-    /// The output's size in logical px.
+    /// The output's (or the X screen's) size in logical px.
     pub fn logical(&self) -> (f64, f64) {
         (
             f64::from(self.width) / self.scale,
@@ -343,21 +394,19 @@ impl Drop for Group {
     }
 }
 
-/// A nested headless sway with a private environment.
+/// A nested headless sway (or a private Xvfb: [`x11`]) with a private
+/// environment.
 pub struct Nested {
     /// The window (dropped first), if launched.
     windows: Vec<Gui>,
-    /// The seat's keyboard for the key runs, while one lasts.
-    keyboard: Rc<SeatKeyboard>,
-    /// The seat's pointer, from before any window maps to the end.
-    pointer: VirtualPointer,
-    sway: Group,
+    /// The display: sway with its seat's keyboard and pointer, or X11.
+    session: Session,
     bus: Group,
     pub env: TestEnv,
     pub opts: Options,
-    /// `WAYLAND_DISPLAY` inside [`TestEnv::xdg_runtime_dir`].
+    /// `WAYLAND_DISPLAY` inside [`TestEnv::xdg_runtime_dir`], or the X
+    /// server's `:N`.
     pub display: String,
-    swaysock: PathBuf,
     schemas: String,
     /// Screenshots and logs: `<repo>/tmp/gui-shots/<area>/`.
     pub shots: PathBuf,
@@ -369,59 +418,32 @@ pub struct Nested {
     /// The case's shots and logs, its own while it runs.
     _claim: slot::Claim,
     /// Its place in a parallel run, given back last: once the windows,
-    /// sway, the bus and the env are gone.
+    /// sway (or Xvfb), the bus and the env are gone.
     _slot: slot::Slot,
 }
 
-impl Nested {
-    /// Starts sway for case `case` of `area` (`wp0b`, …), once the case
-    /// may run ([`Options::exclusive`]).
-    pub fn start(area: &str, case: &str, opts: Options) -> Nested {
-        let shots = shots_dir(area);
-        let claim = slot::Claim::take(&slot::slot_dir(), &shots, case);
-        let sharing = match opts.exclusive {
-            Some(_) => slot::Sharing::Exclusive,
-            None => slot::Sharing::Shared,
-        };
-        let slot = slot::Slot::take(&slot::slot_dir(), sharing, case, slot::SLOT_WAIT);
-        let env = TestEnv::new();
+/// The display a case runs on.
+enum Session {
+    Sway(Sway),
+    X11(X11Session),
+}
+
+/// A nested headless sway and its seat.
+struct Sway {
+    /// The seat's keyboard for the key runs, while one lasts.
+    keyboard: Rc<SeatKeyboard>,
+    /// The seat's pointer, from before any window maps to the end.
+    pointer: VirtualPointer,
+    sway: Group,
+    swaysock: PathBuf,
+}
+
+impl Sway {
+    /// Starts sway on `env`'s runtime dir, its log at `log("sway")`: its
+    /// display's name in the runtime dir, once its IPC socket is there
+    /// and the seat's pointer exists.
+    fn start(env: &TestEnv, opts: &Options, log: &dyn Fn(&str) -> PathBuf) -> (Sway, String) {
         let runtime = env.xdg_runtime_dir();
-        // Never the developer's session (G§8.4): a private runtime dir, never
-        // a user's.
-        assert!(
-            !runtime.starts_with("/run/user/"),
-            "the nested compositor's runtime dir {} is a user's",
-            runtime.display()
-        );
-        if let Some(user) = std::env::var_os("XDG_RUNTIME_DIR") {
-            assert_ne!(
-                Path::new(&user),
-                runtime,
-                "the nested compositor must not share the user's runtime dir"
-            );
-        }
-        fs::create_dir_all(shots.join("logs")).expect("create the shots folder");
-        let log = |what: &str| shots.join("logs").join(format!("{case}-{what}.log"));
-
-        let bus_conf = runtime.join("bus.conf");
-        fs::write(
-            &bus_conf,
-            format!(
-                "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\"\n \
-                 \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">\n\
-                 <busconfig><type>session</type><listen>unix:path={}/bus</listen>\
-                 <auth>EXTERNAL</auth><policy context=\"default\">\
-                 <allow send_destination=\"*\" eavesdrop=\"true\"/><allow eavesdrop=\"true\"/>\
-                 <allow own=\"*\"/></policy></busconfig>\n",
-                runtime.display()
-            ),
-        )
-        .expect("write the bus config");
-        let mut bus = env.command(Path::new("dbus-daemon"));
-        bus.arg(format!("--config-file={}", bus_conf.display()))
-            .args(["--nofork", "--nopidfile"]);
-        let bus = Group::spawn("dbus-daemon", bus, &log("bus"));
-
         let config = runtime.join("sway.cfg");
         fs::write(
             &config,
@@ -506,16 +528,83 @@ impl Nested {
         };
         // The pointer exists before any window: windows bind it at once.
         let pointer = VirtualPointer::connect(&runtime.join(&display), opts.logical());
-        Nested {
-            windows: Vec::new(),
+        let sway = Sway {
             keyboard: Rc::new(SeatKeyboard::new(swaysock.clone())),
             pointer,
             sway,
+            swaysock,
+        };
+        (sway, display)
+    }
+}
+
+impl Nested {
+    /// Starts sway (or Xvfb, [`Options::session`]) for case `case` of
+    /// `area` (`wp0b`, …), once the case may run ([`Options::exclusive`]).
+    pub fn start(area: &str, case: &str, opts: Options) -> Nested {
+        let shots = shots_dir(area);
+        let claim = slot::Claim::take(&slot::slot_dir(), &shots, case);
+        let sharing = match opts.exclusive {
+            Some(_) => slot::Sharing::Exclusive,
+            None => slot::Sharing::Shared,
+        };
+        let slot = slot::Slot::take(&slot::slot_dir(), sharing, case, slot::SLOT_WAIT);
+        let env = TestEnv::new();
+        let runtime = env.xdg_runtime_dir();
+        // Never the developer's session (G§8.4): a private runtime dir, never
+        // a user's.
+        assert!(
+            !runtime.starts_with("/run/user/"),
+            "the nested compositor's runtime dir {} is a user's",
+            runtime.display()
+        );
+        if let Some(user) = std::env::var_os("XDG_RUNTIME_DIR") {
+            assert_ne!(
+                Path::new(&user),
+                runtime,
+                "the nested compositor must not share the user's runtime dir"
+            );
+        }
+        fs::create_dir_all(shots.join("logs")).expect("create the shots folder");
+        let log = |what: &str| shots.join("logs").join(format!("{case}-{what}.log"));
+
+        let bus_conf = runtime.join("bus.conf");
+        fs::write(
+            &bus_conf,
+            format!(
+                "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\"\n \
+                 \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">\n\
+                 <busconfig><type>session</type><listen>unix:path={}/bus</listen>\
+                 <auth>EXTERNAL</auth><policy context=\"default\">\
+                 <allow send_destination=\"*\" eavesdrop=\"true\"/><allow eavesdrop=\"true\"/>\
+                 <allow own=\"*\"/></policy></busconfig>\n",
+                runtime.display()
+            ),
+        )
+        .expect("write the bus config");
+        let mut bus = env.command(Path::new("dbus-daemon"));
+        bus.arg(format!("--config-file={}", bus_conf.display()))
+            .args(["--nofork", "--nopidfile"]);
+        let bus = Group::spawn("dbus-daemon", bus, &log("bus"));
+
+        let (session, display) = match opts.session {
+            SessionKind::Sway => {
+                let (sway, display) = Sway::start(&env, &opts, &log);
+                (Session::Sway(sway), display)
+            }
+            SessionKind::X11 => {
+                let x11 = X11Session::start(case, (opts.width, opts.height), opts.scale, runtime);
+                let display = x11.display();
+                (Session::X11(x11), display)
+            }
+        };
+        Nested {
+            windows: Vec::new(),
+            session,
             bus,
             env,
             opts,
             display,
-            swaysock,
             schemas: schema_dirs(),
             shots,
             case: case.to_owned(),
@@ -528,9 +617,14 @@ impl Nested {
     /// The variables a window gets on top of the `TestEnv`'s (G§8.4).
     pub fn display_env(&self) -> Vec<(&'static str, OsString)> {
         let runtime = self.env.xdg_runtime_dir();
-        let mut vars: Vec<(&'static str, OsString)> = vec![
-            ("WAYLAND_DISPLAY", self.display.clone().into()),
-            ("GDK_BACKEND", "wayland".into()),
+        let mut vars: Vec<(&'static str, OsString)> = match &self.session {
+            Session::Sway(_) => vec![
+                ("WAYLAND_DISPLAY", self.display.clone().into()),
+                ("GDK_BACKEND", "wayland".into()),
+            ],
+            Session::X11(x11) => x11.window_env(),
+        };
+        vars.extend([
             ("GSETTINGS_BACKEND", "memory".into()),
             ("GSETTINGS_SCHEMA_DIR", self.schemas.clone().into()),
             (
@@ -540,10 +634,15 @@ impl Nested {
             ("QREC_GUI_TEST", "1".into()),
             ("QREC_FAKE_INVENTORY", "design".into()),
             ("__EGL_VENDOR_LIBRARY_FILENAMES", MESA_EGL.into()),
-        ];
-        if self.opts.renderer == Renderer::Pixman {
+        ]);
+        match (self.opts.renderer, &self.session) {
             // No GL at all: nothing opens a render node.
-            vars.push(("GDK_DISABLE", "gl,vulkan".into()));
+            (Renderer::Pixman, _) => vars.push(("GDK_DISABLE", "gl,vulkan".into())),
+            // Xvfb has no GPU: GL in software (llvmpipe), on no render node.
+            (Renderer::Gles2, Session::X11(_)) => {
+                vars.push(("LIBGL_ALWAYS_SOFTWARE", "1".into()));
+            }
+            (Renderer::Gles2, Session::Sway(_)) => {}
         }
         // The bundled fonts (the dev shell's; `TestEnv` drops `QREC_*`).
         if let Some(fonts) = std::env::var_os("QREC_FONT_DIR") {
@@ -695,6 +794,9 @@ impl Nested {
             None => self.env.command(&bin),
         };
         command.envs(self.display_env());
+        if launch.session_backend {
+            command.env_remove("GDK_BACKEND");
+        }
         command.env("GTK_A11Y", if launch.a11y { "test" } else { "none" });
         for (key, value) in &launch.env {
             command.env(key, value);
@@ -728,10 +830,12 @@ impl Nested {
             log,
             state_home: self.env.state_home(),
         };
-        self.keyboard
-            .windows
-            .borrow_mut()
-            .push(test_socket(&gui.runtime, gui.pid));
+        if let Session::Sway(sway) = &self.session {
+            sway.keyboard
+                .windows
+                .borrow_mut()
+                .push(test_socket(&gui.runtime, gui.pid));
+        }
         self.windows.push(gui);
         self.windows.last_mut().expect("just pushed")
     }
@@ -741,11 +845,22 @@ impl Nested {
         &mut self.windows[n]
     }
 
+    /// [`Nested::window`], shared: beside another helper of the case's
+    /// (`nested.x11().click(nested.gui(0), …)`).
+    pub fn gui(&self, n: usize) -> &Gui {
+        &self.windows[n]
+    }
+
     /// A command for a tool on the nested display (never another: the
     /// display variables are the nested ones, `WAYLAND_SOCKET` gone). A
     /// case runs Wayland tools only through this (`wl-copy`): the test's
-    /// own `XDG_RUNTIME_DIR` is the person's session.
+    /// own `XDG_RUNTIME_DIR` is the person's session. On X11 it gets the
+    /// private server's `DISPLAY` and `XAUTHORITY` and no Wayland display
+    /// (`xclip`, `xprop`).
     pub fn nested_tool(&self, program: &str) -> Command {
+        if let Session::X11(x11) = &self.session {
+            return x11.tool(program);
+        }
         let mut command = Command::new(program);
         command
             .env_remove("WAYLAND_SOCKET")
@@ -755,9 +870,30 @@ impl Nested {
         command
     }
 
-    /// A screenshot of the output: `<shots>/<case>-<name>.png`.
+    /// The X11 session ([`x11`]): panics on sway.
+    pub fn x11(&self) -> &X11Session {
+        match &self.session {
+            Session::X11(x11) => x11,
+            Session::Sway(_) => panic!("{}: an X11 helper on sway (Options::x11)", self.case),
+        }
+    }
+
+    /// The sway session: panics on X11, which has no such helper yet.
+    fn sway(&self, what: &str) -> &Sway {
+        match &self.session {
+            Session::Sway(sway) => sway,
+            Session::X11(_) => panic!("{}: {what} is sway's; the X11 session has none", self.case),
+        }
+    }
+
+    /// A screenshot of the output (on X11 the whole screen, through
+    /// x11grab): `<shots>/<case>-<name>.png`.
     pub fn screenshot(&self, name: &str) -> PathBuf {
         let path = self.shots.join(format!("{}-{name}.png", self.case));
+        if let Session::X11(x11) = &self.session {
+            x11.screenshot(&path);
+            return path;
+        }
         let out = run_tool(
             self.nested_tool("grim").args(["-o", OUTPUT]).arg(&path),
             TOOL_TIMEOUT,
@@ -768,9 +904,15 @@ impl Nested {
 
     /// One `wtype` run (one key sequence), after a 400 ms pause, typed
     /// once a window has the seat's keyboard ([`Nested::hold_keyboard`]):
-    /// `keys(&["-M", "ctrl", "-k", "q", "-m", "ctrl"])`.
+    /// `keys(&["-M", "ctrl", "-k", "q", "-m", "ctrl"])`. On X11 one
+    /// `xdotool` run of the same keys ([`x11::xdotool_keys`]), with no
+    /// pause, once a window has the focus.
     pub fn keys(&self, args: &[&str]) {
         let _keyboard = self.hold_keyboard();
+        if let Session::X11(x11) = &self.session {
+            x11.type_keys(&x11::xdotool_keys(args, 0));
+            return;
+        }
         let out = run_tool(
             self.nested_tool("wtype").args(["-s", "400"]).args(args),
             TOOL_TIMEOUT,
@@ -788,33 +930,47 @@ impl Nested {
     /// drawn and inline edits kept (G§8.4). It starts once a window has
     /// the seat's keyboard ([`Nested::hold_keyboard`], held until the run
     /// ends). Its output goes to `<shots>/logs/<case>-wtype.log`;
-    /// [`HeldKeys::wait`] reaps it, and dropping it kills it.
+    /// [`HeldKeys::wait`] reaps it, and dropping it kills it. On X11 an
+    /// `xdotool` run that sleeps `hold_ms` after its keys, then lets go of
+    /// what it still holds down (`<case>-xdotool.log`); a run killed early
+    /// lets go then.
     pub fn keys_held(&self, args: &[&str], hold_ms: u32) -> HeldKeys {
         let keyboard = self.hold_keyboard();
+        let (mut command, tool, release) = match &self.session {
+            Session::Sway(_) => {
+                let mut command = self.nested_tool("wtype");
+                command
+                    .args(["-s", "400"])
+                    .args(args)
+                    .args(["-s", &hold_ms.to_string()]);
+                (command, "wtype", None)
+            }
+            Session::X11(x11) => {
+                let mut command = x11.tool("xdotool");
+                command.args(x11::xdotool_keys(args, hold_ms));
+                (command, "xdotool", x11.release(args))
+            }
+        };
         let log = self
             .shots
             .join("logs")
-            .join(format!("{}-wtype.log", self.case));
+            .join(format!("{}-{tool}.log", self.case));
         let out = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&log)
             .unwrap_or_else(|e| panic!("{}: {e}", log.display()));
         let err = out.try_clone().expect("clone the log");
-        let mut command = self.nested_tool("wtype");
-        command
-            .args(["-s", "400"])
-            .args(args)
-            .args(["-s", &hold_ms.to_string()])
-            .stdin(Stdio::null())
-            .stdout(out)
-            .stderr(err);
+        command.stdin(Stdio::null()).stdout(out).stderr(err);
         process::die_with_parent(&mut command);
-        let child = command.spawn().expect("run wtype");
+        let child = command
+            .spawn()
+            .unwrap_or_else(|e| panic!("run {tool}: {e}"));
         HeldKeys {
             child: Some(child),
             within: Duration::from_millis(u64::from(hold_ms)) + TOOL_TIMEOUT,
             args: args.iter().map(|a| (*a).to_owned()).collect(),
+            release,
             _keyboard: keyboard,
         }
     }
@@ -831,14 +987,47 @@ impl Nested {
     /// active (the test channel's `keyboard` op, G§3.18); a run's own
     /// keyboard joins it there. The holder goes with the last hold, so the
     /// seat has a keyboard only while a run lasts, as before.
+    ///
+    /// X11's core keyboard is always there and never comes as a new one:
+    /// the hold only waits until a window is active, giving the newest
+    /// window the focus meanwhile (GTK focuses a window it presents, but a
+    /// closed window's focus goes back to the root).
     pub fn hold_keyboard(&self) -> KeyboardHold {
-        let seat = &self.keyboard;
+        let sway = match &self.session {
+            Session::Sway(sway) => sway,
+            Session::X11(x11) => {
+                poll(
+                    KEYBOARD_TIMEOUT,
+                    "a window with the X server's keyboard focus",
+                    || {
+                        if self
+                            .windows
+                            .iter()
+                            .any(|w| w.keyboard_state(2_000).is_some_and(|k| k.active))
+                        {
+                            return Some(());
+                        }
+                        if let Some((id, _)) = self
+                            .windows
+                            .iter()
+                            .rev()
+                            .find_map(|w| x11.toplevel(w.pid()))
+                        {
+                            x11.focus(id);
+                        }
+                        None
+                    },
+                );
+                return KeyboardHold(None);
+            }
+        };
+        let seat = &sway.keyboard;
         if seat.holds.get() > 0 {
             seat.holds.set(seat.holds.get() + 1);
-            return KeyboardHold(Rc::clone(seat));
+            return KeyboardHold(Some(Rc::clone(seat)));
         }
         poll(TOOL_TIMEOUT, "the seat's last keyboard gone", || {
-            (!seat_has_keyboard(&self.swaysock)).then_some(())
+            (!seat_has_keyboard(&sway.swaysock)).then_some(())
         });
         let before: Vec<u64> = self
             .windows
@@ -865,7 +1054,7 @@ impl Nested {
         *seat.holder.borrow_mut() = Some(command.spawn().expect("run wtype"));
         seat.holds.set(1);
         // Held from here: a panic below stops the holder.
-        let hold = KeyboardHold(Rc::clone(seat));
+        let hold = KeyboardHold(Some(Rc::clone(seat)));
         poll(
             KEYBOARD_TIMEOUT,
             "a window with the seat's new keyboard and its focus",
@@ -888,24 +1077,41 @@ impl Nested {
         hold
     }
 
-    /// A virtual pointer on the output (keep it while clicking).
+    /// A virtual pointer on the output (keep it while clicking). Sway's
+    /// only: on X11 a case clicks with [`X11Session::click`].
     pub fn pointer(&mut self) -> &mut VirtualPointer {
-        &mut self.pointer
+        if let Session::Sway(sway) = &mut self.session {
+            return &mut sway.pointer;
+        }
+        panic!(
+            "{}: the X11 session has no virtual pointer yet (X11Session::click)",
+            self.case
+        );
     }
 
-    /// `swaymsg <args>`.
+    /// `swaymsg <args>` (sway's only).
     pub fn swaymsg(&self, args: &[&str]) -> String {
         let out = run_tool(
             Command::new("swaymsg")
                 .args(args)
-                .env("SWAYSOCK", &self.swaysock),
+                .env("SWAYSOCK", &self.sway("swaymsg").swaysock),
             TOOL_TIMEOUT,
         );
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
-    /// The Qrec window's rect as sway lays it out (x, y, w, h).
+    /// The Qrec window's rect as sway lays it out (x, y, w, h). On X11 the
+    /// first window's X window, in logical px (GTK's frame around the
+    /// editor included).
     pub fn window_rect(&self) -> Option<[f64; 4]> {
+        if let Session::X11(x11) = &self.session {
+            let s = f64::from(x11.scale());
+            return self
+                .windows
+                .iter()
+                .find_map(|w| x11.toplevel(w.pid()))
+                .map(|(_, rect)| rect.map(|v| f64::from(v) / s));
+        }
         let tree: Value = serde_json::from_str(&self.swaymsg(&["-t", "get_tree"])).ok()?;
         fn find(node: &Value) -> Option<[f64; 4]> {
             if node["app_id"] == "com.rsensato.qrec" {
@@ -929,9 +1135,24 @@ impl Nested {
         find(&tree)
     }
 
-    /// Closes the focused window the way the compositor would.
+    /// Closes the focused window the way the compositor would. On X11 as
+    /// a window manager would (`WM_DELETE_WINDOW`): the window with the
+    /// focus, else the newest one still mapped.
     pub fn close_window(&self) {
-        self.swaymsg(&["kill"]);
+        let Session::X11(x11) = &self.session else {
+            self.swaymsg(&["kill"]);
+            return;
+        };
+        let ours: Vec<u32> = self
+            .windows
+            .iter()
+            .filter_map(|w| x11.toplevel(w.pid()).map(|(id, _)| id))
+            .collect();
+        let focused = x11.focused();
+        match ours.iter().find(|id| Some(**id) == focused).or(ours.last()) {
+            Some(&id) => x11.close(id),
+            None => eprintln!("gui_support: {}: no window to close", self.case),
+        }
     }
 
     /// The main-loop probe's lines (G§8.6: the window launched with
@@ -969,9 +1190,9 @@ impl Nested {
 
 impl Drop for Nested {
     fn drop(&mut self) {
-        // The windows first (they exit and flush their logs), then sway and
-        // the bus (field order), and the env last: its logs are copied
-        // before it goes.
+        // The windows first (they exit and flush their logs), then sway (or
+        // Xvfb) and the bus (field order), and the env last: its logs are
+        // copied before it goes.
         self.windows.clear();
         self.keep_logs();
     }
@@ -981,10 +1202,14 @@ impl Nested {
     /// Copies the case's logs out of the env (deleted with it), whether
     /// the case passed or failed: each window's own GUI log and the
     /// projects' `.qrec/logs` (headless hosts, recorders, previews,
-    /// exports), into `<shots>/logs/<case>-…`. Errors are ignored: this
-    /// runs while a failed case unwinds.
+    /// exports), and the X server's (deleted with it), into
+    /// `<shots>/logs/<case>-…`. Errors are ignored: this runs while a
+    /// failed case unwinds.
     fn keep_logs(&self) {
         let logs = self.shots.join("logs");
+        if let Session::X11(x11) = &self.session {
+            let _ = fs::copy(x11.log(), logs.join(format!("{}-xvfb.log", self.case)));
+        }
         let gui = self.env.state_home().join("qrec");
         for entry in fs::read_dir(&gui).into_iter().flatten().flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -1009,12 +1234,16 @@ impl Nested {
     }
 }
 
-/// A `wtype` run holding its keyboard ([`Nested::keys_held`]).
+/// A `wtype` run holding its keyboard ([`Nested::keys_held`]), or X11's
+/// `xdotool` run.
 pub struct HeldKeys {
     child: Option<Child>,
     /// Its hold plus a tool's deadline.
     within: Duration,
     args: Vec<String>,
+    /// X11's: lets go of the keys the run presses, if it is killed first
+    /// (the server keeps a key down until told, and repeats it).
+    release: Option<Command>,
     /// The seat's keyboard, held until the run is reaped or killed.
     _keyboard: KeyboardHold,
 }
@@ -1081,14 +1310,18 @@ impl Drop for SeatKeyboard {
 }
 
 /// A hold on the seat's keyboard; the last one dropped stops its holder.
-pub struct KeyboardHold(Rc<SeatKeyboard>);
+/// X11's holds nothing: its keyboard is always there.
+pub struct KeyboardHold(Option<Rc<SeatKeyboard>>);
 
 impl Drop for KeyboardHold {
     fn drop(&mut self) {
-        let left = self.0.holds.get().saturating_sub(1);
-        self.0.holds.set(left);
+        let Some(seat) = &self.0 else {
+            return;
+        };
+        let left = seat.holds.get().saturating_sub(1);
+        seat.holds.set(left);
         if left == 0 {
-            self.0.stop();
+            seat.stop();
         }
     }
 }
@@ -1181,6 +1414,13 @@ impl Drop for HeldKeys {
         {
             let _ = child.kill();
             let _ = child.wait();
+            // A case that goes on wants no key left down (a failed one goes
+            // no further, and its server goes with it).
+            if let Some(release) = self.release.as_mut()
+                && !thread::panicking()
+            {
+                run_tool(release, TOOL_TIMEOUT);
+            }
         }
     }
 }
@@ -1204,6 +1444,10 @@ pub struct Launch {
     /// The window runs under `strace -f`, its opens written here (G§8.6's
     /// GPU probe, [`Launch::traced`]).
     pub strace: Option<PathBuf>,
+    /// No `GDK_BACKEND`: the window picks its display from the session's
+    /// variables alone, as a desktop's launch does
+    /// ([`Launch::session_backend`]).
+    pub session_backend: bool,
     /// Run as `qrec <args> -v` in this folder instead of `--project`: the
     /// launch that decides what to open (SPEC §4.4, [`Launch::bare_in`]).
     pub bare: Option<(PathBuf, Vec<String>)>,
@@ -1236,6 +1480,14 @@ impl Launch {
     /// Under `strace -f -e trace=open,openat,openat2`, into `trace`.
     pub fn traced(mut self, trace: &Path) -> Self {
         self.strace = Some(trace.to_path_buf());
+        self
+    }
+
+    /// Without `GDK_BACKEND`: the window picks the display itself
+    /// (`app::display_target`: on X11 from `DISPLAY` alone, the nested
+    /// sway's `WAYLAND_DISPLAY` on sway).
+    pub fn session_backend(mut self) -> Self {
+        self.session_backend = true;
         self
     }
 }
@@ -1600,10 +1852,7 @@ pub fn rgb_pixels(png: &Path, [x, y, w, h]: [u32; 4]) -> Vec<[u8; 3]> {
         png.display(),
         out.stderr
     );
-    out.stdout
-        .chunks_exact(3)
-        .map(|c| [c[0], c[1], c[2]])
-        .collect()
+    out.stdout.as_chunks::<3>().0.to_vec()
 }
 
 /// How many pixels of `rect` are within `tolerance` of `color` on every
@@ -1837,6 +2086,27 @@ mod tests {
         if frame.exists() {
             assert_eq!(png_size(&frame), (1600, 1000));
         }
+    }
+
+    /// `QREC_TEST_DISPLAY` picks the session: X11 for `x11`, else sway; a
+    /// value it doesn't know fails the case rather than run it on sway. A
+    /// case's `Options::x11` wins.
+    #[test]
+    fn qrec_test_display_picks_the_session() {
+        assert_eq!(session_kind(None), SessionKind::Sway);
+        for value in ["", "sway", "wayland"] {
+            assert_eq!(session_kind(Some(value)), SessionKind::Sway, "{value}");
+        }
+        assert_eq!(session_kind(Some("x11")), SessionKind::X11);
+        for unknown in ["X11", "xorg", "1"] {
+            let caught = std::panic::catch_unwind(|| session_kind(Some(unknown)));
+            assert!(caught.is_err(), "{unknown} is refused");
+        }
+        let x11 = Options::size(1366, 768).x11();
+        assert_eq!(
+            (x11.session, x11.logical()),
+            (SessionKind::X11, (1366.0, 768.0))
+        );
     }
 
     /// A CLI's extra variables may set the fake hooks or a `PATH`, never a

@@ -6,6 +6,8 @@
 //! ```text
 //! video: src [! caps] [! jpegdec] ! videoconvert ! video/x-raw,format=I420,colorimetry=bt709 ! tee
 //! screen: src ! caps ! appsink → bridge (I420, keepalive) → appsrc ! videoconvert ! … ! tee
+//! X11 screen: ximagesrc (its part of the root) ! video/x-raw,framerate=<canvas>
+//!   ! capssetter (square pixels) ! videoconvert ! … ! tee
 //! audio: src [! caps] ! audioconvert [! level] ! tee
 //! tee ! fakesink sync=false async=false        (always)
 //! tee ! queue ! videoscale ! videocrop ! compositor.sink_N   (preview, per layer)
@@ -21,6 +23,12 @@
 //! clock; audio sources slave to it. The GUI's sink is the same element in
 //! every pipeline: the engine takes it out of a pipeline it tore down (at
 //! NULL) and puts it in the next one.
+//!
+//! An X11 screen is a fixed part of the X server's root window, so its
+//! branch must stop once that part stops being its monitor, as a portal
+//! cast ends when its output goes (`on-disconnect=error`): an
+//! [`X11Guard`] on `ximagesrc` and the pipeline's [`X11Watch`] fail it,
+//! through the bus error every source failure takes.
 //!
 //! **Crops never race a negotiation** (GUI D-32, D-33: a Live layer drag
 //! changes a `cover` layer's crop many times a second). A `videocrop`
@@ -55,9 +63,12 @@ use qrec_core::plans::LiveScene;
 use super::bridge;
 use super::engine::{Cmd, OpenCast};
 use super::fake::{FAKE_SCREEN_FPS, FAKE_SCREEN_SIZE, FakeTone, fake_screen_is_still, fake_tone};
-use super::spec::{SourceSpec, tick_settings};
-use super::util::{capsfilter, make, set_str, set_value};
+use super::spec::{
+    SourceSpec, X11Crop, tick_settings, x11_crop, x11_grab_change, x11_monitor_change,
+};
+use super::util::{caps, capsfilter, make, set_str, set_value};
 use super::{Backend, LevelReading, PreviewFrame, PreviewOutput, SideEvent};
+use crate::sources::X11Layout;
 
 /// One capture device.
 pub(super) struct SourceBranch {
@@ -77,6 +88,8 @@ pub(super) struct SourceBranch {
     pub dead: Option<String>,
     /// A screen's bridge keepalive (kicked at T0 and T1, A§8.11).
     pub keepalive: Option<bridge::Keepalive>,
+    /// An X11 screen's guard, which the pipeline's [`X11Watch`] holds too.
+    pub x11: Option<X11Guard>,
 }
 
 /// A layer drawn by the preview compositor.
@@ -404,6 +417,9 @@ pub(super) struct Live {
     pub sources: Vec<SourceBranch>,
     pub preview: Option<Preview>,
     pub key: LiveKey,
+    /// Watches the X server's monitors for the X11 screens among
+    /// `sources`, until the teardown stops it (or it is dropped).
+    pub x11_watch: Option<X11Watch>,
 }
 
 /// Why a pipeline couldn't be built: the source (if one is to blame) and a message.
@@ -437,8 +453,27 @@ pub(super) struct BuildCtx<'a> {
     pub side: Option<&'a Sender<SideEvent>>,
     /// Portal casts of the real backend's screens, by output.
     pub casts: &'a BTreeMap<String, OpenCast>,
+    /// How the real backend grabs its screens on X11 (`ScreenBackend::X11`,
+    /// with a screen to build); `None`: through portal casts.
+    pub x11: Option<&'a X11Grab>,
     /// The GUI's preview sink (GUI H-1); `None`: the RGBA appsink.
     pub preview: Option<&'a PreviewOutput>,
+}
+
+/// How a build grabs X11 screens: each one is its part of the X server's
+/// root window, through `ximagesrc` (no portal, and no bridge: it grabs a
+/// frame every frame period of the pipeline clock, so a still screen never
+/// goes silent).
+#[derive(Debug, Clone)]
+pub(super) struct X11Grab {
+    /// `DISPLAY`, for `ximagesrc display-name`.
+    pub display: String,
+    /// The X server's screens and root window, read for this build, or why
+    /// they couldn't be.
+    pub layout: Result<X11Layout, String>,
+    /// The rate screens are grabbed at, the canvas's (without one
+    /// `ximagesrc` runs at 25 fps); `None` if the engine knows no canvas.
+    pub fps: Option<Fps>,
 }
 
 impl Live {
@@ -466,12 +501,18 @@ impl Live {
         for (index, spec) in sources.iter().enumerate() {
             branches.push(add_source(&pipeline, index, spec, ctx)?);
         }
+        let guards: Vec<X11Guard> = branches.iter().filter_map(|b| b.x11.clone()).collect();
+        let x11_watch = match ctx.x11 {
+            Some(grab) if !guards.is_empty() => Some(X11Watch::start(&grab.display, guards)),
+            _ => None,
+        };
         let mut live = Live {
             generation: ctx.generation,
             pipeline,
             sources: branches,
             preview: None,
             key: LiveKey::of(sources.to_vec(), scene),
+            x11_watch,
         };
         if let Some(scene) = scene.filter(|s| s.preview) {
             live.preview = Some(add_preview(&live, scene, ctx).map_err(BuildError::pipeline)?);
@@ -530,6 +571,9 @@ fn add_source(
     let err = |message: String| BuildError::of(spec, message);
     let mut chain: Vec<gst::Element> = Vec::new();
     let mut keepalive = None;
+    // The size it delivers, when the build already knows it.
+    let mut size = None;
+    let mut x11 = None;
     let src = match (ctx.backend, spec) {
         (Backend::Fake, SourceSpec::Screen { output }) => {
             // Like a screencast: BGRx frames through the screen bridge, and
@@ -584,6 +628,16 @@ fn add_source(
                 )
                 .map_err(err)?,
             );
+            src
+        }
+        // X11: the screen's part of the root window, at the canvas rate
+        // (no bridge or keepalive: `ximagesrc` never goes silent).
+        (Backend::Real, SourceSpec::Screen { output }) if ctx.x11.is_some() => {
+            let screen = x11_screen(ctx.x11, output, &name).map_err(err)?;
+            size = Some((screen.crop.width, screen.crop.height));
+            x11 = Some(screen.guard);
+            let src = screen.elements[0].clone();
+            chain.extend(screen.elements);
             src
         }
         (Backend::Real, SourceSpec::Screen { output }) => {
@@ -717,11 +771,251 @@ fn add_source(
         prefix,
         src,
         tee,
-        size: None,
+        size,
         negotiated: false,
         dead: None,
         keepalive,
+        x11,
     })
+}
+
+/// The head of an X11 screen's branch ([`x11_screen`]).
+struct X11Screen {
+    /// `ximagesrc`, then what follows it, in order.
+    elements: Vec<gst::Element>,
+    /// The part of the root window it grabs.
+    crop: X11Crop,
+    guard: X11Guard,
+}
+
+/// `ximagesrc` for `output`'s part of the X server's root window
+/// ([`x11_crop`]: inclusive ends, an even size), with its [`X11Guard`];
+/// then the capsfilter that makes it grab at the canvas rate, and a
+/// `capssetter` that makes its pixels square. `ximagesrc` derives a pixel
+/// aspect ratio from the X screen's size in millimetres, which often isn't
+/// square (per-axis EDID sizes, `xrandr --fbmm`), and takes would play
+/// stretched; its caps are fixed, so a capsfilter can't change that, and a
+/// `capssetter` in front of the rate's capsfilter would hide the rate from
+/// it (it then picks 25 fps). A monitor the X server doesn't have, one
+/// outside its root window, or a layout that couldn't be read is an error,
+/// never the whole root, which `ximagesrc` falls back to when the
+/// rectangle doesn't fit (saying so only in its debug log).
+fn x11_screen(
+    grab: Option<&X11Grab>,
+    output: &str,
+    name: &dyn Fn(&str) -> String,
+) -> Result<X11Screen, String> {
+    let grab = grab.ok_or("the X server's monitors weren't read")?;
+    let layout = grab.layout.as_ref().map_err(String::clone)?;
+    let screen = layout
+        .screens
+        .iter()
+        .find(|s| s.output == output)
+        .ok_or_else(|| {
+            format!(
+                "the X server (DISPLAY={}) has no such monitor",
+                grab.display
+            )
+        })?;
+    let crop = x11_crop(screen, layout.root)?;
+    let fps = grab.fps.ok_or("the canvas frame rate isn't known")?;
+    let src = make("ximagesrc", &name("src"))?;
+    set_str(&src, "display-name", &grab.display)?;
+    for (property, value) in [
+        ("startx", crop.x),
+        ("starty", crop.y),
+        ("endx", crop.endx()),
+        ("endy", crop.endy()),
+    ] {
+        set_value(&src, property, value)?;
+    }
+    // XDamage costs a round trip per changed rectangle; grabbing the whole
+    // part every frame period doesn't.
+    set_value(&src, "use-damage", false)?;
+    set_value(&src, "show-pointer", true)?;
+    let rate = capsfilter(
+        &name("caps"),
+        &format!("video/x-raw,framerate={}/{}", fps.num, fps.den),
+    )?;
+    let square = make("capssetter", &name("square"))?;
+    square.set_property("caps", caps("video/x-raw,pixel-aspect-ratio=1/1")?);
+    let guard = X11Guard::new(&src, output, crop);
+    let pad = src.static_pad("src").ok_or("ximagesrc has no src pad")?;
+    let grabbing = src.downgrade();
+    guard.watch_pad(&pad, move || {
+        let src = grabbing.upgrade()?;
+        Some((
+            src.property("startx"),
+            src.property("starty"),
+            src.property("endx"),
+            src.property("endy"),
+        ))
+    });
+    tracing::info!(
+        "capture: screen {output} from the X server (DISPLAY={}): {crop}, {}/{} fps",
+        grab.display,
+        fps.num,
+        fps.den
+    );
+    Ok(X11Screen {
+        elements: vec![src, rate, square],
+        crop,
+        guard,
+    })
+}
+
+/// Stops an X11 screen's branch once it no longer grabs its monitor: when
+/// `ximagesrc`'s rectangle isn't the monitor's part of the root any more
+/// (the root shrank under it, and it fell back to the whole root:
+/// [`x11_grab_change`], checked on each buffer and caps event it sends),
+/// or when the pipeline's [`X11Watch`] sees the monitor go away, move or
+/// change size ([`x11_monitor_change`]). It posts one error from
+/// `ximagesrc`, the bus error every source failure takes (`StreamLost` in
+/// a take, dead in the live status), then holds back caps and ends the
+/// stream at the next buffer (EOS: `ximagesrc` stops grabbing), so no
+/// frame of something else reaches the tee.
+#[derive(Clone)]
+pub(super) struct X11Guard(Arc<GuardState>);
+
+struct GuardState {
+    output: String,
+    crop: X11Crop,
+    /// `ximagesrc`, which the error comes from.
+    src: glib::WeakRef<gst::Element>,
+    /// Set once the error is posted (held while it is: the stream ends
+    /// after the error, so the engine hears why before the EOS).
+    failed: Mutex<bool>,
+}
+
+impl X11Guard {
+    fn new(src: &gst::Element, output: &str, crop: X11Crop) -> Self {
+        Self(Arc::new(GuardState {
+            output: output.to_owned(),
+            crop,
+            src: src.downgrade(),
+            failed: Mutex::new(false),
+        }))
+    }
+
+    /// Guards what leaves through `pad` (the source's), `rect` reading what
+    /// the source grabs now (`ximagesrc`'s `startx`, `starty`, `endx` and
+    /// `endy`, which its fallback rewrites).
+    fn watch_pad(
+        &self,
+        pad: &gst::Pad,
+        rect: impl Fn() -> Option<(u32, u32, u32, u32)> + Send + Sync + 'static,
+    ) {
+        let guard = self.clone();
+        let types = gst::PadProbeType::BUFFER | gst::PadProbeType::EVENT_DOWNSTREAM;
+        pad.add_probe(types, move |_, info| {
+            let buffer = match &info.data {
+                Some(gst::PadProbeData::Buffer(_)) => true,
+                Some(gst::PadProbeData::Event(e)) if e.type_() == gst::EventType::Caps => false,
+                _ => return gst::PadProbeReturn::Ok,
+            };
+            let stop = guard.failed()
+                || match rect().and_then(|now| x11_grab_change(&guard.0.crop, now)) {
+                    Some(why) => {
+                        guard.fail(&why);
+                        true
+                    }
+                    None => false,
+                };
+            if !stop {
+                gst::PadProbeReturn::Ok
+            } else if buffer {
+                // The source pauses and sends EOS.
+                info.flow_res = Err(gst::FlowError::Eos);
+                gst::PadProbeReturn::Handled
+            } else {
+                gst::PadProbeReturn::Drop
+            }
+        });
+    }
+
+    fn failed(&self) -> bool {
+        *lock_failed(&self.0.failed)
+    }
+
+    /// Stops the branch, once: `why` goes to the bus as `ximagesrc`'s
+    /// error, and what it sends next is held back. Returns once the error
+    /// is posted, whoever posted it.
+    fn fail(&self, why: &str) {
+        let mut failed = lock_failed(&self.0.failed);
+        if *failed {
+            return;
+        }
+        tracing::warn!("capture: screen {}: {why}", self.0.output);
+        if let Some(src) = self.0.src.upgrade() {
+            let error = gst::message::Error::builder(gst::ResourceError::NotFound, why)
+                .src(&src)
+                .build();
+            let _ = src.post_message(error);
+        }
+        *failed = true;
+    }
+
+    /// Stops the branch when the X server's monitors now (`layout`) no
+    /// longer have its monitor where it grabs.
+    fn check(&self, layout: &X11Layout) {
+        let (output, crop) = (&self.0.output, &self.0.crop);
+        if let Some(why) = x11_monitor_change(output, crop, &layout.screens, layout.root) {
+            self.fail(&why);
+        }
+    }
+}
+
+fn lock_failed(failed: &Mutex<bool>) -> std::sync::MutexGuard<'_, bool> {
+    failed
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Watches the X server's monitors for a live pipeline's X11 screens, on
+/// a thread of its own (`sources::x11::watch`): a read where a screen's
+/// monitor went away, moved or changed size stops its branch
+/// ([`X11Guard::check`]), which `ximagesrc` alone wouldn't notice while
+/// the rectangle still lies inside the root (another monitor slid into
+/// it). It ends once every guard stopped its branch, and when stopped or
+/// dropped (with its pipeline).
+pub(super) struct X11Watch {
+    stop: Arc<AtomicBool>,
+}
+
+impl X11Watch {
+    /// Stops it (within `sources::x11`'s tick); dropping it does too.
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+
+    fn start(display: &str, guards: Vec<X11Guard>) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let watching =
+            crate::sources::x11::watch(display, Arc::clone(&stop), move |layout| match layout {
+                Ok(layout) => {
+                    for guard in &guards {
+                        guard.check(&layout);
+                    }
+                    guards.iter().any(|g| !g.failed())
+                }
+                // The guards still see `ximagesrc` fall back to the whole
+                // root, and a server that hangs stalls the branch.
+                Err(e) => {
+                    tracing::warn!("capture: stopped watching the X server's monitors: {e}");
+                    false
+                }
+            });
+        if let Err(e) = watching {
+            tracing::warn!("capture: can't watch the X server's monitors: {e}");
+        }
+        Self { stop }
+    }
+}
+
+impl Drop for X11Watch {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 /// `upstream… ! appsink` → [`bridge::bridge`] → `appsrc`: adds and links
@@ -1130,6 +1424,8 @@ pub(super) fn level_reading(device: &str, s: &gst::StructureRef) -> Option<Level
 
 #[cfg(test)]
 mod tests {
+    use qrec_core::ctx::ScreenInfo;
+
     use super::*;
 
     fn layout(x: i32, crop: CropPx) -> PadLayout {
@@ -1223,5 +1519,149 @@ mod tests {
             same.rect(Rect::new(-7, 3, 1, 999)),
             Rect::new(-7, 3, 1, 999)
         );
+    }
+
+    /// What reached the far end of a guarded pad.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Seen {
+        Event(gst::EventType),
+        Buffer,
+    }
+
+    /// A source pad guarded for `crop` (a stand-in `fakesrc`, never
+    /// started, in `pipeline`, takes `ximagesrc`'s place for the errors),
+    /// linked to a pad that keeps what reaches it (kept alive with it: a
+    /// pad doesn't hold its peer); `rect` is what the source grabs.
+    fn guarded(
+        pipeline: &gst::Pipeline,
+        index: usize,
+        crop: X11Crop,
+        rect: &Arc<Mutex<(u32, u32, u32, u32)>>,
+    ) -> (X11Guard, [gst::Pad; 2], Arc<Mutex<Vec<Seen>>>) {
+        let src = make("fakesrc", &format!("s{index}-src")).unwrap();
+        pipeline.add(&src).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let out = gst::Pad::builder(gst::PadDirection::Src).build();
+        let sink = gst::Pad::builder(gst::PadDirection::Sink)
+            .chain_function({
+                let seen = Arc::clone(&seen);
+                move |_, _, _| {
+                    seen.lock().unwrap().push(Seen::Buffer);
+                    Ok(gst::FlowSuccess::Ok)
+                }
+            })
+            .event_function({
+                let seen = Arc::clone(&seen);
+                move |_, _, event| {
+                    seen.lock().unwrap().push(Seen::Event(event.type_()));
+                    true
+                }
+            })
+            .build();
+        out.link(&sink).unwrap();
+        sink.set_active(true).unwrap();
+        out.set_active(true).unwrap();
+        let guard = X11Guard::new(&src, "VIRT-R", crop);
+        let rect = Arc::clone(rect);
+        guard.watch_pad(&out, move || Some(*rect.lock().unwrap()));
+        assert!(out.push_event(gst::event::StreamStart::new("x11")));
+        let caps = caps("video/x-raw,width=960,height=1080").unwrap();
+        assert!(out.push_event(gst::event::Caps::new(&caps)));
+        let segment = gst::FormattedSegment::<gst::ClockTime>::new();
+        assert!(out.push_event(gst::event::Segment::new(segment.as_ref())));
+        (guard, [out, sink], seen)
+    }
+
+    /// The bus's next error: its source's name and its message.
+    fn next_error(pipeline: &gst::Pipeline) -> Option<(String, String)> {
+        let msg = pipeline.bus()?.pop_filtered(&[gst::MessageType::Error])?;
+        let gst::MessageView::Error(err) = msg.view() else {
+            return None;
+        };
+        let src = msg.src().map(|s| s.name().to_string()).unwrap_or_default();
+        Some((src, err.error().message().to_owned()))
+    }
+
+    /// An X11 screen's guard lets everything through while `ximagesrc`
+    /// grabs its crop. Once its rectangle is another (the fallback to a
+    /// root that shrank to VIRT-L: the same size, so no new caps), that
+    /// very buffer ends the stream, one error comes from the source, and
+    /// caps are held back; EOS goes on. A watch that no longer sees the
+    /// monitor fails it the same way, from the next buffer on.
+    #[test]
+    fn an_x11_guard_stops_its_branch_when_the_grab_moves() {
+        crate::gst_init::init().expect("GStreamer");
+        let pipeline = gst::Pipeline::new();
+        let crop = X11Crop {
+            x: 960,
+            y: 0,
+            width: 960,
+            height: 1080,
+        };
+        let rect = Arc::new(Mutex::new(crop.rect()));
+        let (guard, [out, _sink], seen) = guarded(&pipeline, 0, crop, &rect);
+        assert_eq!(out.push(gst::Buffer::new()), Ok(gst::FlowSuccess::Ok));
+        assert_eq!(out.push(gst::Buffer::new()), Ok(gst::FlowSuccess::Ok));
+        assert!(!guard.failed());
+        assert_eq!(next_error(&pipeline), None);
+
+        *rect.lock().unwrap() = (0, 0, 959, 1079);
+        assert_eq!(out.push(gst::Buffer::new()), Err(gst::FlowError::Eos));
+        assert!(guard.failed());
+        let wider = caps("video/x-raw,width=1280,height=1080").unwrap();
+        assert!(out.push_event(gst::event::Caps::new(&wider)));
+        assert!(out.push_event(gst::event::Eos::new()));
+        use gst::EventType::{Caps, Eos, Segment, StreamStart};
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                Seen::Event(StreamStart),
+                Seen::Event(Caps),
+                Seen::Event(Segment),
+                Seen::Buffer,
+                Seen::Buffer,
+                Seen::Event(Eos)
+            ]
+        );
+        assert_eq!(
+            next_error(&pipeline),
+            Some((
+                "s0-src".into(),
+                "the X screen shrank and no longer holds this monitor (960x1080 at (960, 0)): it \
+                 was unplugged, turned off or moved"
+                    .into()
+            ))
+        );
+        assert_eq!(next_error(&pipeline), None, "one error");
+
+        // The watch: VIRT-R is gone, while `ximagesrc` still grabs its crop.
+        let rect = Arc::new(Mutex::new(crop.rect()));
+        let (watched, [out, _sink], seen) = guarded(&pipeline, 1, crop, &rect);
+        assert_eq!(out.push(gst::Buffer::new()), Ok(gst::FlowSuccess::Ok));
+        let left = ScreenInfo {
+            output: "VIRT-L".into(),
+            description: String::new(),
+            x: 0,
+            y: 0,
+            width: 960,
+            height: 1080,
+            scale: 1.0,
+        };
+        let without = X11Layout {
+            root: (1920, 1080),
+            screens: vec![left],
+        };
+        watched.check(&without);
+        watched.check(&without);
+        assert_eq!(out.push(gst::Buffer::new()), Err(gst::FlowError::Eos));
+        assert_eq!(seen.lock().unwrap().last(), Some(&Seen::Buffer));
+        assert_eq!(
+            next_error(&pipeline),
+            Some((
+                "s1-src".into(),
+                "the X server no longer has this monitor (unplugged, turned off or renamed)".into()
+            ))
+        );
+        assert_eq!(next_error(&pipeline), None, "one error");
     }
 }

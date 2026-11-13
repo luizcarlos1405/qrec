@@ -1,7 +1,7 @@
 //! The drafted S23 (the swamp is missing something) and its GStreamer-stuck
 //! variant, as the approved frame draws them (C31 Blocking with art and
 //! rows, under the minimal header `Xba2H`; WP8 after G§0.2): a row per
-//! failed check from the doctor's report (`LocalUi.doctor`, read again
+//! failed app check from the doctor's report (`LocalUi.doctor`, read again
 //! whenever a new report comes: Check again), the others behind the
 //! "✓ N other checks passed" disclosure, then Check again, Copy report and
 //! Quit. The stuck page is the same shape with GStreamer's row and Quit
@@ -42,7 +42,8 @@ pub fn view(ctx: &Ctx, kind: &BlockKind, on_action: OnAction) -> Option<Box<dyn 
     Some(Box::new(MissingDepsView::new(ctx, stuck, on_action)))
 }
 
-/// The doctor's checks as S23 reads them.
+/// The doctor's checks as S23 reads them, each with its fix for this
+/// machine (a row's command and note).
 pub fn check_views(report: &DoctorReport) -> Vec<CheckView> {
     report
         .checks
@@ -53,6 +54,7 @@ pub fn check_views(report: &DoctorReport) -> Vec<CheckView> {
             ok: c.ok,
             detail: c.detail.clone(),
             hint: c.hint.clone(),
+            fix: c.fix.clone(),
         })
         .collect()
 }
@@ -646,32 +648,51 @@ impl PageView for MissingDepsView {
 
 #[cfg(test)]
 mod tests {
+    use qrec_core::ctx::ScreenBackendKind;
+    use qrec_core::keymap::global_snippet;
+    use qrec_core::platform::{Need, PlatformEnv, QREC, detect, install_hint};
     use qrec_core::view::blocking::BlockingAction;
-    use qrec_shell::doctor::Check;
+    use qrec_shell::doctor::{Check, Feature};
 
     use super::*;
 
-    /// S23 reads every check the doctor made, as it made them.
+    /// S23 reads every check the doctor made, as it made them: a row's
+    /// command is the doctor's fix for this machine.
     #[test]
     fn the_rows_read_the_doctors_checks() {
+        let debian = detect(
+            &PlatformEnv::default()
+                .with("DISPLAY", ":0")
+                .with_os_release("ID=debian\n"),
+        );
+        let fix = install_hint(Need::GstGtk4, &debian);
         let report = DoctorReport {
             checks: vec![
                 Check {
                     id: "gst.gtk4paintablesink".into(),
                     required: true,
+                    needed_for: vec![Feature::App],
                     ok: false,
                     detail: "gtk4paintablesink (the GUI preview) isn't in the GStreamer registry"
                         .into(),
-                    hint: Some("install gst-plugins-rs (gtk4)".into()),
+                    hint: Some(fix.line()),
+                    fix: Some(fix.clone()),
                 },
                 Check {
-                    id: "wl-copy".into(),
+                    id: "x11.randr".into(),
                     required: false,
+                    needed_for: vec![Feature::Screens],
                     ok: true,
-                    detail: "/run/current-system/sw/bin/wl-copy".into(),
+                    detail: "RandR 1.6: 1 screen (eDP-1)".into(),
                     hint: None,
+                    fix: None,
                 },
             ],
+            features_off: vec![],
+            shortcuts: global_snippet(&debian.desktop, QREC),
+            platform: debian,
+            screen_backend: ScreenBackendKind::X11,
+            session: "X11 · screens: x11 (DISPLAY=:0)".into(),
             niri_snippet: String::new(),
             va: None,
         };
@@ -684,19 +705,25 @@ mod tests {
                     required: true,
                     ok: false,
                     detail: report.checks[0].detail.clone(),
-                    hint: Some("install gst-plugins-rs (gtk4)".into()),
+                    hint: Some("sudo apt install gstreamer1.0-gtk4".into()),
+                    fix: Some(fix),
                 },
                 CheckView {
-                    id: "wl-copy".into(),
+                    id: "x11.randr".into(),
                     required: false,
                     ok: true,
-                    detail: "/run/current-system/sw/bin/wl-copy".into(),
+                    detail: "RandR 1.6: 1 screen (eDP-1)".into(),
                     hint: None,
+                    fix: None,
                 },
             ]
         );
         let page = blocking::missing_deps(&views);
         assert_eq!(page.rows.len(), 1);
+        assert_eq!(
+            page.rows[0].command.as_deref(),
+            Some("sudo apt install gstreamer1.0-gtk4")
+        );
         assert_eq!(page.passed_label, "1 other check passed");
     }
 

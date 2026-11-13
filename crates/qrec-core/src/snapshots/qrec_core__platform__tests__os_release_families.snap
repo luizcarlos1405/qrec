@@ -1,0 +1,16 @@
+---
+source: crates/qrec-core/src/platform.rs
+expression: table
+---
+debian-13            debian
+ubuntu-26.04         ubuntu
+linuxmint-22         ubuntu
+fedora-44            fedora
+rocky-10             fedora
+arch                 arch
+opensuse-tumbleweed  suse
+nixos-26.05          nixos
+alpine-3.22          alpine
+void                 void
+gentoo               gentoo
+empty                unknown

@@ -1,0 +1,83 @@
+---
+source: crates/qrec-shell/src/doctor.rs
+expression: out
+---
+=== niri
+Global shortcuts for niri (paste into ~/.config/niri/config.kdl):
+
+binds {
+    Mod+Shift+R { spawn "qrec" "record" "toggle"; }
+    Mod+Shift+O { spawn "qrec" "record" "start" "--over-selection"; }
+    Mod+Shift+D { spawn "qrec" "take" "discard-last"; }
+}
+
+=== sway
+Global shortcuts for sway (paste into ~/.config/sway/config):
+
+bindsym $mod+Shift+r exec qrec record toggle
+bindsym $mod+Shift+o exec qrec record start --over-selection
+bindsym $mod+Shift+d exec qrec take discard-last
+
+=== i3
+Global shortcuts for i3 (paste into ~/.config/i3/config):
+
+# i3's default config binds $mod+Shift+r to restart: remove that line.
+bindsym $mod+Shift+r exec --no-startup-id qrec record toggle
+bindsym $mod+Shift+o exec --no-startup-id qrec record start --over-selection
+bindsym $mod+Shift+d exec --no-startup-id qrec take discard-last
+
+=== Hyprland
+Global shortcuts for Hyprland (paste into ~/.config/hypr/hyprland.conf):
+
+bind = SUPER SHIFT, R, exec, qrec record toggle
+bind = SUPER SHIFT, O, exec, qrec record start --over-selection
+bind = SUPER SHIFT, D, exec, qrec take discard-last
+
+=== river
+Global shortcuts for river (paste into ~/.config/river/init):
+
+riverctl map normal Super+Shift R spawn 'qrec record toggle'
+riverctl map normal Super+Shift O spawn 'qrec record start --over-selection'
+riverctl map normal Super+Shift D spawn 'qrec take discard-last'
+
+=== Ubuntu's GNOME
+Global shortcuts for GNOME:
+
+In GNOME Settings › Keyboard › View and Customize Shortcuts › Custom Shortcuts,
+for each line choose Add Shortcut (or +), type its name and command, then set its shortcut.
+
+Name               Command                             Shortcut
+Record toggle      qrec record toggle                  Super+Shift+R
+Record over        qrec record start --over-selection  Super+Shift+O
+Discard last take  qrec take discard-last              Super+Shift+D
+
+=== KDE Plasma
+Global shortcuts for KDE Plasma:
+
+In System Settings › Keyboard › Shortcuts, for each line choose
+Add New › Command or Script…, type its command, then set its shortcut.
+
+Name               Command                             Shortcut
+Record toggle      qrec record toggle                  Meta+Shift+R
+Record over        qrec record start --over-selection  Meta+Shift+O
+Discard last take  qrec take discard-last              Meta+Shift+D
+
+=== Xfce
+Global shortcuts:
+
+Bind each command to its shortcut in your desktop's keyboard settings.
+
+Name               Command                             Shortcut
+Record toggle      qrec record toggle                  Super+Shift+R
+Record over        qrec record start --over-selection  Super+Shift+O
+Discard last take  qrec take discard-last              Super+Shift+D
+
+=== a tty
+Global shortcuts:
+
+Bind each command to its shortcut in your desktop's keyboard settings.
+
+Name               Command                             Shortcut
+Record toggle      qrec record toggle                  Super+Shift+R
+Record over        qrec record start --over-selection  Super+Shift+O
+Discard last take  qrec take discard-last              Super+Shift+D

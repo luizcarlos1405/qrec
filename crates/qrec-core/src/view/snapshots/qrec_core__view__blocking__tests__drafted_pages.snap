@@ -315,36 +315,6 @@ expression: pages
         ],
         "note": "The flake provides gst-plugins-rs.",
         "status": "missing"
-      },
-      {
-        "command": "xdg-desktop-portal-gnome",
-        "description": "Needed to capture screens on Wayland.",
-        "id": "portal.screencast",
-        "item": [
-          {
-            "face": "text",
-            "text": "ScreenCast portal backend"
-          }
-        ],
-        "note": "On niri, install it, then log out and back in.",
-        "status": "missing"
-      },
-      {
-        "command": null,
-        "description": "AV1 export will be unavailable. Everything else works.",
-        "id": "ffmpeg.libsvtav1",
-        "item": [
-          {
-            "face": "mono",
-            "text": "libsvtav1"
-          },
-          {
-            "face": "text",
-            "text": "in ffmpeg"
-          }
-        ],
-        "note": null,
-        "status": "optional"
       }
     ]
   },
@@ -401,7 +371,7 @@ expression: pages
     "passedLabel": "1 other check passed",
     "rows": [
       {
-        "command": null,
+        "command": "sudo apt install ffmpeg",
         "description": "ffmpeg wasn't found on PATH",
         "id": "ffmpeg",
         "item": [
@@ -410,7 +380,7 @@ expression: pages
             "text": "ffmpeg"
           }
         ],
-        "note": "install ffmpeg (a full build with libx264, libvpx and libopus; NixOS: ffmpeg-full)",
+        "note": null,
         "status": "missing"
       }
     ]

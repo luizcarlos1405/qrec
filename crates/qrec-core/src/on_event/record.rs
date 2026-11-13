@@ -27,12 +27,14 @@ use crate::apply::record::{
     countdown_progress, discard_last, end_countdown, finalize_progress, join_ids, ordered,
     started_result, stop_capture, unique,
 };
+use crate::capture_plan;
 use crate::ctx::{Ctx, IdGen};
 use crate::error::{CoreError, ErrorCode};
 use crate::history;
 use crate::ids::{ClipId, Frame, TakeId, TimerId};
 use crate::media_argv::probe_argv;
-use crate::model::{Clip, Fps, Scene, Stream, StreamKind, Take, TakeStatus};
+use crate::model::{Clip, EncoderPref, Fps, Scene, Stream, StreamKind, Take, TakeStatus};
+use crate::plans::VideoEncoder;
 use crate::protocol::effect::{Effect, LogLevel, ProbeJob, ProbePurpose};
 use crate::protocol::event::{MediaInfo, ProbeError, ProbeFailure, ProbeResult, RecordedStream};
 use crate::protocol::progress::{Progress, ProgressPhase};
@@ -168,25 +170,101 @@ pub fn capture_failed(
         Some(l) => format!("{l}: {message}"),
         None => message,
     };
-    let err = capture_error(&reason, label.as_deref(), missing.as_deref());
+    let err = capture_error(state, ctx, &reason, label.as_deref(), missing.as_deref());
     end_broken(state, ctx, state.clone(), &target, &reason, &err)
 }
 
 /// `capture failed: <reason>`, with a hint naming the failing source; a
 /// GStreamer element that isn't installed is a missing dependency (exit 5,
-/// A§4.8) whose hint names it.
-fn capture_error(reason: &str, source: Option<&str>, missing: Option<&str>) -> CoreError {
+/// A§4.8) whose hint names it, or for a software H.264 encoder says what
+/// would record instead ([`software_encoder_hint`]).
+fn capture_error(
+    state: &State,
+    ctx: &Ctx,
+    reason: &str,
+    source: Option<&str>,
+    missing: Option<&str>,
+) -> CoreError {
     let message = format!("capture failed: {reason}");
     if let Some(element) = missing {
-        return CoreError::new(ErrorCode::MissingDependency, message).with_hint(format!(
-            "install the GStreamer plugin that provides {element}; qrec doctor lists what is missing"
-        ));
+        let hint = match element {
+            "x264enc" | "openh264enc" => software_encoder_hint(state, ctx, element),
+            _ => format!(
+                "install the GStreamer plugin that provides {element}; qrec doctor lists what is missing"
+            ),
+        };
+        return CoreError::new(ErrorCode::MissingDependency, message).with_hint(hint);
     }
     let hint = match source {
         Some(s) => format!("check {s}; qrec doctor lists capture problems"),
         None => "qrec doctor lists capture problems".to_owned(),
     };
     CoreError::capture_failed(message).with_hint(hint)
+}
+
+/// The hint for a software H.264 encoder GStreamer doesn't have
+/// (`missing`: x264enc or openh264enc), from the encoder preference and
+/// what the probe found (`Capabilities::gst_h264`, A§9.5):
+///
+/// - x264 asked for by name: where to set auto, when auto would record
+///   with something the machine has (a VA encoder, openh264enc), or to
+///   install x264enc;
+/// - GStreamer had neither when Qrec looked: install either one;
+/// - it had the other one (the missing one went away since): install the
+///   missing one;
+/// - the probe didn't answer: install the missing one, or the other.
+fn software_encoder_hint(state: &State, ctx: &Ctx, missing: &str) -> String {
+    const PACKAGES: &str = "qrec doctor names this system's packages";
+    let (project, caps, facts) = (&state.project, &state.runtime.capabilities, &ctx.facts);
+    let package = |element: &str| match element {
+        "x264enc" => "gst-plugins-ugly",
+        _ => "gst-plugins-bad with OpenH264",
+    };
+    let install = format!("install it ({})", package(missing));
+    if missing == "x264enc" && capture_plan::encoder_pref(project, facts) == EncoderPref::X264 {
+        let (asks, set) = if project.recording.encoder == EncoderPref::X264 {
+            (
+                "the project's encoder is x264",
+                "qrec project set --encoder auto",
+            )
+        } else {
+            (
+                "the encoder preference is x264",
+                "set it to Auto in Settings › Recording (qrec config set encoder.preference auto)",
+            )
+        };
+        let instead = match capture_plan::auto_encoder(project, caps, facts) {
+            VideoEncoder::Va { factory, .. } => factory,
+            VideoEncoder::OpenH264 { .. } => "openh264enc".to_owned(),
+            VideoEncoder::X264 { .. } => {
+                return format!("{asks}, but GStreamer has no x264enc: {install}; {PACKAGES}");
+            }
+        };
+        return format!(
+            "{asks}, but GStreamer has no x264enc: {set} to record with {instead}, or {install}; \
+             {PACKAGES}"
+        );
+    }
+    let other = match missing {
+        "x264enc" => "openh264enc",
+        _ => "x264enc",
+    };
+    let has_other = caps.gst_h264.map(|gst| match other {
+        "x264enc" => gst.x264,
+        _ => gst.openh264,
+    });
+    match has_other {
+        Some(false) => format!(
+            "GStreamer has no H.264 encoder to record with: install x264enc (gst-plugins-ugly) or \
+             openh264enc (gst-plugins-bad with OpenH264); {PACKAGES}"
+        ),
+        Some(true) => format!("GStreamer has no {missing}: {install}; {PACKAGES}"),
+        None => format!(
+            "GStreamer has no {missing}: {install}, or {other} ({}), which records without it; \
+             {PACKAGES}",
+            package(other)
+        ),
+    }
 }
 
 /// A failure of the live pipeline with no take in flight: a countdown can't
@@ -217,7 +295,7 @@ fn pipeline_failed(
     }];
     let mut next = state.clone();
     if matches!(state.runtime.record, RecordPhase::Countdown { .. }) {
-        let err = capture_error(&what, label.as_deref(), missing.as_deref());
+        let err = capture_error(state, ctx, &what, label.as_deref(), missing.as_deref());
         let (ended, more) = end_countdown(state, ctx, true, err);
         next = ended;
         effects.extend(more);

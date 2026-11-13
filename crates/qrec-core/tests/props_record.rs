@@ -12,17 +12,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use proptest::prelude::*;
 use proptest::sample::Index;
-use qrec_core::capture_plan::{choose_camera_mode, plan_capture, plan_files};
+use qrec_core::capture_plan::{choose_camera_mode, choose_encoder, plan_capture, plan_files};
 use qrec_core::ctx::{CameraMode, Ctx, Facts};
 use qrec_core::ids::{ClipId, LayerId, ReqId, TakeId, TimerId, TrackId};
 use qrec_core::model::{
-    AudioRole, AudioTrack, Crop, Fit, Fps, Layer, Rect, Stream, StreamKind, TakeStatus, VideoSource,
+    AudioRole, AudioTrack, Crop, EncoderPref, Fit, Fps, Layer, Rect, Stream, StreamKind,
+    TakeStatus, VideoSource,
 };
-use qrec_core::plans::LiveScene;
+use qrec_core::plans::{LiveScene, VideoEncoder};
 use qrec_core::protocol::command::{Command, RecordModeArg};
 use qrec_core::protocol::effect::{Effect, ProbePurpose};
 use qrec_core::protocol::event::{Event, MediaInfo, ProbeResult, RecordedStream};
-use qrec_core::state::{CanvasMode, HostKind, RecordPhase, State};
+use qrec_core::state::{CanvasMode, GstH264Caps, HostKind, RecordPhase, State, VaapiCaps};
 use qrec_core::testkit::{self, strategies::arb_fps, strategies::arb_project};
 use qrec_core::time::frames_to_ns;
 use qrec_core::{Outcome, apply, on_event};
@@ -665,6 +666,113 @@ proptest! {
             }
         }
     }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1024))]
+
+    /// The record encoder is one the machine has (A§9.5), on every layer:
+    /// VA only with an encoder bound to the node the capabilities describe
+    /// (its full one over its low-power one), never on an NVIDIA node
+    /// unless that node was configured, and never when the preference says
+    /// x264; OpenH264 only when GStreamer has it and no x264enc, and no VA
+    /// encoder may record; x264 when asked for, or when GStreamer has it,
+    /// wasn't asked (unknown) or has nothing at all (the engine then names
+    /// x264enc as missing).
+    #[test]
+    fn the_record_encoder_is_one_the_machine_has(
+        vaapi in proptest::option::of(arb_vaapi()),
+        gst_h264 in proptest::option::of((any::<bool>(), any::<bool>())),
+        project_pref in arb_pref(),
+        config_pref in arb_pref(),
+        project_node in proptest::option::of(arb_node()),
+        config_node in proptest::option::of(arb_node()),
+    ) {
+        let mut project = testkit::ProjectBuilder::new()
+            .screen_layer("L1", "DP-4")
+            .camera_layer("L2", "/dev/video0")
+            .build();
+        project.recording.encoder = project_pref;
+        project.recording.vaapi_device = project_node.clone();
+        let mut facts = Facts::default();
+        facts.config.encoder.preference = config_pref;
+        facts.config.encoder.vaapi_device = config_node.clone();
+        let mut caps = testkit::capabilities();
+        caps.vaapi = vaapi.clone();
+        caps.gst_h264 = gst_h264.map(|(x264, openh264)| GstH264Caps { x264, openh264 });
+
+        let encoder = choose_encoder(&project, &caps, &facts);
+        let plan = plan_capture(&project, &TakeId::numbered(1), &caps, &facts).unwrap();
+        prop_assert!(plan.video.iter().all(|v| v.encoder == encoder), "{:?}", plan.video);
+
+        let pref = match project_pref {
+            EncoderPref::Auto => config_pref,
+            explicit => explicit,
+        };
+        let configured = project_node.or(config_node);
+        // The VA encoder the node may record with, by the rule.
+        let usable_va = vaapi.as_ref().filter(|va| match &configured {
+            Some(device) => *device == va.device,
+            None => va.vendor != 0x10de,
+        }).and_then(|va| va.gst_h264_factory.clone().or(va.gst_h264_lp_factory.clone()));
+        match &encoder {
+            VideoEncoder::Va { factory, qp } => {
+                prop_assert_ne!(pref, EncoderPref::X264);
+                let va = vaapi.as_ref().unwrap();
+                prop_assert_eq!(Some(factory), usable_va.as_ref());
+                if va.gst_h264_factory.is_some() {
+                    prop_assert_eq!(Some(factory), va.gst_h264_factory.as_ref(), "the full encoder first");
+                }
+                if configured.as_deref() != Some(va.device.as_str()) {
+                    prop_assert_ne!(va.vendor, 0x10de, "an NVIDIA node nobody configured");
+                }
+                prop_assert_eq!(*qp, 18);
+            }
+            VideoEncoder::OpenH264 { .. } => {
+                prop_assert_ne!(pref, EncoderPref::X264);
+                prop_assert_eq!(usable_va, None);
+                prop_assert_eq!(caps.gst_h264, Some(GstH264Caps { x264: false, openh264: true }));
+            }
+            VideoEncoder::X264 { .. } => {
+                let nothing_else = usable_va.is_none()
+                    && caps.gst_h264.is_none_or(|g| g.x264 || !g.openh264);
+                prop_assert!(pref == EncoderPref::X264 || nothing_else, "{:?} {:?}", caps.vaapi, caps.gst_h264);
+            }
+        }
+    }
+}
+
+fn arb_pref() -> impl Strategy<Value = EncoderPref> {
+    prop_oneof![
+        Just(EncoderPref::Auto),
+        Just(EncoderPref::Vaapi),
+        Just(EncoderPref::X264)
+    ]
+}
+
+fn arb_node() -> impl Strategy<Value = String> {
+    (128u32..131).prop_map(|n| format!("/dev/dri/renderD{n}"))
+}
+
+/// A render node of any vendor with, or without, its VA encoders.
+fn arb_vaapi() -> impl Strategy<Value = VaapiCaps> {
+    (
+        arb_node(),
+        prop_oneof![Just(0x8086u16), Just(0x1002), Just(0x10de), Just(0x1af4)],
+        any::<bool>(),
+        proptest::option::of(prop_oneof![Just("vah264enc"), Just("varenderD129h264enc")]),
+        proptest::option::of(prop_oneof![
+            Just("vah264lpenc"),
+            Just("varenderD129h264lpenc")
+        ]),
+    )
+        .prop_map(|(device, vendor, ffmpeg_h264, full, lp)| VaapiCaps {
+            device,
+            vendor,
+            ffmpeg_h264,
+            gst_h264_factory: full.map(str::to_owned),
+            gst_h264_lp_factory: lp.map(str::to_owned),
+        })
 }
 
 fn arb_mode() -> impl Strategy<Value = CameraMode> {

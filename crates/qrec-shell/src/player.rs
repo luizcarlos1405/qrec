@@ -87,9 +87,12 @@ static REFUSE_SEEKS: AtomicU32 = AtomicU32::new(0);
 fn refused_by_test() -> bool {
     #[cfg(test)]
     {
-        REFUSE_SEEKS
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_ok()
+        // Rust 1.99 renames this `try_update`, which is stable only since
+        // 1.95, past the MSRV (1.92).
+        #[allow(deprecated)]
+        let refused =
+            REFUSE_SEEKS.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
+        refused.is_ok()
     }
     #[cfg(not(test))]
     {

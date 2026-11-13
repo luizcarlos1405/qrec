@@ -2,16 +2,19 @@
 //! overlay grouped by category, searchable, with the current keys").
 //! Owner: WP9.
 //!
-//! S20's rows in three columns: Record, Output, Global (niri), Window │
+//! S20's rows in three columns: Record, Output, Global shortcuts, Window │
 //! Playback, View │ Edit, Canvas (D-22: the layer nudges at the bottom of
 //! column 3). A row is one action or a pair or trio drawn as one
 //! ("Previous / next frame" with `←` / `→`): the keys of its bindings
 //! that run (`keymap::usable_keys`), the bindings joined by "/" and a
 //! binding's own keys by "or" ("Del or X"); "default P" when `keys.toml`
-//! changed them. Global (niri) is the compositor binds of SPEC §10.2's
-//! snippet (`keymap::NIRI_SNIPPET`), with "Copy niri snippet". Window (not
-//! drawn: S20's View group has no room for them) holds the window's own
-//! keys of D-10, F6 and Ctrl+Q, so every key is on the sheet.
+//! changed them. Global shortcuts is SPEC §10.2's keys that work while
+//! another app has focus, as the desktop Qrec runs on binds them
+//! (`keymap::global_snippet`: niri's KDL in the frame, sway's `bindsym`,
+//! GNOME's custom shortcuts, …), with "Copy snippet" and the file to
+//! paste it into. Window (not drawn: S20's View group has no room for
+//! them) holds the window's own keys of D-10, F6 and Ctrl+Q, so every key
+//! is on the sheet.
 //!
 //! A search keeps the rows whose label holds each of its words (any case),
 //! bolds them, and shows the groups left in one column, in reading order,
@@ -20,8 +23,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::keymap::{
-    Binding, KeyChord, Keymap, NIRI_SNIPPET, default_keys, is_rebound, key_name, usable_keys,
+    Binding, GLOBAL_SHORTCUTS, GlobalSnippet, KeyChord, Keymap, default_keys, global_snippet,
+    is_rebound, key_name, usable_keys,
 };
+use crate::platform::Desktop;
 
 /// The sheet: its columns of groups (one while searching), its copy.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -64,31 +69,48 @@ pub struct KeyHint {
 pub struct CheatGroup {
     pub title: String,
     pub rows: Vec<CheatRow>,
-    /// Global (niri)'s note, snippet and button.
+    /// Global shortcuts' note, snippet and button.
     pub snippet: Option<Snippet>,
 }
 
-/// SPEC §10.2's niri snippet, to copy.
+/// The global shortcuts' snippet for the desktop (`keymap::global_snippet`),
+/// to copy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snippet {
     /// "Bind these in niri to record while another app has focus."
     pub note: String,
-    /// "Copy niri snippet".
+    /// "Copy snippet".
     pub button: String,
-    /// What it copies (SPEC §10.2's `binds { … }`).
+    /// What it copies (niri: SPEC §10.2's `binds { … }`).
     pub text: String,
-    /// "Paste into".
+    /// "Paste into", shown before `path`.
     pub paste_into: String,
-    /// "~/.config/niri/config.kdl".
-    pub path: String,
+    /// The file the snippet goes into ("~/.config/niri/config.kdl");
+    /// `None` when the desktop's settings take the shortcuts (the note
+    /// says where), and then nothing shows after the button.
+    pub path: Option<String>,
+}
+
+impl Snippet {
+    /// The sheet's words for `global`.
+    fn of(global: GlobalSnippet) -> Self {
+        Snippet {
+            note: global.note,
+            button: global.button,
+            text: global.text,
+            paste_into: "Paste into".to_owned(),
+            path: global.file,
+        }
+    }
 }
 
 /// One row of the sheet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheatRow {
-    /// Its first binding's id (the niri rows: `niri.record-toggle`, …).
+    /// Its first binding's id (the global shortcuts' rows:
+    /// `global.record-toggle`, …).
     pub id: String,
     pub label: String,
     /// Char indices of `label` the search matched.
@@ -108,8 +130,8 @@ pub struct RowKeys {
     pub chords: Vec<Vec<String>>,
 }
 
-/// The compositor binds' group.
-pub const NIRI_GROUP: &str = "Global (niri)";
+/// The global shortcuts' group (the desktop binds them).
+pub const GLOBAL_GROUP: &str = "Global shortcuts";
 
 /// The window's own keys' group (D-10; not drawn).
 pub const WINDOW_GROUP: &str = "Window";
@@ -144,7 +166,7 @@ const SHEET: [&[(&str, &[Row])]; 3] = [
                 row("Export\u{2026}", &["export"]),
             ],
         ),
-        (NIRI_GROUP, &[]),
+        (GLOBAL_GROUP, &[]),
         (
             WINDOW_GROUP,
             &[
@@ -241,21 +263,6 @@ const SHEET: [&[(&str, &[Row])]; 3] = [
     ],
 ];
 
-/// The rows of Global (niri): SPEC §10.2's snippet, as S20 words them.
-const NIRI_ROWS: [(&str, &str, &[&str]); 3] = [
-    (
-        "niri.record-toggle",
-        "Record toggle",
-        &["Mod", "Shift", "R"],
-    ),
-    ("niri.record-over", "Record over", &["Mod", "Shift", "O"]),
-    (
-        "niri.discard-last",
-        "Discard last take",
-        &["Mod", "Shift", "D"],
-    ),
-];
-
 /// The binding ids the sheet shows a row for (every binding but the
 /// 10-frame nudges, which "(Shift: 10)" names, and the Canvas nudges,
 /// shown by direction).
@@ -269,9 +276,18 @@ pub fn listed_ids() -> Vec<&'static str> {
 }
 
 /// The sheet for `search` (empty: everything); `keys_path` is `keys.toml`
-/// as people read it (`~/.config/qrec/keys.toml`).
-pub fn cheat_sheet(keymap: &Keymap, keys_path: &str, search: &str) -> CheatSheet {
+/// as people read it (`~/.config/qrec/keys.toml`); `desktop` is where Qrec
+/// runs, whose global shortcuts the sheet shows, run by `program` (`qrec`,
+/// or the AppImage's path: `HostPlatform::program`).
+pub fn cheat_sheet(
+    keymap: &Keymap,
+    keys_path: &str,
+    search: &str,
+    desktop: &Desktop,
+    program: &str,
+) -> CheatSheet {
     let words = search_words(search);
+    let global = global_snippet(desktop, program);
     let mut count = 0;
     let mut columns: Vec<Vec<CheatGroup>> = SHEET
         .iter()
@@ -279,16 +295,16 @@ pub fn cheat_sheet(keymap: &Keymap, keys_path: &str, search: &str) -> CheatSheet
             groups
                 .iter()
                 .filter_map(|(title, rows)| {
-                    let mut rows: Vec<CheatRow> = if *title == NIRI_GROUP {
-                        NIRI_ROWS
+                    let mut rows: Vec<CheatRow> = if *title == GLOBAL_GROUP {
+                        GLOBAL_SHORTCUTS
                             .iter()
-                            .map(|(id, label, caps)| CheatRow {
-                                id: (*id).to_owned(),
-                                label: (*label).to_owned(),
+                            .map(|shortcut| CheatRow {
+                                id: shortcut.id.to_owned(),
+                                label: shortcut.label.to_owned(),
                                 matched: Vec::new(),
                                 keys: vec![RowKeys {
-                                    id: (*id).to_owned(),
-                                    chords: vec![caps.iter().map(|c| (*c).to_owned()).collect()],
+                                    id: shortcut.id.to_owned(),
+                                    chords: vec![global.caps(shortcut)],
                                 }],
                                 default_keys: None,
                             })
@@ -308,7 +324,7 @@ pub fn cheat_sheet(keymap: &Keymap, keys_path: &str, search: &str) -> CheatSheet
                     count += rows.len();
                     (!rows.is_empty()).then(|| CheatGroup {
                         title: (*title).to_owned(),
-                        snippet: (*title == NIRI_GROUP).then(niri_snippet),
+                        snippet: (*title == GLOBAL_GROUP).then(|| Snippet::of(global.clone())),
                         rows,
                     })
                 })
@@ -346,16 +362,6 @@ pub fn cheat_sheet(keymap: &Keymap, keys_path: &str, search: &str) -> CheatSheet
             label: "Settings".to_owned(),
             keys: first_keys("settings.open"),
         },
-    }
-}
-
-fn niri_snippet() -> Snippet {
-    Snippet {
-        note: "Bind these in niri to record while another app has focus.".to_owned(),
-        button: "Copy niri snippet".to_owned(),
-        text: NIRI_SNIPPET.to_owned(),
-        paste_into: "Paste into".to_owned(),
-        path: "~/.config/niri/config.kdl".to_owned(),
     }
 }
 
@@ -435,10 +441,16 @@ mod tests {
     use std::fmt::Write as _;
 
     use super::*;
-    use crate::keymap::resolve;
+    use crate::keymap::{NIRI_SNIPPET, resolve};
+    use crate::platform::QREC;
     use crate::view::palette::bracketed;
 
     const KEYS: &str = "~/.config/qrec/keys.toml";
+
+    /// S20's frame is niri's sheet.
+    fn sheet(keys_toml: &str, search: &str) -> CheatSheet {
+        cheat_sheet(&resolve(keys_toml), KEYS, search, &Desktop::Niri, QREC)
+    }
 
     fn caps(row: &CheatRow) -> String {
         row.keys
@@ -454,6 +466,31 @@ mod tests {
             .join(" / ")
     }
 
+    /// A group: its title, its rows, the snippet's note, button and the
+    /// file it goes into.
+    fn group_text(out: &mut String, group: &CheatGroup) {
+        let _ = writeln!(out, "## {}", group.title);
+        for row in &group.rows {
+            let _ = writeln!(
+                out,
+                "{:<40} {}{}",
+                bracketed(&row.label, &row.matched),
+                caps(row),
+                row.default_keys
+                    .as_ref()
+                    .map(|d| format!("  ({d})"))
+                    .unwrap_or_default()
+            );
+        }
+        if let Some(snippet) = &group.snippet {
+            let _ = write!(out, "{} <{}>", snippet.note, snippet.button);
+            if let Some(path) = &snippet.path {
+                let _ = write!(out, " {} {path}", snippet.paste_into);
+            }
+            out.push('\n');
+        }
+    }
+
     fn text(sheet: &CheatSheet) -> String {
         let mut out = format!("# {} [{}]\n", sheet.title, sheet.placeholder);
         if let Some(matches) = &sheet.matches {
@@ -462,26 +499,7 @@ mod tests {
         for (n, column) in sheet.columns.iter().enumerate() {
             let _ = writeln!(out, "=== column {}", n + 1);
             for group in column {
-                let _ = writeln!(out, "## {}", group.title);
-                for row in &group.rows {
-                    let _ = writeln!(
-                        out,
-                        "{:<40} {}{}",
-                        bracketed(&row.label, &row.matched),
-                        caps(row),
-                        row.default_keys
-                            .as_ref()
-                            .map(|d| format!("  ({d})"))
-                            .unwrap_or_default()
-                    );
-                }
-                if let Some(snippet) = &group.snippet {
-                    let _ = writeln!(
-                        out,
-                        "{} <{}> {} {}",
-                        snippet.note, snippet.button, snippet.paste_into, snippet.path
-                    );
-                }
+                group_text(&mut out, group);
             }
         }
         if let Some(tip) = &sheet.palette_tip {
@@ -497,7 +515,7 @@ mod tests {
 
     #[test]
     fn snapshot_s20_three_columns() {
-        let sheet = cheat_sheet(&resolve("[bindings]\nframe.save = \"f\"\n"), KEYS, "");
+        let sheet = sheet("[bindings]\nframe.save = \"f\"\n", "");
         insta::assert_snapshot!("cheatsheet_s20", text(&sheet));
         let titles: Vec<Vec<&str>> = sheet
             .columns
@@ -507,7 +525,7 @@ mod tests {
         assert_eq!(
             titles,
             [
-                vec!["Record", "Output", "Global (niri)", "Window"],
+                vec!["Record", "Output", "Global shortcuts", "Window"],
                 vec!["Playback", "View"],
                 vec!["Edit", "Canvas"],
             ],
@@ -520,7 +538,10 @@ mod tests {
         assert_eq!(save.default_keys.as_deref(), Some("default P"));
         let niri = &sheet.columns[0][2];
         assert_eq!(niri.rows[0].keys[0].chords, [vec!["Mod", "Shift", "R"]]);
-        assert_eq!(niri.snippet.as_ref().unwrap().text, NIRI_SNIPPET);
+        let snippet = niri.snippet.as_ref().unwrap();
+        assert_eq!(snippet.text, NIRI_SNIPPET);
+        assert_eq!(snippet.button, "Copy snippet");
+        assert_eq!(snippet.path.as_deref(), Some("~/.config/niri/config.kdl"));
         assert!(sheet.matches.is_none() && sheet.palette_tip.is_none());
         assert_eq!(
             sheet.footer,
@@ -561,7 +582,7 @@ mod tests {
 
     #[test]
     fn snapshot_s20b_search() {
-        let sheet = cheat_sheet(&resolve(""), KEYS, " trim ");
+        let sheet = sheet("", " trim ");
         insta::assert_snapshot!("cheatsheet_s20b_trim", text(&sheet));
         assert_eq!(
             sheet.matches.as_deref(),
@@ -585,17 +606,17 @@ mod tests {
         let tip = sheet.palette_tip.as_ref().unwrap();
         assert_eq!(tip.label, "To run a command by name, open the palette");
         assert_eq!(tip.keys, ["Ctrl", "K"]);
-        // Every word, anywhere in the label; the niri rows too.
-        let sheet = cheat_sheet(&resolve(""), KEYS, "end trim");
+        // Every word, anywhere in the label; the global shortcuts' rows too.
+        let sheet = self::sheet("", "end trim");
         assert_eq!(
             sheet.matches.as_deref(),
             Some("1 shortcut matches \u{201c}end trim\u{201d}")
         );
-        let sheet = cheat_sheet(&resolve(""), KEYS, "discard");
+        let sheet = self::sheet("", "discard");
         let groups: Vec<&str> = sheet.columns[0].iter().map(|g| g.title.as_str()).collect();
-        assert_eq!(groups, ["Record", NIRI_GROUP]);
+        assert_eq!(groups, ["Record", GLOBAL_GROUP]);
         assert!(sheet.columns[0][1].snippet.is_some());
-        let none = cheat_sheet(&resolve(""), KEYS, "xyzzy");
+        let none = self::sheet("", "xyzzy");
         assert_eq!(
             none.matches.as_deref(),
             Some("No shortcuts match \u{201c}xyzzy\u{201d}")
@@ -603,15 +624,93 @@ mod tests {
         assert!(none.columns[0].is_empty());
     }
 
+    /// The Global shortcuts group where Qrec runs: its rows' caps (Mod for
+    /// the compositors' own modifier, Meta on KDE Plasma, else Super), the
+    /// note, the button and the file, which a desktop whose settings take
+    /// the shortcuts has none of; the rest of the sheet is the same.
+    #[test]
+    fn snapshot_global_shortcuts_per_desktop() {
+        let keymap = resolve("");
+        let niri = cheat_sheet(&keymap, KEYS, "", &Desktop::Niri, QREC);
+        let mut out = String::new();
+        for desktop in [
+            Desktop::Niri,
+            Desktop::Sway,
+            Desktop::I3,
+            Desktop::Hyprland,
+            Desktop::River,
+            Desktop::Gnome,
+            Desktop::Kde,
+            Desktop::Xfce,
+            Desktop::Unknown,
+        ] {
+            let sheet = cheat_sheet(&keymap, KEYS, "", &desktop, QREC);
+            let global = &sheet.columns[0][2];
+            let _ = writeln!(out, "=== {}", desktop.as_str());
+            group_text(&mut out, global);
+            let snippet = global.snippet.as_ref().unwrap();
+            assert_eq!(
+                snippet.text,
+                global_snippet(&desktop, QREC).text,
+                "{desktop:?}"
+            );
+            assert_eq!(snippet.button, "Copy snippet");
+            let mut others = sheet.clone();
+            others.columns[0].remove(2);
+            let mut niri_others = niri.clone();
+            niri_others.columns[0].remove(2);
+            assert_eq!(others, niri_others, "{desktop:?}: only the group changes");
+        }
+        insta::assert_snapshot!("cheatsheet_global_per_desktop", out);
+        // A search finds the global rows whatever the desktop.
+        let gnome = cheat_sheet(&keymap, KEYS, "record over", &Desktop::Gnome, QREC);
+        let rows: Vec<&str> = gnome.columns[0]
+            .iter()
+            .flat_map(|g| g.rows.iter().map(|r| r.id.as_str()))
+            .collect();
+        assert_eq!(rows, ["record.over", "global.record-over"]);
+    }
+
+    /// From an AppImage, Copy snippet copies commands that run its path
+    /// (the doctor prints the same), not `qrec`; the rows and their keys
+    /// stay.
+    #[test]
+    fn an_appimages_snippet_runs_its_path() {
+        let keymap = resolve("");
+        let appimage = "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage";
+        for desktop in [Desktop::Niri, Desktop::Gnome, Desktop::Unknown] {
+            let sheet = cheat_sheet(&keymap, KEYS, "", &desktop, appimage);
+            let global = &sheet.columns[0][2];
+            let snippet = global.snippet.as_ref().unwrap();
+            assert_eq!(snippet.text, global_snippet(&desktop, appimage).text);
+            assert!(
+                snippet.text.contains(appimage),
+                "{desktop:?}: {}",
+                snippet.text
+            );
+            assert!(!snippet.text.contains("qrec record"), "{}", snippet.text);
+            let native = cheat_sheet(&keymap, KEYS, "", &desktop, QREC);
+            assert_eq!(global.rows, native.columns[0][2].rows, "{desktop:?}");
+        }
+        let niri = cheat_sheet(&keymap, KEYS, "", &Desktop::Niri, appimage);
+        assert!(
+            niri.columns[0][2]
+                .snippet
+                .as_ref()
+                .unwrap()
+                .text
+                .contains(&format!(
+                    "Mod+Shift+R {{ spawn \"{appimage}\" \"record\" \"toggle\"; }}"
+                ))
+        );
+    }
+
     /// Keys that run show; a conflicting one doesn't (it never runs), an
     /// unbound binding shows none and its defaults.
     #[test]
     fn rows_follow_keys_toml() {
-        let sheet = cheat_sheet(
-            &resolve(
-                "[bindings]\nautocut.run = \"x\"\nrecord.over = []\nseek.prev-frame = \"h\"\n",
-            ),
-            KEYS,
+        let sheet = sheet(
+            "[bindings]\nautocut.run = \"x\"\nrecord.over = []\nseek.prev-frame = \"h\"\n",
             "",
         );
         let all: Vec<&CheatRow> = sheet

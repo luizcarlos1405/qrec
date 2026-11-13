@@ -134,13 +134,26 @@ pub struct VideoRecord {
     deny_unknown_fields
 )]
 pub enum VideoEncoder {
-    /// The `va*h264enc` factory bound to the effective render node, CQP.
+    /// A VA-API encoder bound to the effective render node, CQP: its
+    /// `va*h264enc` factory, else its low-power `va*h264lpenc`.
     Va { factory: String, qp: u32 },
     X264 {
         pass: String,
         quantizer: u32,
         speed_preset: String,
         tune: String,
+    },
+    /// `openh264enc`, which records Constrained Baseline, at a constant `qp`
+    /// (`qp-min` = `qp-max`, which bind only under a `rate_control` other
+    /// than `off`), a `bitrate` target (bits/s) above anything that QP
+    /// needs, its `complexity`, and one slice per encoder thread (`threads`).
+    #[serde(rename = "openh264")]
+    OpenH264 {
+        rate_control: String,
+        qp: u32,
+        bitrate: u32,
+        complexity: String,
+        threads: u32,
     },
 }
 

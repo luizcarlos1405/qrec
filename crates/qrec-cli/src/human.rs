@@ -7,6 +7,7 @@
 use std::fmt::Write as _;
 
 use qrec_core::keymap::{KeyChord, Keymap};
+use qrec_core::platform::AppImage;
 use qrec_core::protocol::{
     AutocutPlanView, ClipRow, HelloInfo, HistoryRow, RecordStartedView, StatusView,
     TakeFinalizedView, TakeRow,
@@ -575,7 +576,6 @@ pub(crate) fn take_finalized(view: &TakeFinalizedView) -> Vec<String> {
     vec![format!("Clips: {}", ids.join(", "))]
 }
 
-/// `qrec sources list` from the `SourceInventory` JSON, read leniently.
 /// A camera's modes in one short line: per format its largest mode and its
 /// fastest one, largest first, at most four, then how many more there are
 /// (`--json` lists them all). A Brio reports over 300.
@@ -651,6 +651,21 @@ fn camera_modes_summary(modes: &[Value]) -> String {
     text.join(", ")
 }
 
+/// A screen's scale in two decimals at most: `2`, `1.5`, `1.25`. Under
+/// fractional scaling it is the ratio of the screen's pixels to its
+/// logical size, and wlroots floors that size (2560 px at 1.5 is 1706), so
+/// the ratio can be 1.5005861664712778: the table shows 1.5, `--json` the
+/// exact ratio.
+fn scale(value: f64) -> String {
+    let text = format!("{value:.2}");
+    text.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
+/// `qrec sources list` from the `SourceInventory` JSON, read leniently: a
+/// table per kind, and for a kind with none what discovery said about it
+/// (its `warnings`, `"<kind>: why"`: screens, cameras, audio for the mics
+/// and system audio), "none found: no Wayland (WAYLAND_DISPLAY) or X11
+/// (DISPLAY) display".
 pub(crate) fn sources(inv: &Value) -> Vec<String> {
     let s = |v: &Value, key: &str| v.get(key).and_then(Value::as_str).unwrap_or("").to_owned();
     let n = |v: &Value, key: &str| v.get(key).and_then(Value::as_u64);
@@ -660,23 +675,37 @@ pub(crate) fn sources(inv: &Value) -> Vec<String> {
             .cloned()
             .unwrap_or_default()
     };
-    let mut lines = Vec::new();
-    let mut section = |title: &str, headers: &[&str], rows: Vec<Vec<String>>| {
-        lines.push(title.to_owned());
-        if rows.is_empty() {
-            lines.push("  none found".to_owned());
-        } else {
-            lines.extend(
-                layout(headers, &rows, &[])
-                    .into_iter()
-                    .map(|l| format!("  {l}")),
-            );
-        }
+    let warnings = list("warnings");
+    let said = |kind: &str| {
+        let prefix = format!("{kind}: ");
+        warnings
+            .iter()
+            .filter_map(Value::as_str)
+            .find_map(|w| w.strip_prefix(prefix.as_str()))
+            .map(str::trim)
+            .filter(|why| !why.is_empty())
+            .map(str::to_owned)
     };
+    let mut lines = Vec::new();
+    let mut section =
+        |title: &str, why: Option<String>, headers: &[&str], rows: Vec<Vec<String>>| {
+            lines.push(title.to_owned());
+            if rows.is_empty() {
+                lines.push(match why {
+                    Some(why) => format!("  none found: {why}"),
+                    None => "  none found".to_owned(),
+                });
+            } else {
+                lines.extend(
+                    layout(headers, &rows, &[])
+                        .into_iter()
+                        .map(|l| format!("  {l}")),
+                );
+            }
+        };
     let screens = list("screens")
         .iter()
         .map(|sc| {
-            let scale = sc.get("scale").and_then(Value::as_f64).unwrap_or(1.0);
             vec![
                 s(sc, "output"),
                 format!(
@@ -689,13 +718,14 @@ pub(crate) fn sources(inv: &Value) -> Vec<String> {
                     sc.get("x").and_then(Value::as_i64).unwrap_or(0),
                     sc.get("y").and_then(Value::as_i64).unwrap_or(0)
                 ),
-                format!("{scale}"),
+                scale(sc.get("scale").and_then(Value::as_f64).unwrap_or(1.0)),
                 s(sc, "description"),
             ]
         })
         .collect();
     section(
         "Screens",
+        said("screens"),
         &["OUTPUT", "SIZE", "POSITION", "SCALE", "DESCRIPTION"],
         screens,
     );
@@ -710,7 +740,12 @@ pub(crate) fn sources(inv: &Value) -> Vec<String> {
             vec![s(cam, "device"), s(cam, "label"), modes]
         })
         .collect();
-    section("Cameras", &["DEVICE", "LABEL", "MODES"], cameras);
+    section(
+        "Cameras",
+        said("cameras"),
+        &["DEVICE", "LABEL", "MODES"],
+        cameras,
+    );
     let audio = |key: &str, default_key: &str| -> Vec<Vec<String>> {
         let default = inv
             .get(default_key)
@@ -731,25 +766,45 @@ pub(crate) fn sources(inv: &Value) -> Vec<String> {
     };
     section(
         "Mics",
+        said("audio"),
         &["NAME", "DESCRIPTION", "DEFAULT"],
         audio("mics", "defaultMic"),
     );
     section(
         "System audio",
+        said("audio"),
         &["NAME", "DESCRIPTION", "DEFAULT"],
         audio("monitors", "defaultMonitor"),
     );
     lines
 }
 
-/// `qrec doctor` from the `DoctorReport` JSON: the lines and whether a
-/// required check failed (exit 5).
+/// `qrec doctor` from the `DoctorReport` JSON: the lines and whether an
+/// app check (`required`) failed (exit 5). The session line (`session`:
+/// "Session: X11 (xfce) · screens: x11 (DISPLAY=:0)") comes first, with
+/// the AppImage Qrec runs from under it (`platform.appImage`), then
+/// the checks: a failed one is `MISSING` when the app needs it, `off` when
+/// only features do (`neededFor`) and optional otherwise; the global
+/// shortcuts for the desktop (`shortcuts`: its heading, then its text) and
+/// a line per feature that is off (`featuresOff`) come before the verdict.
 pub(crate) fn doctor(report: &Value, verbose: u8) -> (Vec<String>, bool) {
     let checks = report
         .get("checks")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let mut lines = Vec::new();
+    if let Some(session) = report.get("session").and_then(Value::as_str) {
+        lines.push(format!("Session: {session}"));
+        let app_image = report
+            .get("platform")
+            .and_then(|p| p.get("appImage"))
+            .and_then(|a| serde_json::from_value::<AppImage>(a.clone()).ok());
+        if let Some(app_image) = app_image {
+            lines.push(format!("AppImage: {}", app_image.describe()));
+        }
+        lines.push(String::new());
+    }
     let mut failed_required = false;
     let mut rows = Vec::new();
     let mut hints = Vec::new();
@@ -759,11 +814,16 @@ pub(crate) fn doctor(report: &Value, verbose: u8) -> (Vec<String>, bool) {
             .get("required")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let needed = check
+            .get("neededFor")
+            .and_then(Value::as_array)
+            .is_some_and(|features| !features.is_empty());
         failed_required |= required && !ok;
-        let status = match (ok, required) {
-            (true, _) => "ok",
-            (false, true) => "MISSING",
-            (false, false) => "missing (optional)",
+        let status = match (ok, required, needed) {
+            (true, ..) => "ok",
+            (false, true, _) => "MISSING",
+            (false, false, true) => "off",
+            (false, false, false) => "missing (optional)",
         };
         let id = check
             .get("id")
@@ -780,7 +840,7 @@ pub(crate) fn doctor(report: &Value, verbose: u8) -> (Vec<String>, bool) {
         }
         rows.push(vec![status.to_owned(), id, detail]);
     }
-    let mut lines = layout(&["STATUS", "CHECK", "DETAIL"], &rows, &[]);
+    lines.extend(layout(&["STATUS", "CHECK", "DETAIL"], &rows, &[]));
     if !hints.is_empty() {
         lines.push(String::new());
         lines.push("How to fix:".to_owned());
@@ -794,20 +854,35 @@ pub(crate) fn doctor(report: &Value, verbose: u8) -> (Vec<String>, bool) {
             None => {}
         }
     }
-    if let Some(snippet) = report.get("niriSnippet").and_then(Value::as_str) {
+    let shortcuts = report.get("shortcuts");
+    let field = |key: &str| shortcuts.and_then(|s| s.get(key)).and_then(Value::as_str);
+    if let (Some(heading), Some(text)) = (field("heading"), field("text")) {
         lines.push(String::new());
-        lines.push(
-            "Record from any app with these niri key binds (~/.config/niri/config.kdl):".to_owned(),
-        );
-        lines.extend(snippet.trim_end().lines().map(str::to_owned));
+        lines.push(heading.to_owned());
+        lines.push(String::new());
+        lines.extend(text.trim_end().lines().map(str::to_owned));
     }
     lines.push(String::new());
-    lines.push(if failed_required {
-        "Some required pieces are missing: Qrec can't record or export until they are installed."
-            .to_owned()
-    } else {
-        "Everything Qrec needs is here.".to_owned()
-    });
+    let off: Vec<String> = report
+        .get("featuresOff")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|f| f.get("message").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect();
+    let some_off = !off.is_empty();
+    lines.extend(off);
+    lines.push(
+        if failed_required {
+            "Some required pieces are missing: Qrec can't start until they are installed."
+        } else if some_off {
+            "Everything else Qrec needs is here."
+        } else {
+            "Everything Qrec needs is here."
+        }
+        .to_owned(),
+    );
     (lines, failed_required)
 }
 
@@ -936,6 +1011,45 @@ mod tests {
             "640x480@15/2 YUY2"
         );
         assert_eq!(camera_modes_summary(&[]), "");
+    }
+
+    /// A screen's scale reads as the scale that was set, not as the ratio
+    /// to a logical size wlroots floored.
+    #[test]
+    fn screen_scales_show_two_decimals_at_most() {
+        for (exact, shown) in [
+            (1.0, "1"),
+            (2.0, "2"),
+            (1.25, "1.25"),
+            (1.5, "1.5"),
+            (5.0 / 3.0, "1.67"),
+            // Sway: 2560×1440 at 1.5 (1706×960 logical), 1366×768 at 1.25
+            // (1092×614), 1920×1200 at 1.75 turned 270°, 2256×1504 at 1.1
+            // turned flipped-90.
+            (1.5005861664712778, "1.5"),
+            (1.250915750915751, "1.25"),
+            (1.750786518871963, "1.75"),
+            (1.1004878048780489, "1.1"),
+        ] {
+            assert_eq!(scale(exact), shown, "{exact}");
+        }
+        let inv = json!({
+            "screens": [
+                {"output": "HEADLESS-1", "description": "Headless output 1", "x": 0, "y": 0,
+                 "width": 2560, "height": 1440, "scale": 1.5005861664712778},
+                {"output": "HEADLESS-2", "description": "Headless output 2", "x": 1706, "y": 0,
+                 "width": 1366, "height": 768, "scale": 1.250915750915751}
+            ]
+        });
+        assert_eq!(
+            sources(&inv)[..4],
+            [
+                "Screens",
+                "  OUTPUT      SIZE       POSITION  SCALE  DESCRIPTION",
+                "  HEADLESS-1  2560x1440  0,0       1.5    Headless output 1",
+                "  HEADLESS-2  1366x768   1706,0    1.25   Headless output 2",
+            ]
+        );
     }
 
     fn history_row(seq: u64, label: &str, current: bool) -> HistoryRow {
@@ -1188,28 +1302,159 @@ mod tests {
             ]
         );
 
+        // W10: an empty kind says why when discovery did; a kind with
+        // something listed keeps its table (a camera listed without modes
+        // isn't missing).
+        let inv = json!({
+            "screens": [],
+            "cameras": [{"device": "/dev/video0", "label": "Integrated Webcam", "modes": []}],
+            "mics": [],
+            "monitors": [],
+            "defaultMic": null,
+            "defaultMonitor": null,
+            "screenBackend": "none",
+            "warnings": [
+                "screens: no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display",
+                "cameras: GStreamer's device monitor didn't answer in time; listed without modes",
+                "audio: pactl wasn't found"
+            ]
+        });
+        assert_eq!(
+            sources(&inv),
+            [
+                "Screens",
+                "  none found: no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display",
+                "Cameras",
+                "  DEVICE       LABEL              MODES",
+                "  /dev/video0  Integrated Webcam",
+                "Mics",
+                "  none found: pactl wasn't found",
+                "System audio",
+                "  none found: pactl wasn't found",
+            ]
+        );
+        // What says nothing about a kind, or nothing at all, isn't a reason.
+        let inv = json!({"warnings": ["screens:  ", "elsewhere: something"]});
+        assert_eq!(sources(&inv)[..2], ["Screens", "  none found"]);
+
+        // The session line first (W11), then the checks.
         let report = json!({
             "checks": [
-                {"id": "ffmpeg", "required": true, "ok": true, "detail": "8.1.2", "hint": null},
-                {"id": "wl-copy", "required": false, "ok": false, "detail": "not found", "hint": "install wl-clipboard"}
+                {"id": "ffmpeg", "required": true, "neededFor": ["app"], "ok": true, "detail": "8.1.2", "hint": null},
+                {"id": "portal.registry", "required": false, "neededFor": [], "ok": false,
+                 "detail": "no host app registry", "hint": "update xdg-desktop-portal to 1.19 or newer"}
             ],
-            "niriSnippet": "binds {\n}\n",
+            "featuresOff": [],
+            "platform": {"session": "wayland", "desktop": "sway", "distro": "arch",
+                         "sandbox": "none", "nixShell": false},
+            "screenBackend": "portal",
+            "session": "Wayland (sway) · screens: portal",
+            "shortcuts": {"heading": "Global shortcuts for sway (paste into ~/.config/sway/config):",
+                          "text": "bindsym $mod+Shift+r exec qrec record toggle\n"},
+            "niriSnippet": "binds {\n}",
             "va": null
         });
         let (lines, failed) = doctor(&report, 0);
         assert!(!failed);
-        assert_eq!(lines[1], "ok                  ffmpeg   8.1.2");
-        assert_eq!(lines[2], "missing (optional)  wl-copy  not found");
+        assert_eq!(
+            lines[..5],
+            [
+                "Session: Wayland (sway) · screens: portal",
+                "",
+                "STATUS              CHECK            DETAIL",
+                "ok                  ffmpeg           8.1.2",
+                "missing (optional)  portal.registry  no host app registry",
+            ]
+        );
         assert!(
-            lines.contains(&"  wl-copy: install wl-clipboard".to_owned()),
+            lines.contains(
+                &"  portal.registry: update xdg-desktop-portal to 1.19 or newer".to_owned()
+            ),
             "{lines:?}"
         );
-        assert!(lines.contains(&"binds {".to_owned()), "{lines:?}");
-        assert_eq!(lines.last().unwrap(), "Everything Qrec needs is here.");
-        let missing = json!({"checks": [{"id": "ffmpeg", "required": true, "ok": false, "detail": "not found"}]});
+        // The desktop's shortcuts, not niri's.
+        assert_eq!(
+            &lines[lines.len() - 6..],
+            [
+                "",
+                "Global shortcuts for sway (paste into ~/.config/sway/config):",
+                "",
+                "bindsym $mod+Shift+r exec qrec record toggle",
+                "",
+                "Everything Qrec needs is here."
+            ]
+        );
+        assert!(!lines.iter().any(|l| l.contains("binds {")), "{lines:?}");
+        let missing = json!({"checks": [{"id": "ffmpeg", "required": true, "neededFor": ["app"], "ok": false, "detail": "not found"}]});
         let (lines, failed) = doctor(&missing, 0);
         assert!(failed);
         assert!(lines[1].starts_with("MISSING"), "{lines:?}");
+        assert_eq!(
+            lines.last().unwrap(),
+            "Some required pieces are missing: Qrec can't start until they are installed."
+        );
+
+        // Only features off: exit 0, a line each, and no claim that Qrec
+        // can't record or export. (An X server out of reach: no screens.)
+        let screens_off = json!({
+            "checks": [
+                {"id": "ffmpeg", "required": true, "neededFor": ["app"], "ok": true, "detail": "8.1.2", "hint": null},
+                {"id": "x11.randr", "required": false, "neededFor": ["screens"], "ok": false,
+                 "detail": "X11 (DISPLAY=:0): can't connect: no X server listens there",
+                 "hint": "check that DISPLAY=:0 names a running X server"}
+            ],
+            "featuresOff": [{"feature": "screens", "checks": ["x11.randr"],
+                             "message": "Screen capture is off: X11 (DISPLAY=:0): can't connect: no X server listens there"}],
+            "session": "X11 (xfce) · screens: x11 (DISPLAY=:0)",
+            "va": null
+        });
+        let (lines, failed) = doctor(&screens_off, 0);
+        assert!(!failed);
+        assert_eq!(lines[0], "Session: X11 (xfce) · screens: x11 (DISPLAY=:0)");
+        assert_eq!(
+            lines[4],
+            "off     x11.randr  X11 (DISPLAY=:0): can't connect: no X server listens there"
+        );
+        assert!(
+            lines.contains(
+                &"  x11.randr: check that DISPLAY=:0 names a running X server".to_owned()
+            ),
+            "{lines:?}"
+        );
+        assert_eq!(
+            &lines[lines.len() - 2..],
+            [
+                "Screen capture is off: X11 (DISPLAY=:0): can't connect: no X server listens there",
+                "Everything else Qrec needs is here."
+            ]
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("can't record")),
+            "{lines:?}"
+        );
+
+        // From an AppImage: its line under the session's.
+        let appimage = json!({
+            "checks": [
+                {"id": "ffmpeg", "required": true, "neededFor": ["app"], "ok": true,
+                 "detail": "ffmpeg version n9.0.2 (/tmp/.mount_QrecAbC123/bin/ffmpeg)", "hint": null}
+            ],
+            "featuresOff": [],
+            "platform": {"session": "wayland", "desktop": "gnome", "distro": "ubuntu",
+                         "sandbox": "none", "nixShell": false,
+                         "appImage": {"path": "/home/me/Qrec.AppImage", "dir": "/tmp/.mount_QrecAbC123"}},
+            "session": "Wayland (gnome) · screens: portal",
+            "va": null
+        });
+        let (lines, _) = doctor(&appimage, 0);
+        assert_eq!(
+            lines[..3],
+            [
+                "Session: Wayland (gnome) · screens: portal",
+                "AppImage: /home/me/Qrec.AppImage (APPDIR=/tmp/.mount_QrecAbC123)",
+                "",
+            ]
+        );
     }
 
     #[test]

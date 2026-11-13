@@ -1,0 +1,115 @@
+---
+source: crates/qrec-shell/src/doctor.rs
+expression: out
+---
+=== dev box: Arrow Lake and NVIDIA, NixOS
+ok gst.vah264enc: vah264enc records on /dev/dri/renderD129
+ok vaapi: /dev/dri/renderD129 (Intel, auto) · LIBVA_DRIVER_NAME=iHD · ffmpeg h264_vaapi works
+VA-API render nodes: /dev/dri/renderD128 (NVIDIA 0x2db8), /dev/dri/renderD129 (Intel 0x7d51)
+  libva driver iHD: /run/opengl-driver/lib/dri/iHD_drv_video.so
+  set LIBVA_DRIVER_NAME=iHD (was nvidia)
+
+=== Haswell with i965, Debian
+ok gst.vah264enc: GStreamer's VA plugin doesn't encode with i965, the only VA-API driver of this Intel GPU: recordings use x264 on the CPU
+ok vaapi: /dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=i965 · ffmpeg h264_vaapi works
+VA-API render nodes: /dev/dri/renderD128 (Intel 0x0416)
+  libva driver i965: /usr/lib/x86_64-linux-gnu/dri/i965_drv_video.so
+
+=== Haswell without i965, Fedora
+ok gst.vah264enc: GStreamer's VA plugin doesn't encode with i965, the only VA-API driver of this Intel GPU: recordings use x264 on the CPU
+optional vaapi: /dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=i965 · ffmpeg h264_vaapi failed · i965 isn't installed
+  → install Intel's i965 VA-API driver (for chips older than Broadwell) with dnf; exports use libx264 meanwhile
+VA-API render nodes: /dev/dri/renderD128 (Intel 0x0416)
+  libva driver i965: not installed (libva looks in /usr/lib64/dri)
+  the h264_vaapi check failed: ffmpeg exited with status 1
+
+=== Tiger Lake without a VA driver, Debian
+optional gst.vah264enc: no VA-API H.264 encoder: recordings use x264 on the CPU
+  → install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with apt; if GStreamer still has no VA encoder: install GStreamer's VA plugin (upstream gst-plugins-bad) with apt
+optional vaapi: /dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=iHD · ffmpeg h264_vaapi failed · iHD isn't installed
+  → install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with apt; exports use libx264 meanwhile
+VA-API render nodes: /dev/dri/renderD128 (Intel 0x9a49)
+  libva driver iHD: not installed (libva looks in /usr/lib/x86_64-linux-gnu/dri)
+  the h264_vaapi check failed: ffmpeg exited with status 1
+
+=== Tiger Lake without a VA driver, the window's doctor (unprobed)
+optional gst.vah264enc: no VA-API H.264 encoder: recordings use x264 on the CPU
+  → install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with apt; if GStreamer still has no VA encoder: install GStreamer's VA plugin (upstream gst-plugins-bad) with apt
+optional vaapi: /dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=iHD · iHD isn't installed
+  → install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with apt; exports use libx264 meanwhile
+VA-API render nodes: /dev/dri/renderD128 (Intel 0x9a49)
+  libva driver iHD: not installed (libva looks in /usr/lib/x86_64-linux-gnu/dri)
+
+=== Cherry View, which iHD doesn't drive, Ubuntu
+ok gst.vah264enc: GStreamer's VA plugin doesn't encode with i965, the only VA-API driver of this Intel GPU: recordings use x264 on the CPU
+ok vaapi: /dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=i965 · ffmpeg h264_vaapi works
+VA-API render nodes: /dev/dri/renderD128 (Intel 0x22b0)
+  libva driver i965: /usr/lib/x86_64-linux-gnu/dri/i965_drv_video.so
+
+=== Kaby Lake whose free iHD encodes nothing, i965 exports, Ubuntu
+optional gst.vah264enc: no VA-API H.264 encoder: recordings use x264 on the CPU
+  → install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with apt; if GStreamer still has no VA encoder: install GStreamer's VA plugin (upstream gst-plugins-bad) with apt
+ok vaapi: /dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=iHD · ffmpeg h264_vaapi works with i965, which exports load (iHD fails)
+VA-API render nodes: /dev/dri/renderD128 (Intel 0x5916)
+  libva driver iHD: /usr/lib/x86_64-linux-gnu/dri/iHD_drv_video.so
+  the h264_vaapi check failed with iHD: ffmpeg exited with status 1; it passed with i965, which exports load
+
+=== Kaby Lake with only i965, Debian
+optional gst.vah264enc: GStreamer's VA plugin doesn't encode with i965: recordings use x264 on the CPU
+  → install Intel's iHD VA-API driver (chips older than Broadwell need the i965 one instead) with apt; if GStreamer still has no VA encoder: install GStreamer's VA plugin (upstream gst-plugins-bad) with apt
+ok vaapi: /dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=i965 · ffmpeg h264_vaapi works
+VA-API render nodes: /dev/dri/renderD128 (Intel 0x5916)
+  libva driver i965: /usr/lib/x86_64-linux-gnu/dri/i965_drv_video.so
+
+=== Kaby Lake with the user's LIBVA_DRIVER_NAME=i965, Arch
+optional gst.vah264enc: GStreamer's VA plugin doesn't encode with i965: recordings use x264 on the CPU
+  → unset LIBVA_DRIVER_NAME=i965: Qrec then loads iHD, which GStreamer records with
+ok vaapi: /dev/dri/renderD128 (Intel, auto) · LIBVA_DRIVER_NAME=i965 · ffmpeg h264_vaapi works
+VA-API render nodes: /dev/dri/renderD128 (Intel 0x5916)
+  libva driver i965: /usr/lib/dri/i965_drv_video.so
+
+=== NVIDIA configured on the dev box
+ok gst.vah264enc: /dev/dri/renderD128 is NVIDIA's, which has no VA-API encoder: recordings use x264 on the CPU
+optional vaapi: /dev/dri/renderD128 (NVIDIA, config) · LIBVA_DRIVER_NAME=iHD
+  → NVIDIA has no VA-API encoder: set encoder.vaapi_device in /home/me/.config/qrec/config.toml to an Intel or AMD render node, or remove it (Qrec then takes the first one)
+VA-API render nodes: /dev/dri/renderD128 (NVIDIA 0x2db8), /dev/dri/renderD129 (Intel 0x7d51)
+  set LIBVA_DRIVER_NAME=iHD (was nvidia)
+  /dev/dri/renderD128 isn't probed: NVIDIA has no VA-API encoder (and VA-API on it can hang)
+
+=== a configured path that isn't a render node
+ok gst.vah264enc: /nonexistent/renderD999 isn't a render node of this machine: recordings use x264 on the CPU
+optional vaapi: /nonexistent/renderD999 (unknown, config) · LIBVA_DRIVER_NAME=iHD
+  → set encoder.vaapi_device in /home/me/.config/qrec/config.toml to an Intel or AMD render node, or remove it (Qrec then takes the first one)
+VA-API render nodes: /dev/dri/renderD128 (NVIDIA 0x2db8), /dev/dri/renderD129 (Intel 0x7d51)
+  set LIBVA_DRIVER_NAME=iHD (was nvidia)
+  /nonexistent/renderD999 is not a render node of this machine
+
+=== NVIDIA only, Ubuntu
+ok gst.vah264enc: no Intel or AMD GPU: recordings use x264 on the CPU
+ok vaapi: no Intel or AMD GPU (/dev/dri/renderD128: NVIDIA, which has no VA-API encoder): recordings and exports use x264 on the CPU
+VA-API render nodes: /dev/dri/renderD128 (NVIDIA 0x2db8)
+
+=== virtio-gpu, a KVM guest
+ok gst.vah264enc: no Intel or AMD GPU: recordings use x264 on the CPU
+ok vaapi: no Intel or AMD GPU (/dev/dri/renderD128: virtio-gpu, a virtual machine's GPU): recordings and exports use x264 on the CPU
+VA-API render nodes: /dev/dri/renderD128 (virtio-gpu 0x0010)
+
+=== VMware SVGA, a VMware guest
+ok gst.vah264enc: no Intel or AMD GPU: recordings use x264 on the CPU
+ok vaapi: no Intel or AMD GPU (/dev/dri/renderD128: VMware, a virtual machine's GPU): recordings and exports use x264 on the CPU
+VA-API render nodes: /dev/dri/renderD128 (VMware 0x0405)
+
+=== QXL, a QEMU guest
+ok gst.vah264enc: no Intel or AMD GPU: recordings use x264 on the CPU
+ok vaapi: no Intel or AMD GPU (/dev/dri/renderD128: QXL, a virtual machine's GPU): recordings and exports use x264 on the CPU
+VA-API render nodes: /dev/dri/renderD128 (QXL 0x0100)
+
+=== an Arm board's GPU, not on PCI
+ok gst.vah264enc: no Intel or AMD GPU: recordings use x264 on the CPU
+ok vaapi: no Intel or AMD GPU (/dev/dri/renderD128: panfrost, not on PCI): recordings and exports use x264 on the CPU
+VA-API render nodes: /dev/dri/renderD128 (unknown vendor)
+
+=== no GPU render node
+ok gst.vah264enc: no Intel or AMD GPU: recordings use x264 on the CPU
+ok vaapi: no GPU render node (a virtual machine without 3D acceleration, or no GPU driver): recordings and exports use x264 on the CPU
+VA-API render nodes: none

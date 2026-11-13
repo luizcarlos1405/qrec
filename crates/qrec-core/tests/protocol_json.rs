@@ -886,6 +886,30 @@ fn effects_round_trip() {
     }
 }
 
+/// Capabilities from before the encoder chain (no `gstH264`, no
+/// `gstH264LpFactory`) still load: neither is known then.
+#[test]
+fn capabilities_without_the_encoder_chain_load() {
+    let old = json!({
+        "ffmpeg": {"version": "8.1.2", "identity": "/usr/bin/ffmpeg", "encoders": ["libx264"]},
+        "ffprobe": "/usr/bin/ffprobe",
+        "vaapi": {
+            "device": "/dev/dri/renderD129",
+            "vendor": 0x8086,
+            "ffmpegH264": true,
+            "gstH264Factory": "vah264enc"
+        },
+        "cores": 16
+    });
+    let caps: Capabilities = serde_json::from_value(old).unwrap();
+    assert_eq!(caps.gst_h264, None);
+    let va = caps.vaapi.unwrap();
+    assert_eq!(
+        (va.gst_h264_factory.as_deref(), va.gst_h264_lp_factory),
+        (Some("vah264enc"), None)
+    );
+}
+
 #[test]
 fn events_round_trip() {
     let caps = Capabilities {
@@ -900,6 +924,11 @@ fn events_round_trip() {
             vendor: 0x8086,
             ffmpeg_h264: true,
             gst_h264_factory: Some("varenderD129h264enc".into()),
+            gst_h264_lp_factory: Some("varenderD129h264lpenc".into()),
+        }),
+        gst_h264: Some(GstH264Caps {
+            x264: true,
+            openh264: false,
         }),
         cores: 16,
     };
@@ -1213,6 +1242,13 @@ fn views_and_plans_round_trip() {
         quantizer: 18,
         speed_preset: "veryfast".into(),
         tune: "zerolatency".into(),
+    });
+    round_trip(&VideoEncoder::OpenH264 {
+        rate_control: "quality".into(),
+        qp: 22,
+        bitrate: 100_000_000,
+        complexity: "low".into(),
+        threads: 4,
     });
     round_trip(&AutocutPlanView {
         clips: vec![AutocutClipView {

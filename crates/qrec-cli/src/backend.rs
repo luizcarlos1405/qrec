@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use qrec_core::CoreError;
 use qrec_core::new_project::NewProjectPath;
+use qrec_core::platform::Desktop;
 use qrec_core::protocol::{HelloInfo, Progress, Toast, WireBody};
 use serde_json::Value;
 
@@ -181,8 +182,22 @@ pub trait Backend {
     ) -> Finish;
 
     /// `qrec doctor` (A§8.12): the `DoctorReport` as JSON
-    /// (`{checks:[{id,required,ok,detail,hint}], niriSnippet, va}`).
+    /// (`{checks:[{id,required,neededFor,ok,detail,hint,fix}], featuresOff,
+    /// platform, screenBackend, session, shortcuts, niriSnippet, va}`).
     fn doctor(&mut self) -> Result<Value, CoreError>;
+
+    /// The desktop Qrec runs on, as detected at startup: the agent guide
+    /// gives its global shortcuts. Default: unknown (a build without the
+    /// shell), which gets the generic list.
+    fn desktop(&mut self) -> Desktop {
+        Desktop::Unknown
+    }
+
+    /// What those shortcuts run: `qrec`, or the AppImage's path when Qrec
+    /// runs from one (`HostPlatform::program`). Default: `qrec`.
+    fn program(&mut self) -> String {
+        qrec_core::platform::QREC.to_owned()
+    }
 
     /// `qrec sources list` (A§8.12): the `SourceInventory` as JSON
     /// (`{screens, cameras, mics, monitors, defaultMic, defaultMonitor}`).

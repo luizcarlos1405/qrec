@@ -2,14 +2,16 @@
 //!
 //! Hand-written prose around tables generated from the code: exit codes
 //! from [`ErrorCode`], the key ↔ CLI table from the default keymap, the
-//! settings from `config::KEYS` and the compositor binds from
-//! `keymap::NIRI_SNIPPET`, so the guide can't drift from them.
+//! settings from `config::KEYS` and the global shortcuts for the desktop
+//! the guide is printed on from `keymap::global_snippet`, so the guide
+//! can't drift from them.
 
 use std::fmt::Write as _;
 
 use crate::config;
 use crate::error::{ErrorCode, NOT_MY_SWAMP};
 use crate::keymap;
+use crate::platform::Desktop;
 
 /// Every error code, in exit-code order.
 const CODES: [ErrorCode; 12] = [
@@ -101,7 +103,7 @@ the same commands, and every edit is undoable. Always pass `--json`.
 - Inside a project's subfolder, commands exit 3 (`not_project`) and name the
   project: pass `--project DIR` or run them there.
 - Elsewhere, without `--project`, commands use the single running Qrec (so
-  compositor key binds work from `$HOME`; several running ones are a usage
+  global shortcuts work from `$HOME`; several running ones are a usage
   error that lists them), except `qrec init`, which only acts on its own
   folder. With none running they exit 3 with
 ";
@@ -246,8 +248,10 @@ Pass `--yes` only when that loss is intended:
   `seek`, `play` and `pause` need the GUI.
 ";
 
-/// The guide text (Markdown).
-pub fn agent_guide() -> String {
+/// The guide text (Markdown), its global shortcuts for `desktop` (where
+/// Qrec runs), run by `program` (`qrec`, or the AppImage's path:
+/// `HostPlatform::program`).
+pub fn agent_guide(desktop: &Desktop, program: &str) -> String {
     let mut out = String::new();
     out.push_str(INTRO);
     let _ = writeln!(out, "  \"{NOT_MY_SWAMP}\".");
@@ -262,13 +266,14 @@ pub fn agent_guide() -> String {
         );
     }
     out.push_str(BODY);
-    out.push_str(&key_table());
+    out.push_str(&key_table(desktop, program));
     out.push_str(&settings());
     out
 }
 
-/// "Keys and their CLI form", from the default keymap.
-fn key_table() -> String {
+/// "Keys and their CLI form", from the default keymap, then the global
+/// shortcuts for `desktop`, run by `program`.
+fn key_table(desktop: &Desktop, program: &str) -> String {
     let map = keymap::resolve("");
     let mut out = String::from(
         "
@@ -307,17 +312,20 @@ Some keys only act on the window and have no CLI form:
             let _ = writeln!(out, "| {} | {} |", keys.join(" "), b.label);
         }
     }
+    let global = keymap::global_snippet(desktop, program);
     let _ = write!(
         out,
         "
-Global binds for recording while another app has focus (niri; `qrec doctor`
-prints them too):
+To record while another app has focus, bind the commands to global keys
+(`qrec doctor` prints how for the desktop it runs on).
 
-```kdl
+{}
+
+```{}
 {}
 ```
 ",
-        keymap::NIRI_SNIPPET
+        global.heading, global.language, global.text
     );
     out
 }
@@ -343,10 +351,11 @@ They are per user: defaults for new projects, the encoder and the GUI:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::QREC;
 
     #[test]
     fn every_error_code_is_listed_once() {
-        let guide = agent_guide();
+        let guide = agent_guide(&Desktop::Niri, QREC);
         for code in CODES {
             let row = format!("| {} | `{}` |", code.exit_code(), code.as_str());
             assert_eq!(guide.matches(&row).count(), 1, "{row}");
@@ -360,7 +369,7 @@ mod tests {
 
     #[test]
     fn the_tables_come_from_the_code() {
-        let guide = agent_guide();
+        let guide = agent_guide(&Desktop::Niri, QREC);
         let map = keymap::resolve("");
         for id in KEY_TABLE {
             let b = map.binding(id).unwrap_or_else(|| panic!("no binding {id}"));
@@ -413,24 +422,85 @@ mod tests {
             "version",
             "completions",
         ];
-        let guide = agent_guide();
-        for (i, _) in guide.match_indices("qrec ") {
-            let word: String = guide[i + 5..]
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
-                .collect();
-            if word.is_empty() {
-                continue;
+        // The global shortcuts' commands too, on niri (quoted word by word)
+        // and in the generic list.
+        for desktop in [Desktop::Niri, Desktop::Unknown] {
+            let guide = agent_guide(&desktop, QREC);
+            for (i, _) in guide.match_indices("qrec ") {
+                let word: String = guide[i + 5..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                    .collect();
+                if word.is_empty() {
+                    continue;
+                }
+                assert!(
+                    COMMANDS.contains(&word.as_str()),
+                    "unknown command `qrec {word}`"
+                );
             }
+        }
+    }
+
+    /// niri's KDL on niri only: every desktop gets its own snippet, the
+    /// generic list where Qrec has none.
+    #[test]
+    fn the_global_shortcuts_follow_the_desktop() {
+        let niri = agent_guide(&Desktop::Niri, QREC);
+        assert!(
+            niri.contains(&format!("```kdl\n{}\n```", keymap::NIRI_SNIPPET)),
+            "{niri}"
+        );
+        for desktop in [
+            Desktop::Gnome,
+            Desktop::Kde,
+            Desktop::Sway,
+            Desktop::I3,
+            Desktop::Hyprland,
+            Desktop::River,
+            Desktop::Xfce,
+            Desktop::Unknown,
+        ] {
+            let guide = agent_guide(&desktop, QREC);
+            let global = keymap::global_snippet(&desktop, QREC);
+            assert!(!guide.contains(keymap::NIRI_SNIPPET), "{desktop:?}");
+            assert!(!guide.contains("```kdl"), "{desktop:?}");
             assert!(
-                COMMANDS.contains(&word.as_str()),
-                "unknown command `qrec {word}`"
+                guide.contains(&format!(
+                    "{}\n\n```{}\n{}\n```",
+                    global.heading, global.language, global.text
+                )),
+                "{desktop:?}: {guide}"
             );
         }
+        let gnome = agent_guide(&Desktop::Gnome, QREC);
+        assert!(
+            gnome.contains("GNOME Settings \u{203a} Keyboard"),
+            "{gnome}"
+        );
+        assert!(gnome.contains("Super+Shift+R"), "{gnome}");
+    }
+
+    /// From an AppImage the guide's shortcuts run its path, as the
+    /// doctor's and the cheat sheet's do.
+    #[test]
+    fn an_appimages_shortcuts_run_its_path() {
+        let appimage = "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage";
+        let guide = agent_guide(&Desktop::Sway, appimage);
+        assert!(
+            guide.contains(&format!(
+                "bindsym $mod+Shift+r exec {appimage} record toggle"
+            )),
+            "{guide}"
+        );
+        assert_eq!(
+            guide.replace(appimage, QREC),
+            agent_guide(&Desktop::Sway, QREC)
+        );
     }
 
     #[test]
     fn snapshot_agent_guide() {
-        insta::assert_snapshot!("agent_guide", agent_guide());
+        insta::assert_snapshot!("agent_guide", agent_guide(&Desktop::Niri, QREC));
     }
 }

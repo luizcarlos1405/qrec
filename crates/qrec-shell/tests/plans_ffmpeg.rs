@@ -740,6 +740,7 @@ fn capabilities() -> Capabilities {
         }),
         ffprobe: Some("ffprobe (PATH)".to_owned()),
         vaapi: None,
+        gst_h264: None,
         cores: 4,
     }
 }
@@ -751,6 +752,7 @@ fn options(format: ExportFormat, codec: VideoCodec, quality: Quality, out: &str)
         codec,
         out: out.to_owned(),
         allow_vaapi: false,
+        x264_only: false,
     }
 }
 
@@ -1551,7 +1553,9 @@ fn pcm(cwd: &Path, file: &str) -> Vec<[i16; 2]> {
         "-i", &format!("file:{file}"), "-map", "0:a:0",
         "-c:a", "pcm_s16le", "-ac", "2", "-ar", "48000", "-f", "s16le", "-",
     ]);
-    raw.chunks_exact(4)
+    raw.as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| {
             [
                 i16::from_le_bytes([c[0], c[1]]),

@@ -1,5 +1,5 @@
 {
-  description = "Qrec - quick Wayland screen and camera recorder (press R, talk, press R)";
+  description = "Qrec - quick screen and camera recorder for Linux (press R, talk, press R)";
 
   inputs = {
     # Pinned to the same revision as the dev machine's system so most of the
@@ -207,7 +207,7 @@
                 base = baseNameOf path;
                 relative = pkgs.lib.removePrefix (toString ./. + "/") (toString path);
               in
-              !(builtins.elem base [ "target" "result" ".direnv" ".claude" "design" "tmp" ])
+              !(builtins.elem base [ "target" "result" ".direnv" ".claude" ".github" "design" "tmp" "packaging" ])
               # Not part of the build, so editing them doesn't rebuild the
               # package: the docs, and the tests of every crate but the
               # core's (the sandbox runs only qrec-core's).
@@ -227,6 +227,7 @@
             makeWrapper
             glib # glib-compile-resources (qrec-gui's build.rs)
             desktop-file-utils # desktop-file-validate
+            appstream # appstreamcli validate (the metainfo)
           ];
           buildInputs = (linkLibs pkgs) ++ (guiData pkgs);
           # Integration tests need a session bus, devices and ffmpeg; run the
@@ -247,6 +248,7 @@
             chmod -R u+w $out/share
             sh data/install.sh $out
             desktop-file-validate $out/share/applications/com.rsensato.qrec.desktop
+            appstreamcli validate --no-net $out/share/metainfo/com.rsensato.qrec.metainfo.xml
           '';
           # The runtime tools, and the icon themes (GTK's and libadwaita's
           # own icons, the app icon's hicolor; Qrec's symbolic icons are in
@@ -276,13 +278,15 @@
             gappsWrapperArgs=("''${wrapped[@]}" --unset GST_PLUGIN_PATH_1_0)
           '';
           meta = {
-            description = "Quick Wayland screen and camera recorder with a built-in editor";
+            description = "Quick screen and camera recorder with a built-in editor";
+            homepage = "https://github.com/luizcarlos1405/qrec";
+            license = pkgs.lib.licenses.mit;
             mainProgram = "qrec";
             platforms = pkgs.lib.platforms.linux;
           };
         };
       });
 
-      formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);
+      formatter = forAllSystems (pkgs: pkgs.nixfmt);
     };
 }

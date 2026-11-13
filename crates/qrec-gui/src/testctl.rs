@@ -1053,7 +1053,7 @@ fn icons(app: &App) -> Value {
             .and_then(|node| render(app, &node, 16.0, 16.0))
             .unwrap_or_default();
         let (mut drawn, mut off_color) = (0, 0);
-        for px in pixels.chunks_exact(4) {
+        for px in pixels.as_chunks::<4>().0 {
             if px[3] > 128 {
                 drawn += 1;
                 // The magenta probe, unpremultiplied: full red and blue, no
@@ -1109,7 +1109,12 @@ fn art(app: &App, request: &Value) -> Value {
                 .unwrap_or_default()
         };
         let pixels = draw(1);
-        let drawn = pixels.chunks_exact(4).filter(|px| px[3] > 0).count();
+        let drawn = pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|px| px[3] > 0)
+            .count();
         let errors = svg.errors();
         all &= w > 0 && h > 0 && drawn > 0 && errors == 0;
         out.push(json!({

@@ -5,7 +5,8 @@
 //! scalable SVG and the pen's own hicolor PNGs in `data/icons/`, which
 //! `tests/art.rs` writes from the export; the symbolic icon is the REC
 //! glyph. The package's build also runs `desktop-file-validate` on the
-//! entry (`flake.nix`).
+//! entry and `appstreamcli validate` on the AppStream metainfo
+//! (`flake.nix`); `install.sh` installs both, and Qrec's license.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -67,6 +68,27 @@ fn the_desktop_entry_names_the_app() {
     for (key, value) in &entry {
         assert!(!value.trim().is_empty(), "{key} is empty");
     }
+}
+
+/// The AppStream metainfo (software centers, the AppImage) is the app id's,
+/// launches its desktop entry and states the workspace's license.
+#[test]
+fn the_metainfo_names_the_app() {
+    let path = repo().join(format!("data/{APP_ID}.metainfo.xml"));
+    let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    for wanted in [
+        format!("<id>{APP_ID}</id>"),
+        format!("<launchable type=\"desktop-id\">{APP_ID}.desktop</launchable>"),
+        "<project_license>MIT</project_license>".to_owned(),
+        "<binary>qrec</binary>".to_owned(),
+    ] {
+        assert!(text.contains(&wanted), "{}: no {wanted}", path.display());
+    }
+    let cargo = fs::read_to_string(repo().join("Cargo.toml")).expect("the workspace manifest");
+    assert!(
+        cargo.contains("license = \"MIT\""),
+        "the metainfo's project_license is the workspace's"
+    );
 }
 
 /// A PNG's width and height (its IHDR).
@@ -172,6 +194,15 @@ fn install_sh_installs_the_pens_app_icon() {
         )
         .expect("the REC glyph"),
         "the app's symbolic icon is the REC glyph"
+    );
+    let metainfo = share.join(format!("metainfo/{APP_ID}.metainfo.xml"));
+    assert_eq!(
+        fs::read(&metainfo).expect("the installed metainfo"),
+        fs::read(repo().join(format!("data/{APP_ID}.metainfo.xml"))).expect("the metainfo")
+    );
+    assert_eq!(
+        fs::read(share.join("licenses/qrec/LICENSE")).expect("Qrec's installed license"),
+        fs::read(repo().join("LICENSE")).expect("Qrec's license")
     );
     let license = share.join("licenses/qrec/LICENSE-lucide.txt");
     let text = fs::read_to_string(&license).expect("the Lucide license");

@@ -1,8 +1,11 @@
 //! Source discovery (A§8.12, `SourceInventory`). Owner: media.
 //!
-//! - Screens: `wl_output` v4 `name`/`description` + geometry, current mode
-//!   and scale, read without blocking past a 2 s deadline; fallback
-//!   `niri msg --json outputs` (3 s).
+//! - Screens, from the session's [`ScreenBackend`]: under the portal,
+//!   `wl_output` v4 `name`/`description` + geometry, current mode and
+//!   scale, read without blocking past a 2 s deadline, else `niri msg
+//!   --json outputs` (3 s); on X11, the X server's RandR monitors within
+//!   2 s (`sources/x11.rs`; `niri msg` never runs there); without a
+//!   display, none.
 //! - Cameras: GStreamer's `DeviceMonitor` (`Video/Source`, no capture) under
 //!   the GStreamer init watchdog when the `gst` feature is on; otherwise, or
 //!   when that fails, `/sys/class/video4linux` (names only, no modes).
@@ -24,17 +27,24 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use qrec_core::ctx::{AudioDeviceInfo, CameraInfo, CameraMode, ScreenInfo};
+use qrec_core::ctx::{AudioDeviceInfo, CameraInfo, CameraMode, ScreenBackendKind, ScreenInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::capture::ScreenBackend;
 use crate::media::{ChildSpec, ChildStderr, ChildStdout, run_child};
+use crate::platform::Desktop;
+
+pub(crate) mod x11;
 
 /// Selects the capture backend: `fake` uses test sources (A§8.11).
 pub const BACKEND_ENV: &str = "QREC_CAPTURE_BACKEND";
 
 /// How long the Wayland output listing may take.
 pub const WAYLAND_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long the X server may take to list its monitors (as Wayland).
+pub const X11_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// `pactl` and `niri msg` (A§8.7).
 pub const TOOL_TIMEOUT: Duration = Duration::from_secs(3);
@@ -60,7 +70,15 @@ pub struct SourceInventory {
     pub default_mic: Option<String>,
     /// The source name of the default sink's monitor.
     pub default_monitor: Option<String>,
-    /// What couldn't be discovered and why (e.g. "pactl wasn't found").
+    /// How the screens are listed and recorded: the session's
+    /// [`ScreenBackend`] (`portal`, `x11` or `none`); the portal's under
+    /// the fake backend, whose screens go through a fake portal. The first
+    /// run's caption follows it.
+    #[serde(default)]
+    pub screen_backend: ScreenBackendKind,
+    /// What couldn't be discovered and why, as `"<kind>: why"` with the
+    /// kind `screens`, `cameras` or `audio` (`"audio: pactl wasn't
+    /// found"`; [`warning`](Self::warning)).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     /// Inputs that are neither mics nor monitors (`bluez_input.*`,
@@ -107,15 +125,20 @@ pub fn fake_backend() -> bool {
 
 impl SourceInventory {
     /// Discovers what `what` asks for: the fake inventory under
-    /// `QREC_CAPTURE_BACKEND=fake`, else the real devices. Never fails:
-    /// problems become `warnings` and empty lists.
+    /// `QREC_CAPTURE_BACKEND=fake`, else the real devices (the screens of
+    /// the session's [`ScreenBackend`]). Never fails: problems become
+    /// `warnings` and empty lists.
     pub fn discover(what: Discover) -> Self {
         if fake_backend() {
             return Self::fake_of(crate::capture::FakeInventoryKind::from_env()).only(what);
         }
-        let mut inventory = SourceInventory::default();
+        let backend = ScreenBackend::from_env();
+        let mut inventory = SourceInventory {
+            screen_backend: backend_kind(&backend),
+            ..SourceInventory::default()
+        };
         if what.screens {
-            match discover_screens() {
+            match discover_screens(&backend) {
                 Ok(screens) => inventory.screens = screens,
                 Err(e) => inventory.warnings.push(format!("screens: {e}")),
             }
@@ -165,12 +188,14 @@ impl SourceInventory {
             monitors: fake.monitors,
             default_mic: fake.default_mic,
             default_monitor: fake.default_monitor,
-            warnings: Vec::new(),
+            // The fake screens go through the (fake) portal's path.
+            screen_backend: ScreenBackendKind::Portal,
+            warnings: fake.warnings,
             other_inputs: Vec::new(),
         }
     }
 
-    /// Keeps only the kinds `what` asks for.
+    /// Keeps only the kinds `what` asks for, and what was said about them.
     fn only(mut self, what: Discover) -> Self {
         if !what.screens {
             self.screens.clear();
@@ -185,7 +210,27 @@ impl SourceInventory {
             self.default_mic = None;
             self.default_monitor = None;
         }
+        let asked = [
+            ("screens", what.screens),
+            ("cameras", what.cameras),
+            ("audio", what.audio),
+        ];
+        self.warnings.retain(|warning| {
+            asked
+                .iter()
+                .any(|(kind, wanted)| *wanted && warning.starts_with(&format!("{kind}: ")))
+        });
         self
+    }
+
+    /// What discovery said about `kind` (`screens`, `cameras` or `audio`):
+    /// its warning without the `"<kind>: "` prefix, e.g. why it found no
+    /// screens (`no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display`).
+    pub fn warning(&self, kind: &str) -> Option<&str> {
+        let prefix = format!("{kind}: ");
+        self.warnings
+            .iter()
+            .find_map(|warning| warning.strip_prefix(prefix.as_str()))
     }
 
     /// The inventory as JSON (camelCase), e.g. for `qrec sources list --json`.
@@ -241,7 +286,8 @@ impl crate::capture::DeviceInfo for SourceInventory {
 }
 
 /// The capture engine's device facts, discovered when asked (screens can
-/// come and go between takes); the fake inventory under the fake backend.
+/// come and go between takes) from the session's [`ScreenBackend`]; the
+/// fake inventory under the fake backend.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LiveDevices;
 
@@ -289,21 +335,127 @@ fn run_tool(argv: &[&str], timeout: Duration) -> Result<String, String> {
 
 // -------------------------------------------------------------- screens
 
-/// `wl_output` v4, else `niri msg --json outputs`; sorted left to right.
-pub fn discover_screens() -> Result<Vec<ScreenInfo>, String> {
+/// Why there are no screens without a display.
+pub const NO_DISPLAY: &str = "no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display";
+
+/// The screens `backend` knows, sorted left to right: under the portal,
+/// `wl_output` v4, else `niri msg --json outputs`; on X11, the RandR
+/// monitors of its display (an error says `X11 (DISPLAY=:1): …`); none
+/// without a display ([`NO_DISPLAY`]).
+pub fn discover_screens(backend: &ScreenBackend) -> Result<Vec<ScreenInfo>, String> {
+    let mut screens = match backend {
+        ScreenBackend::Portal => wayland_screens()?,
+        ScreenBackend::X11 { display } => x11_layout(display)?.screens,
+        ScreenBackend::None => return Err(NO_DISPLAY.to_owned()),
+    };
+    sort_screens(&mut screens);
+    Ok(screens)
+}
+
+/// An X server's screens and the size of its root window, read together:
+/// the capture engine grabs an X11 screen as its part of the root
+/// (`ximagesrc`, `capture::spec::x11_crop`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct X11Layout {
+    /// The root window's width and height; every screen lies inside it.
+    pub root: (u32, u32),
+    /// As [`discover_screens`] lists them.
+    pub screens: Vec<ScreenInfo>,
+}
+
+/// The X server at `display`: its RandR monitors and its root window,
+/// within [`X11_TIMEOUT`]. An error says `X11 (DISPLAY=:1): …`.
+pub fn x11_layout(display: &str) -> Result<X11Layout, String> {
+    let (root, mut screens) =
+        x11::monitors(display, X11_TIMEOUT).map_err(|e| format!("X11 (DISPLAY={display}): {e}"))?;
+    sort_screens(&mut screens);
+    Ok(X11Layout { root, screens })
+}
+
+/// What `qrec doctor` says of an X server ([`x11_server`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct X11Server {
+    /// The RandR version it speaks, up to 1.6 (what Qrec knows of);
+    /// `None` without the extension, when its whole screen is one.
+    pub randr: Option<(u32, u32)>,
+    /// Its screens, as [`discover_screens`] lists them.
+    pub screens: Vec<ScreenInfo>,
+}
+
+/// The X server at `display` as `qrec doctor` checks it: its RandR
+/// version and its screens, within [`X11_TIMEOUT`]. An error is the one
+/// discovery warns with (`X11 (DISPLAY=:1): can't connect: …`).
+pub fn x11_server(display: &str) -> Result<X11Server, String> {
+    let mut server =
+        x11::server(display, X11_TIMEOUT).map_err(|e| format!("X11 (DISPLAY={display}): {e}"))?;
+    sort_screens(&mut server.screens);
+    Ok(server)
+}
+
+/// [`discover_screens`] of the session's [`ScreenBackend`] (the facts'
+/// discovery hook).
+pub fn session_screens() -> Result<Vec<ScreenInfo>, String> {
+    discover_screens(&ScreenBackend::from_env())
+}
+
+/// What the core knows of a [`ScreenBackend`]: its kind, without the
+/// display.
+pub(crate) fn backend_kind(backend: &ScreenBackend) -> ScreenBackendKind {
+    match backend {
+        ScreenBackend::Portal => ScreenBackendKind::Portal,
+        ScreenBackend::X11 { .. } => ScreenBackendKind::X11,
+        ScreenBackend::None => ScreenBackendKind::None,
+    }
+}
+
+/// The session's [`ScreenBackendKind`], known from the environment without
+/// discovering anything: what [`SourceInventory::discover`] says in
+/// `screen_backend` (the portal's under the fake backend). The first run's
+/// caption follows it while discovery runs.
+pub fn session_screen_backend() -> ScreenBackendKind {
+    if fake_backend() {
+        ScreenBackendKind::Portal
+    } else {
+        backend_kind(&ScreenBackend::from_env())
+    }
+}
+
+/// Left to right, then top to bottom, then by name.
+fn sort_screens(screens: &mut [ScreenInfo]) {
+    screens.sort_by(|a, b| (a.x, a.y, &a.output).cmp(&(b.x, b.y, &b.output)));
+}
+
+/// `wl_output` v4, else `niri msg --json outputs`. When both fail, the
+/// error is the compositor's, and niri's only on niri ([`wayland_error`]).
+fn wayland_screens() -> Result<Vec<ScreenInfo>, String> {
     let wayland = wayland::outputs(WAYLAND_TIMEOUT);
-    let mut screens = match wayland {
-        Ok(screens) if !screens.is_empty() => screens,
+    match wayland {
+        Ok(screens) if !screens.is_empty() => Ok(screens),
         other => match niri_outputs() {
-            Ok(screens) => screens,
+            Ok(screens) => Ok(screens),
             Err(niri) => match other {
-                Ok(empty) => empty,
-                Err(wayland) => return Err(format!("{wayland}; {niri}")),
+                Ok(empty) => Ok(empty),
+                Err(wayland) => Err(wayland_error(
+                    wayland,
+                    &niri,
+                    &crate::platform::current().desktop,
+                )),
             },
         },
-    };
-    screens.sort_by(|a, b| (a.x, a.y, &a.output).cmp(&(b.x, b.y, &b.output)));
-    Ok(screens)
+    }
+}
+
+/// Why the Wayland screens couldn't be listed: the compositor's error, then
+/// the `niri` fallback's when niri is the `desktop`. On another desktop
+/// niri's ("niri wasn't found (is it installed and on PATH?)") would point
+/// at a compositor the person doesn't run, wherever the reason shows
+/// (`sources list`, the first run, a screen layer's not-found hint).
+fn wayland_error(wayland: String, niri: &str, desktop: &Desktop) -> String {
+    if *desktop == Desktop::Niri {
+        format!("{wayland}; {niri}")
+    } else {
+        wayland
+    }
 }
 
 fn niri_outputs() -> Result<Vec<ScreenInfo>, String> {
@@ -372,7 +524,11 @@ fn output_description(make: &str, model: &str, name: &str) -> String {
 }
 
 /// `wl_output` listing with a hard deadline: the socket is polled, never
-/// read with a blocking roundtrip.
+/// read with a blocking roundtrip. Each output's `zxdg_output_v1` (when
+/// the compositor has `zxdg_output_manager_v1`) gives its logical position
+/// and size in the compositor's space, so the scale is the real one under
+/// fractional scaling (`wl_output`'s is a whole number), and, from v2, its
+/// name and description, which `wl_output` only has from v4.
 mod wayland {
     use std::io;
     use std::os::fd::AsRawFd;
@@ -381,7 +537,15 @@ mod wayland {
     use qrec_core::ctx::ScreenInfo;
     use wayland_client::protocol::{wl_callback, wl_output, wl_registry};
     use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
+    use wayland_protocols::xdg::xdg_output::zv1::client::{
+        zxdg_output_manager_v1::ZxdgOutputManagerV1, zxdg_output_v1,
+    };
 
+    /// Why outputs without names can't be listed.
+    const NO_NAMES: &str =
+        "the compositor's outputs have no names (wl_output below v4, no xdg-output v2)";
+
+    /// What one `wl_output` and its `zxdg_output_v1` said.
     #[derive(Debug, Default)]
     struct Output {
         name: Option<String>,
@@ -390,15 +554,32 @@ mod wayland {
         model: String,
         x: i32,
         y: i32,
+        /// The current mode, in pixels, before the transform.
         width: i32,
         height: i32,
         rotated: bool,
+        /// `wl_output`'s whole-number scale.
         scale: i32,
+        logical: Logical,
+    }
+
+    /// What `zxdg_output_v1` said about an output.
+    #[derive(Debug, Default)]
+    struct Logical {
+        position: Option<(i32, i32)>,
+        /// The size in the compositor's space, after the transform.
+        size: Option<(i32, i32)>,
+        /// v2 and later.
+        name: Option<String>,
+        description: Option<String>,
     }
 
     #[derive(Debug, Default)]
     struct State {
         outputs: Vec<Output>,
+        /// The bound `wl_output`s, as `outputs`.
+        proxies: Vec<wl_output::WlOutput>,
+        xdg_manager: Option<ZxdgOutputManagerV1>,
         synced: bool,
     }
 
@@ -411,19 +592,63 @@ mod wayland {
             _: &Connection,
             qh: &QueueHandle<Self>,
         ) {
-            if let wl_registry::Event::Global {
+            let wl_registry::Event::Global {
                 name,
                 interface,
                 version,
             } = event
-                && interface == wl_output::WlOutput::interface().name
-            {
+            else {
+                return;
+            };
+            if interface == wl_output::WlOutput::interface().name {
                 let index = state.outputs.len();
-                registry.bind::<wl_output::WlOutput, usize, State>(name, version.min(4), qh, index);
+                let proxy = registry.bind::<wl_output::WlOutput, usize, State>(
+                    name,
+                    version.min(4),
+                    qh,
+                    index,
+                );
+                state.proxies.push(proxy);
                 state.outputs.push(Output {
                     scale: 1,
                     ..Output::default()
                 });
+            } else if interface == ZxdgOutputManagerV1::interface().name
+                && state.xdg_manager.is_none()
+            {
+                let manager =
+                    registry.bind::<ZxdgOutputManagerV1, (), State>(name, version.min(3), qh, ());
+                state.xdg_manager = Some(manager);
+            }
+        }
+    }
+
+    // The manager has no events.
+    wayland_client::delegate_noop!(State: ignore ZxdgOutputManagerV1);
+
+    impl Dispatch<zxdg_output_v1::ZxdgOutputV1, usize> for State {
+        fn event(
+            state: &mut Self,
+            _: &zxdg_output_v1::ZxdgOutputV1,
+            event: zxdg_output_v1::Event,
+            index: &usize,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            let Some(out) = state.outputs.get_mut(*index) else {
+                return;
+            };
+            let logical = &mut out.logical;
+            match event {
+                zxdg_output_v1::Event::LogicalPosition { x, y } => logical.position = Some((x, y)),
+                zxdg_output_v1::Event::LogicalSize { width, height } => {
+                    logical.size = Some((width, height));
+                }
+                zxdg_output_v1::Event::Name { name } => logical.name = Some(name),
+                zxdg_output_v1::Event::Description { description } => {
+                    logical.description = Some(description);
+                }
+                _ => {}
             }
         }
     }
@@ -497,8 +722,9 @@ mod wayland {
         }
     }
 
-    /// Every output with its v4 name. `Err` when there is no compositor,
-    /// it is too slow, or its outputs have no names (version < 4).
+    /// Every output with its name (`wl_output` v4, else xdg-output v2).
+    /// `Err` when there is no compositor, it is too slow, or an output has
+    /// no name.
     pub(super) fn outputs(timeout: Duration) -> Result<Vec<ScreenInfo>, String> {
         let deadline = Instant::now() + timeout;
         let conn = Connection::connect_to_env()
@@ -508,38 +734,106 @@ mod wayland {
         let display = conn.display();
         display.get_registry(&qh, ());
         let mut state = State::default();
-        // The first sync delivers the globals (and the binds go out); the
-        // second the outputs' events.
-        for _ in 0..2 {
+        // The first sync delivers the globals (the outputs are bound as they
+        // come); then each output's xdg-output is asked for, once the
+        // manager is known, and the second sync delivers both's events.
+        for pass in 0..2 {
+            if pass == 1
+                && let Some(manager) = &state.xdg_manager
+            {
+                for (index, output) in state.proxies.iter().enumerate() {
+                    manager.get_xdg_output(output, &qh, index);
+                }
+            }
             state.synced = false;
             display.sync(&qh, ());
             roundtrip(&mut queue, &mut state, deadline)?;
         }
-        let mut screens = Vec::new();
-        for out in state.outputs {
-            let Some(name) = out.name else {
-                return Err("the compositor's wl_output has no names (version < 4)".to_owned());
-            };
-            let (width, height) = if out.rotated {
-                (out.height, out.width)
-            } else {
-                (out.width, out.height)
-            };
-            let description = out
-                .description
-                .filter(|d| !d.trim().is_empty())
-                .unwrap_or_else(|| super::output_description(&out.make, &out.model, &name));
-            screens.push(ScreenInfo {
-                output: name,
-                description,
-                x: out.x,
-                y: out.y,
-                width: width.max(0) as u32,
-                height: height.max(0) as u32,
-                scale: f64::from(out.scale.max(1)),
-            });
+        state.outputs.into_iter().map(screen).collect()
+    }
+
+    /// The screen `out` describes: the name and description `wl_output`
+    /// gave, else xdg-output's; xdg-output's logical position (else
+    /// `wl_output`'s); the current mode's pixels, rotated with the output;
+    /// the scale that takes them to xdg-output's logical size (else
+    /// `wl_output`'s whole number).
+    fn screen(out: Output) -> Result<ScreenInfo, String> {
+        let Output {
+            name,
+            description,
+            make,
+            model,
+            x,
+            y,
+            width,
+            height,
+            rotated,
+            scale,
+            logical,
+        } = out;
+        let given = |s: &String| !s.trim().is_empty();
+        let Some(name) = name.filter(given).or(logical.name.filter(given)) else {
+            return Err(NO_NAMES.to_owned());
+        };
+        let description = description
+            .filter(given)
+            .or(logical.description.filter(given))
+            .unwrap_or_else(|| super::output_description(&make, &model, &name));
+        let (width, height) = if rotated {
+            (height, width)
+        } else {
+            (width, height)
+        };
+        let pixels = (width.max(0) as u32, height.max(0) as u32);
+        let (x, y) = logical.position.unwrap_or((x, y));
+        let scale = logical
+            .size
+            .and_then(|size| logical_scale(pixels, size))
+            .unwrap_or(f64::from(scale.max(1)));
+        Ok(ScreenInfo {
+            output: name,
+            description,
+            x,
+            y,
+            width: pixels.0,
+            height: pixels.1,
+            scale,
+        })
+    }
+
+    /// The scale between an output's `pixels` and its `logical` size: one
+    /// that `pixels ÷ scale` rounds back to `logical` on both sides (how a
+    /// portal stream's logical size is matched to the screen,
+    /// `capture::portal`), preferring a multiple of 1/120 (the steps of
+    /// fractional scaling) so 1.25 reads 1.25. A compositor that floors or
+    /// ceils the logical size may leave none: then the longer side's ratio,
+    /// exact on that side and within a pixel on the other. `None` for an
+    /// empty size.
+    fn logical_scale(pixels: (u32, u32), logical: (i32, i32)) -> Option<f64> {
+        if pixels.0 == 0 || pixels.1 == 0 || logical.0 <= 0 || logical.1 <= 0 {
+            return None;
         }
-        Ok(screens)
+        let (pw, ph) = (f64::from(pixels.0), f64::from(pixels.1));
+        let (lw, lh) = (f64::from(logical.0), f64::from(logical.1));
+        let fits =
+            |s: f64| s.is_finite() && s > 0.0 && (pw / s).round() == lw && (ph / s).round() == lh;
+        let snap = |s: f64| (s * 120.0).round() / 120.0;
+        let (by_width, by_height) = (pw / lw, ph / lh);
+        // Where both sides round back: (p / (l + ½), p / (l − ½)] on each.
+        let low = (pw / (lw + 0.5)).max(ph / (lh + 0.5));
+        let high = (pw / (lw - 0.5)).min(ph / (lh - 0.5));
+        let longer = if pw >= ph { by_width } else { by_height };
+        let scale = [
+            snap(by_width),
+            snap(by_height),
+            by_width,
+            by_height,
+            (low + high) / 2.0,
+        ]
+        .into_iter()
+        .find(|&s| fits(s))
+        .unwrap_or(longer);
+        Some(scale)
     }
 
     /// Dispatches until the pending sync is answered or the deadline passes.
@@ -583,6 +877,189 @@ mod wayland {
             guard.read().map_err(|e| wayland(&e))?;
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        /// A `wl_output` v4 named `name` with `mode` at `wl_scale`, its
+        /// geometry at (-1, -1), and its xdg-output at `logical`
+        /// (position, size).
+        fn named(
+            name: &str,
+            mode: (i32, i32),
+            wl_scale: i32,
+            logical: Option<((i32, i32), (i32, i32))>,
+        ) -> Output {
+            Output {
+                name: Some(name.to_owned()),
+                description: Some(format!("Make Model ({name})")),
+                make: "Make".to_owned(),
+                model: "Model".to_owned(),
+                x: -1,
+                y: -1,
+                width: mode.0,
+                height: mode.1,
+                rotated: false,
+                scale: wl_scale,
+                logical: Logical {
+                    position: logical.map(|(position, _)| position),
+                    size: logical.map(|(_, size)| size),
+                    ..Logical::default()
+                },
+            }
+        }
+
+        /// The mode's pixels and xdg-output's logical size give the scale,
+        /// not `wl_output`'s whole number (sway sends 2 for 1.25 and 1.5);
+        /// the position is xdg-output's.
+        #[test]
+        fn the_scale_is_pixels_over_the_logical_size() {
+            let cases = [
+                // (mode, wl_output scale, logical position, logical size, scale)
+                ((2560, 1440), 1, (0, 0), (2560, 1440), 1.0),
+                ((2560, 1600), 2, (2560, 0), (2048, 1280), 1.25),
+                ((2880, 1800), 2, (4608, 0), (1920, 1200), 1.5),
+                ((3840, 2160), 2, (6528, 0), (1920, 1080), 2.0),
+                // 1092.8 × 614.4 logical px, rounded.
+                ((1366, 768), 2, (0, 1440), (1093, 614), 1.25),
+            ];
+            for (mode, wl_scale, position, size, scale) in cases {
+                let got = screen(named("DP-1", mode, wl_scale, Some((position, size)))).unwrap();
+                assert_eq!(
+                    (got.x, got.y, got.width, got.height),
+                    (position.0, position.1, mode.0 as u32, mode.1 as u32),
+                    "{mode:?} at {scale}"
+                );
+                assert_eq!(got.scale, scale, "{mode:?} at {scale}");
+                assert_eq!(
+                    (
+                        (f64::from(got.width) / got.scale).round() as i32,
+                        (f64::from(got.height) / got.scale).round() as i32
+                    ),
+                    size,
+                    "{mode:?} at {scale}"
+                );
+            }
+        }
+
+        /// wlroots floors 1366 × 768 at 1.25 to 1092 × 614: no multiple of
+        /// 1/120 gives that back, the ratio does.
+        #[test]
+        fn a_floored_logical_size_still_comes_back() {
+            let got = screen(named("eDP-1", (1366, 768), 2, Some(((0, 0), (1092, 614))))).unwrap();
+            let back = |p: u32| (f64::from(p) / got.scale).round() as i32;
+            assert_eq!((back(got.width), back(got.height)), (1092, 614));
+            assert!((got.scale - 1.25).abs() < 0.002, "{}", got.scale);
+        }
+
+        /// A rotated output: its pixels turn with it, and so does the
+        /// logical size.
+        #[test]
+        fn a_rotated_output_turns_its_pixels() {
+            let mut out = named("DP-2", (2560, 1600), 2, Some(((0, 0), (1280, 2048))));
+            out.rotated = true;
+            let got = screen(out).unwrap();
+            assert_eq!((got.width, got.height, got.scale), (1600, 2560, 1.25));
+        }
+
+        /// Without xdg-output: `wl_output`'s position and whole-number scale.
+        #[test]
+        fn without_xdg_output_wl_output_says_it_all() {
+            let got = screen(named("HDMI-A-1", (1920, 1080), 2, None)).unwrap();
+            assert_eq!(
+                (got.x, got.y, got.scale, got.description.as_str()),
+                (-1, -1, 2.0, "Make Model (HDMI-A-1)")
+            );
+        }
+
+        /// A `wl_output` below v4 has no name or description: xdg-output's
+        /// (v2 and later) stand in.
+        #[test]
+        fn v3_outputs_are_named_by_xdg_output() {
+            let mut out = named("ignored", (2560, 1440), 1, Some(((0, 0), (2560, 1440))));
+            out.name = None;
+            out.description = None;
+            out.logical.name = Some("DP-3".to_owned());
+            out.logical.description = Some("Dell Inc. DELL U2720Q (DP-3)".to_owned());
+            let got = screen(out).unwrap();
+            assert_eq!(
+                (got.output.as_str(), got.description.as_str()),
+                ("DP-3", "Dell Inc. DELL U2720Q (DP-3)")
+            );
+
+            // `wl_output` v4's name wins; a blank description gives way.
+            let mut out = named("DP-4", (2560, 1440), 1, None);
+            out.description = Some(" ".to_owned());
+            out.logical.name = Some("other".to_owned());
+            out.logical.description = Some("Dell (DP-4)".to_owned());
+            let got = screen(out).unwrap();
+            assert_eq!(
+                (got.output.as_str(), got.description.as_str()),
+                ("DP-4", "Dell (DP-4)")
+            );
+
+            // Neither describes it: make, model and name.
+            let mut out = named("DP-5", (2560, 1440), 1, None);
+            out.description = None;
+            assert_eq!(screen(out).unwrap().description, "Make - Model - DP-5");
+        }
+
+        /// No name from `wl_output` (below v4) or xdg-output (absent or v1):
+        /// an error, so `niri msg` is tried next.
+        #[test]
+        fn outputs_without_names_are_an_error() {
+            let mut out = named("ignored", (2560, 1440), 1, Some(((0, 0), (2560, 1440))));
+            out.name = None;
+            assert_eq!(screen(out).unwrap_err(), NO_NAMES);
+        }
+
+        #[test]
+        fn empty_sizes_have_no_logical_scale() {
+            assert_eq!(logical_scale((0, 1080), (1920, 1080)), None);
+            assert_eq!(logical_scale((1920, 1080), (0, 0)), None);
+            assert_eq!(logical_scale((1920, 1080), (-1920, 1080)), None);
+        }
+
+        proptest! {
+            /// scale × logical = pixels within rounding: a compositor that
+            /// rounds the logical size gets it back on both sides; one that
+            /// floors or ceils, on the longer side and within a pixel on the
+            /// other.
+            #[test]
+            fn the_logical_scale_takes_pixels_to_the_logical_size(
+                width in 640u32..=7680,
+                height in 480u32..=4320,
+                step in 60u32..=480,
+                rounding in 0u8..3,
+            ) {
+                let real = f64::from(step) / 120.0;
+                let to_logical = |p: u32| {
+                    let v = f64::from(p) / real;
+                    (match rounding {
+                        0 => v.round(),
+                        1 => v.floor(),
+                        _ => v.ceil(),
+                    }) as i32
+                };
+                let logical = (to_logical(width), to_logical(height));
+                let scale = logical_scale((width, height), logical).unwrap();
+                let back = |p: u32| (f64::from(p) / scale).round() as i32;
+                let back = (back(width), back(height));
+                if rounding == 0 {
+                    prop_assert_eq!(back, logical, "scale {} for {}", scale, real);
+                } else if width >= height {
+                    prop_assert_eq!(back.0, logical.0, "scale {} for {}", scale, real);
+                    prop_assert!((back.1 - logical.1).abs() <= 1, "scale {} for {}", scale, real);
+                } else {
+                    prop_assert_eq!(back.1, logical.1, "scale {} for {}", scale, real);
+                    prop_assert!((back.0 - logical.0).abs() <= 1, "scale {} for {}", scale, real);
+                }
+            }
+        }
+    }
 }
 
 // -------------------------------------------------------------- cameras
@@ -604,7 +1081,24 @@ pub fn discover_cameras() -> Result<Vec<CameraInfo>, String> {
 fn cameras_and_warning() -> (Vec<CameraInfo>, Option<String>) {
     match gst_cameras(CAMERA_TIMEOUT) {
         Ok(cameras) => (cameras, None),
-        Err(e) => (sysfs_cameras(), Some(format!("{e}; listed without modes"))),
+        Err(e) => {
+            let cameras = sysfs_cameras();
+            let warning = without_gstreamer(&e, &cameras);
+            (cameras, Some(warning))
+        }
+    }
+}
+
+/// What a camera discovery whose GStreamer part failed (`error`) says: that
+/// the `cameras` sysfs lists have no modes, or, when it lists none, that
+/// sysfs had none either (`sources list` gives that as why there are no
+/// cameras).
+#[cfg(feature = "gst")]
+fn without_gstreamer(error: &str, cameras: &[CameraInfo]) -> String {
+    if cameras.is_empty() {
+        format!("{error}; no V4L2 cameras in {VIDEO4LINUX}")
+    } else {
+        format!("{error}; listed without modes")
     }
 }
 
@@ -614,8 +1108,11 @@ fn cameras_and_warning() -> (Vec<CameraInfo>, Option<String>) {
     (sysfs_cameras(), None)
 }
 
+/// Where the kernel lists the V4L2 devices.
+const VIDEO4LINUX: &str = "/sys/class/video4linux";
+
 fn sysfs_cameras() -> Vec<CameraInfo> {
-    scan_video4linux(Path::new("/sys/class/video4linux"), Path::new("/dev"))
+    scan_video4linux(Path::new(VIDEO4LINUX), Path::new("/dev"))
 }
 
 /// Capture nodes in a `video4linux` sysfs dir: `videoN` entries whose
@@ -999,7 +1496,87 @@ mod tests {
         let json = fake.to_json();
         assert_eq!(json["screens"][0]["output"], "FAKE-1");
         assert_eq!(json["defaultMic"], "alsa_input.fake");
+        assert_eq!(json["screenBackend"], "portal");
         assert!(json.get("warnings").is_none(), "no warnings key when empty");
+        // One written before the backend was said reads as the portal's.
+        let mut older = json.clone();
+        older.as_object_mut().unwrap().remove("screenBackend");
+        let read: SourceInventory = serde_json::from_value(older).unwrap();
+        assert_eq!(read.screen_backend, ScreenBackendKind::Portal);
+        let x11 = SourceInventory {
+            screen_backend: backend_kind(&ScreenBackend::X11 {
+                display: ":1".into(),
+            }),
+            ..SourceInventory::default()
+        };
+        assert_eq!(x11.to_json()["screenBackend"], "x11");
+        assert_eq!(backend_kind(&ScreenBackend::None), ScreenBackendKind::None);
+    }
+
+    /// W10: `QREC_FAKE_INVENTORY=noscreens` is a machine whose discovery
+    /// found no screens and said why (as without a display); a discovery
+    /// that didn't ask for screens doesn't say it.
+    #[test]
+    fn the_noscreens_inventory_says_why() {
+        let inv = SourceInventory::fake_of(crate::capture::FakeInventoryKind::NoScreens);
+        assert!(inv.screens.is_empty());
+        assert_eq!(
+            (inv.cameras.len(), inv.mics.len(), inv.monitors.len()),
+            (1, 1, 1)
+        );
+        assert_eq!(inv.warning("screens"), Some(NO_DISPLAY));
+        assert_eq!(inv.warning("cameras"), None);
+        assert_eq!(
+            inv.to_json()["warnings"],
+            serde_json::json!([format!("screens: {NO_DISPLAY}")])
+        );
+        let video = inv.clone().only(Discover::VIDEO);
+        assert_eq!(video.warning("screens"), Some(NO_DISPLAY));
+        assert!(inv.only(Discover::AUDIO).warnings.is_empty());
+    }
+
+    /// W10: a Wayland screens error ends with the niri fallback's only on
+    /// niri. On GNOME, KDE or an unknown desktop it would send people to a
+    /// compositor they don't run.
+    #[test]
+    fn a_wayland_error_names_niri_only_on_niri() {
+        let wayland = "the Wayland compositor didn't answer within 2 s";
+        let niri = "niri wasn't found (is it installed and on PATH?)";
+        assert_eq!(
+            wayland_error(wayland.to_owned(), niri, &Desktop::Niri),
+            format!("{wayland}; {niri}")
+        );
+        for desktop in [Desktop::Gnome, Desktop::Kde, Desktop::Unknown] {
+            assert_eq!(
+                wayland_error(wayland.to_owned(), niri, &desktop),
+                wayland,
+                "{desktop:?}"
+            );
+        }
+    }
+
+    /// W10: when GStreamer's device monitor fails, the cameras' warning
+    /// says the sysfs ones have no modes, or that sysfs had none either:
+    /// never "listed without modes" with nothing listed (`sources list`
+    /// gives it as why there are no cameras).
+    #[cfg(feature = "gst")]
+    #[test]
+    fn a_failed_device_monitor_says_what_sysfs_found() {
+        let error = "GStreamer's device monitor didn't answer in time";
+        assert_eq!(
+            without_gstreamer(error, &[]),
+            "GStreamer's device monitor didn't answer in time; \
+             no V4L2 cameras in /sys/class/video4linux"
+        );
+        let webcam = CameraInfo {
+            device: "/dev/video0".into(),
+            label: "Integrated Webcam".into(),
+            modes: Vec::new(),
+        };
+        assert_eq!(
+            without_gstreamer(error, &[webcam]),
+            "GStreamer's device monitor didn't answer in time; listed without modes"
+        );
     }
 
     #[test]
@@ -1182,13 +1759,26 @@ mod tests {
         );
     }
 
-    /// Lists this machine's real screens (read-only Wayland/niri queries).
-    /// Run by hand: `cargo test -p qrec-shell real_screens -- --ignored --nocapture`.
+    /// Lists this machine's real screens (read-only Wayland/niri or RandR
+    /// queries). Run by hand: `cargo test -p qrec-shell real_screens --
+    /// --ignored --nocapture`.
     #[test]
     #[ignore = "talks to the real compositor"]
     fn real_screens() {
-        println!("{:#?}", wayland::outputs(WAYLAND_TIMEOUT));
-        println!("{:#?}", niri_outputs());
-        println!("{:#?}", discover_screens());
+        let backend = ScreenBackend::from_env();
+        println!("{backend}");
+        if backend == ScreenBackend::Portal {
+            println!("{:#?}", wayland::outputs(WAYLAND_TIMEOUT));
+            println!("{:#?}", niri_outputs());
+        }
+        println!("{:#?}", discover_screens(&backend));
+    }
+
+    #[test]
+    fn no_display_means_no_screens() {
+        assert_eq!(
+            discover_screens(&ScreenBackend::None).unwrap_err(),
+            NO_DISPLAY
+        );
     }
 }

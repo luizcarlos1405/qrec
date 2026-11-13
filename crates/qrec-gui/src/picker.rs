@@ -90,7 +90,12 @@ pub fn offered() -> bool {
 
 /// Runs the picker until it closes (`crate::run_picker`).
 pub fn run(args: PickerArgs) -> Result<u8, CoreError> {
-    app::init_toolkit()?;
+    // As the project's window does (`app::run`): the app id as the program's
+    // name, so X11's WM_CLASS matches the desktop entry, and the session's
+    // display, Wayland or X11, through exactly its backend.
+    glib::set_prgname(Some(APP_ID));
+    let display = app::display_choice();
+    app::init_toolkit(app::window_target(&display)?, &display)?;
     let application = adw::Application::builder()
         .application_id(APP_ID)
         .flags(gio::ApplicationFlags::NON_UNIQUE)

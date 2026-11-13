@@ -2,8 +2,9 @@
 //! changes the export or GES plan, every segment has exactly the frames and
 //! samples of its unit, units are maximal runs, an export job's progress
 //! counts the timeline's clips, GES clips stay inside their unit and their
-//! media, the libx264 fallback of a VA plan equals planning without VA, and
-//! the frame selection's lead counts canvas frames.
+//! media, the software fallback of a VA plan (libx264, else libopenh264)
+//! equals planning without VA, and the frame selection's lead counts canvas
+//! frames.
 //!
 //! `crates/qrec-shell/tests/plans_ffmpeg.rs` runs the plans through real
 //! ffmpeg.
@@ -136,6 +137,7 @@ fn opts(
         codec,
         out: "exports/test-20261014-120000.mp4".to_owned(),
         allow_vaapi,
+        x264_only: false,
     }
 }
 
@@ -157,6 +159,7 @@ fn va_caps() -> Capabilities {
         vendor: 0x8086,
         ffmpeg_h264: true,
         gst_h264_factory: None,
+        gst_h264_lp_factory: None,
     });
     caps
 }
@@ -355,21 +358,33 @@ proptest! {
     }
 
     #[test]
-    fn the_x264_fallback_equals_planning_without_vaapi(
+    fn the_software_fallback_equals_planning_without_vaapi(
         project in arb_project(),
         tweaks in arb_tweaks(),
         quality in 0usize..3,
+        ffmpeg in 0usize..3,
     ) {
         let project = tweaked(project, &tweaks);
         let quality = [Quality::Draft, Quality::Standard, Quality::High][quality];
-        let caps = va_caps();
+        // ffmpeg-full's libx264, Fedora's ffmpeg-free (libopenh264 alone),
+        // or both.
+        let mut caps = va_caps();
+        let encoders = &mut caps.ffmpeg.as_mut().unwrap().encoders;
+        if ffmpeg > 0 {
+            encoders.insert("libopenh264".to_owned());
+        }
+        if ffmpeg == 1 {
+            encoders.remove("libx264");
+        }
         let Ok(va) = plan_export(&project, &caps, &opts(ExportFormat::Mp4, VideoCodec::H264, quality, true)) else {
             prop_assert!(project.timeline.clips.is_empty(), "only an empty timeline has nothing to export");
             return Ok(());
         };
-        let x264 = plan_export(&project, &caps, &opts(ExportFormat::Mp4, VideoCodec::H264, quality, false)).unwrap();
-        prop_assert_eq!(without_vaapi(&va, &caps), Some(x264.clone()));
-        prop_assert_eq!(without_vaapi(&x264, &caps), None);
+        let software = plan_export(&project, &caps, &opts(ExportFormat::Mp4, VideoCodec::H264, quality, false)).unwrap();
+        let encoder = if ffmpeg == 1 { "libopenh264" } else { "libx264" };
+        prop_assert!(software.segments.iter().all(|s| s.argv.iter().any(|a| a == encoder)));
+        prop_assert_eq!(without_vaapi(&va, &caps), Some(software.clone()));
+        prop_assert_eq!(without_vaapi(&software, &caps), None);
     }
 
     #[test]

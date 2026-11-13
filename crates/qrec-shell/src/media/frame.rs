@@ -3,8 +3,8 @@
 //! the core-built ffmpeg argv writes a PNG to a temp file in the
 //! destination's folder (held open, checked like an export's, A§8.8), which
 //! must be a PNG before it is renamed into place without replacing anything
-//! but the file the person confirmed. Copying to the clipboard (`wl-copy`)
-//! is not done here: the toast's Copy image action does it later.
+//! but the file the person confirmed. Copying to the clipboard is not done
+//! here: the toast's Copy image action does it later, in the GUI.
 
 use std::fs::File;
 use std::os::unix::fs::FileExt;

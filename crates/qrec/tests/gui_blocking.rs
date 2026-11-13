@@ -274,10 +274,11 @@ fn wait_phase(nested: &Nested, project: &Path, want: &str, within: Duration) -> 
     }
 }
 
-/// A `PATH` whose `ffmpeg` hides encoders `hidden` from `ffmpeg -encoders`
-/// (so the doctor misses them) and whose `pactl` answers like PipeWire's
-/// (the nested env has no sound server: its checks would add two rows the
-/// frame doesn't draw), then the usual `PATH`. In `<env>/s23-bin/`.
+/// A `PATH` whose `ffmpeg` hides the rows `hidden` (` name `, as in its
+/// lists) from `ffmpeg -encoders`, `-decoders` and `-demuxers` (so the
+/// doctor misses them) and whose `pactl` answers like PipeWire's (the
+/// nested env has no sound server), then the usual `PATH`. In
+/// `<env>/s23-bin/`.
 fn s23_path(nested: &Nested, hidden: &[&str]) -> OsString {
     let bin = nested.env.root().join("s23-bin");
     fs::create_dir_all(&bin).expect("the wrappers' folder");
@@ -285,9 +286,9 @@ fn s23_path(nested: &Nested, hidden: &[&str]) -> OsString {
     let filter: Vec<String> = hidden.iter().map(|e| format!(" {e} ")).collect();
     let ffmpeg = format!(
         "#!/bin/sh\n\
-         # WP8's S23: ffmpeg without {hidden:?} for the doctor's encoder list.\n\
+         # WP8's S23: ffmpeg without {hidden:?} in the doctor's lists.\n\
          case \" $* \" in\n  \
-           *' -encoders '*)\n    \
+           *' -encoders '*|*' -decoders '*|*' -demuxers '*)\n    \
              '{real}' \"$@\" | grep -v -F -e '{patterns}'\n    \
              exit 0 ;;\n\
          esac\n\
@@ -297,6 +298,7 @@ fn s23_path(nested: &Nested, hidden: &[&str]) -> OsString {
     );
     let pactl = "#!/bin/sh\n\
                  # WP8's S23: the doctor's sound server check passes.\n\
+                 case \" $* \" in *' --version '*) echo 'pactl 17.0'; exit 0 ;; esac\n\
                  echo '{\"server_name\":\"PulseAudio (on PipeWire 1.4.7)\"}'\n";
     for (name, script) in [("ffmpeg", ffmpeg.as_str()), ("pactl", pactl)] {
         let path = bin.join(name);
@@ -307,26 +309,80 @@ fn s23_path(nested: &Nested, hidden: &[&str]) -> OsString {
     std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path))).expect("a PATH")
 }
 
+/// GStreamer's plugin path without the folder of `gtk4paintablesink`
+/// (`libgstgtk4.so`, gst-plugins-rs): the doctor misses it (the window
+/// then has no preview sinks, which only logs).
+fn plugins_without_gtk4() -> String {
+    let path = std::env::var_os("GST_PLUGIN_SYSTEM_PATH_1_0")
+        .expect("the dev shell's GStreamer plugin path");
+    let all: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    let kept: Vec<&PathBuf> = all
+        .iter()
+        .filter(|dir| !dir.join("libgstgtk4.so").exists())
+        .collect();
+    assert!(kept.len() < all.len(), "no gtk4paintablesink in {all:?}");
+    std::env::join_paths(kept)
+        .expect("a plugin path")
+        .into_string()
+        .expect("a UTF-8 plugin path")
+}
+
+/// A GStreamer registry for a window with [`plugins_without_gtk4`]: a copy
+/// of the dev shell's (`GST_REGISTRY_1_0`, when there is one yet), in
+/// `<env>/cache/s23-registry.bin`. The window's scan drops the hidden
+/// plugins from this copy only: the dev shell's registry, which every
+/// worktree and the packaged case's seed share, keeps gtk4paintablesink,
+/// and the va plugin, already listed in the copy, isn't scanned again (its
+/// scan opens every render node).
+fn private_registry(nested: &Nested) -> String {
+    let registry = nested.env.cache_home().join("s23-registry.bin");
+    fs::create_dir_all(nested.env.cache_home()).expect("the cache dir");
+    if let Some(dev) = std::env::var_os("GST_REGISTRY_1_0")
+        .map(PathBuf::from)
+        .filter(|r| r.is_file())
+    {
+        fs::copy(&dev, &registry).expect("copy the dev shell's registry");
+    }
+    registry
+        .into_os_string()
+        .into_string()
+        .expect("a UTF-8 registry path")
+}
+
 // ------------------------------------------------------------------ S23
 
-/// S23 as drawn: libx264 hidden from ffmpeg (a required check fails) and
-/// libsvtav1 too (optional), and the nested env's missing ScreenCast portal
-/// (optional with the fake backend): a row each, required first, BRIEF's
-/// copy for the portal's and libsvtav1's, the rest behind "✓ N other checks
-/// passed" (it opens: the passed checks); Check again focused, Copy report
-/// copies the doctor's report, a row's Copy its command; the hint bar,
-/// regions and a11y; Ctrl+Q exits 5.
+/// S23 as drawn, for the app checks alone: gtk4paintablesink hidden from
+/// GStreamer (its plugin path, with a registry of the case's own) and the
+/// matroska demuxer from ffmpeg (both app checks), and what only turns
+/// features off, which is no row: libx264, libopenh264 and libsvtav1 hidden
+/// from ffmpeg (MP4 and AV1 exports; the fake backend exports MP4 with
+/// libx264, else libopenh264, never h264_vaapi) and the nested env's
+/// missing ScreenCast portal. A row each,
+/// BRIEF's copy for gtk4paintablesink's, the doctor's words for the
+/// demuxer's, each with the doctor's fix for the frame's machine, the dev
+/// shell (`nix develop`); the rest behind "✓ N other checks passed" (it
+/// opens: the passed checks); Check again focused, Copy report copies the
+/// doctor's report (what is off included), a row's Copy its command; the
+/// hint bar, regions and a11y; Ctrl+Q exits 5.
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s23_missing_dependency() {
     let mut nested = Nested::start(AREA, "s23", Options::default());
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base);
-    let path = s23_path(&nested, &["libx264", "libsvtav1"]);
+    let path = s23_path(
+        &nested,
+        &["libx264", "libopenh264", "libsvtav1", "matroska,webm"],
+    );
     nested.launch(
         &project,
         Launch {
             path: Some(path),
             ..Launch::a11y()
+                .with_env("GST_PLUGIN_SYSTEM_PATH_1_0", &plugins_without_gtk4())
+                .with_env("GST_PLUGIN_PATH_1_0", "")
+                .with_env("GST_REGISTRY_1_0", &private_registry(&nested))
+                // The frame's machine: the flake's dev shell.
+                .with_env("IN_NIX_SHELL", "impure")
         },
     );
     let gui = nested.window(0);
@@ -340,19 +396,27 @@ fn s23_missing_dependency() {
             "Run",
             "qrec doctor",
             "in a terminal for the same report.",
-            "ffmpeg.libx264",
-            "ScreenCast portal backend",
-            "Needed to capture screens on Wayland.",
-            "xdg-desktop-portal-gnome",
-            "libsvtav1",
-            "in ffmpeg",
-            "Optional",
-            "AV1 export will be unavailable. Everything else works.",
+            "gtk4paintablesink",
+            "GStreamer GTK 4 video sink (gst-plugins-rs). Qrec draws the preview with it.",
+            "nix develop",
+            "The flake provides gst-plugins-rs.",
+            "ffmpeg.demuxers",
+            "ffmpeg can't read matroska (the takes' MKV files)",
+            "The flake provides ffmpeg-full.",
             "Check again",
             "Copy report",
             "Quit",
         ],
     );
+    for off in [
+        "ScreenCast portal backend",
+        "libsvtav1",
+        "ffmpeg.libx264",
+        "ffmpeg.libopenh264",
+        "Optional",
+    ] {
+        assert!(!labels.iter().any(|l| l.contains(off)), "{off}: {labels:?}");
+    }
     assert!(
         labels.iter().any(|l| l.ends_with(" other checks passed")),
         "{labels:?}"
@@ -371,9 +435,9 @@ fn s23_missing_dependency() {
     assert_rect(gui, "blocking-art", [720.0, 120.0, 160.0, 160.0]);
     assert_rect(gui, "blocking-title", [480.0, 296.0, 640.0, 38.0]);
     let checks = assert_rect(gui, "blocking-checks", [480.0, 432.0, 640.0, f64::NAN]);
-    // A 72 px row per failed check, the required one first, then the
-    // optional ones in the doctor's order; the 44 px disclosure.
-    let rows = ["ffmpeg.libx264", "ffmpeg.libsvtav1", "portal.screencast"];
+    // A 72 px row per failed app check in the doctor's order; the 44 px
+    // disclosure.
+    let rows = ["gst.gtk4paintablesink", "ffmpeg.demuxers"];
     let mut last = 0.0;
     for (n, id) in rows.iter().enumerate() {
         let name = format!("blocking-check-{id}");
@@ -425,13 +489,22 @@ fn s23_missing_dependency() {
         "the disclosure closes"
     );
 
-    // Copy report: the doctor's report; a row's Copy: its command.
+    // Copy report: the doctor's report, with what is off; a row's Copy:
+    // its command.
     click(&mut nested, 0, "blocking-copy-report");
     let report = wait_clipboard(&nested, |t| t.starts_with("Qrec doctor"));
-    assert!(report.contains("ffmpeg.libx264"), "{report}");
+    assert!(report.contains("gst.gtk4paintablesink"), "{report}");
+    assert!(
+        report.contains(
+            "\nMP4 export is off: ffmpeg has no libx264 encoder (MP4 exports), and no \
+             h264_vaapi or libopenh264 encodes them instead; ffmpeg has no libopenh264 encoder \
+             (MP4 exports), and no h264_vaapi or libx264 encodes them instead\n"
+        ),
+        "{report}"
+    );
     wait_label(nested.window(0), "toast-host", "Report copied", OPEN);
-    click(&mut nested, 0, "blocking-copy-portal.screencast");
-    wait_clipboard(&nested, |t| t == "xdg-desktop-portal-gnome");
+    click(&mut nested, 0, "blocking-copy-gst.gtk4paintablesink");
+    wait_clipboard(&nested, |t| t == "nix develop");
     assert_clean(nested.window(0));
     ctrl_q(&nested);
     assert_eq!(nested.window(0).wait_exit(EXIT), Some(5));

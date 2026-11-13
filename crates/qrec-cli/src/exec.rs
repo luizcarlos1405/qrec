@@ -144,7 +144,7 @@ fn run_local(
             }
         }
         Local::AgentGuide => {
-            let guide = qrec_core::agent_guide::agent_guide();
+            let guide = qrec_core::agent_guide::agent_guide(&backend.desktop(), &backend.program());
             if ui.json {
                 ui.print_ok(&Value::String(guide));
             } else {

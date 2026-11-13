@@ -1,6 +1,6 @@
 [package]
 name = "qrec"
-description = "Quick Wayland screen and camera recorder: press R, talk, press R"
+description = "Quick screen and camera recorder for Linux: press R, talk, press R"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

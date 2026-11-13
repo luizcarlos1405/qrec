@@ -3,7 +3,7 @@
 //! paths. No GStreamer here, so all of it is unit-tested directly.
 
 use qrec_core::Fps;
-use qrec_core::ctx::CameraMode;
+use qrec_core::ctx::{CameraMode, ScreenInfo};
 use qrec_core::model::{Scene, VideoSource};
 use qrec_core::plans::{AudioRecord, CapturePlan, VideoEncoder, VideoRecord};
 use qrec_core::time::frame_ns;
@@ -14,7 +14,8 @@ use super::fake::FakeTone;
 /// source element. Layers sharing a screen share its source (and tee).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SourceSpec {
-    /// A monitor through the ScreenCast portal (`pipewiresrc`).
+    /// A monitor: a ScreenCast portal cast (`pipewiresrc`), or on X11 its
+    /// part of the root window (`ximagesrc`, [`x11_crop`]).
     Screen { output: String },
     /// A V4L2 camera; `mode` is the negotiated mode when one was chosen.
     Camera {
@@ -190,6 +191,119 @@ pub fn plan_sources(plan: &CapturePlan) -> Vec<SourceSpec> {
     out
 }
 
+/// The part of the X server's root window `ximagesrc` grabs for a screen
+/// ([`x11_crop`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct X11Crop {
+    pub x: u32,
+    pub y: u32,
+    /// Even, like `height`: I420 (what every branch converts to and x264
+    /// encodes) can't take an odd size.
+    pub width: u32,
+    pub height: u32,
+}
+
+impl X11Crop {
+    /// `ximagesrc`'s `endx`, which is inclusive.
+    pub fn endx(&self) -> u32 {
+        self.x + self.width - 1
+    }
+
+    /// `ximagesrc`'s `endy`, which is inclusive.
+    pub fn endy(&self) -> u32 {
+        self.y + self.height - 1
+    }
+
+    /// `ximagesrc`'s `startx`, `starty`, `endx` and `endy` for it.
+    pub fn rect(&self) -> (u32, u32, u32, u32) {
+        (self.x, self.y, self.endx(), self.endy())
+    }
+}
+
+impl std::fmt::Display for X11Crop {
+    /// `960x1080 at (960, 0)`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}x{} at ({}, {})",
+            self.width, self.height, self.x, self.y
+        )
+    }
+}
+
+/// What `ximagesrc` grabs for `screen` on an X server whose root window is
+/// `root` (width, height): the screen's rectangle with its width and
+/// height rounded down to even (`ximagesrc`'s ends are inclusive, and an
+/// odd size fails x264enc: the X11 probe of issue #9). `Err`, saying why
+/// (the caller names the screen), when the rectangle isn't inside the root
+/// (`ximagesrc` would grab the whole root instead, saying so only in its
+/// debug log) or is thinner than 2 pixels.
+pub fn x11_crop(screen: &ScreenInfo, root: (u32, u32)) -> Result<X11Crop, String> {
+    let (x, y) = (i64::from(screen.x), i64::from(screen.y));
+    let (w, h) = (screen.width, screen.height);
+    let inside = x >= 0
+        && y >= 0
+        && x + i64::from(w) <= i64::from(root.0)
+        && y + i64::from(h) <= i64::from(root.1);
+    if !inside {
+        return Err(format!(
+            "{w}x{h} at ({x}, {y}) isn't inside the X screen ({}x{})",
+            root.0, root.1
+        ));
+    }
+    let even = |v: u32| v & !1;
+    if even(w) == 0 || even(h) == 0 {
+        return Err(format!("{w}x{h} is too small to record (2x2 at least)"));
+    }
+    // Inside a u32 root, so both fit.
+    Ok(X11Crop {
+        x: x as u32,
+        y: y as u32,
+        width: even(w),
+        height: even(h),
+    })
+}
+
+/// Why an X11 screen's branch, which grabs `crop` for the monitor
+/// `output`, no longer shows that monitor now that the X server's screens
+/// are `screens` in a root window of `root` (`None`: it still does). A
+/// monitor that went away (unplugged, turned off, renamed), moved or
+/// changed size leaves the rectangle on something else, maybe a monitor
+/// the person never added (on X11, adding the layer is the consent), so
+/// the branch must stop, like a screencast that ends under the portal.
+pub fn x11_monitor_change(
+    output: &str,
+    crop: &X11Crop,
+    screens: &[ScreenInfo],
+    root: (u32, u32),
+) -> Option<String> {
+    let Some(screen) = screens.iter().find(|s| s.output == output) else {
+        return Some(
+            "the X server no longer has this monitor (unplugged, turned off or renamed)".into(),
+        );
+    };
+    match x11_crop(screen, root) {
+        Ok(now) if now == *crop => None,
+        Ok(now) => Some(format!(
+            "the monitor moved or changed size on the X server ({crop} when it started, {now} now)"
+        )),
+        Err(why) => Some(format!("the monitor changed on the X server: {why}")),
+    }
+}
+
+/// Why `ximagesrc`, set to grab `crop`, grabs something else (`None`: it
+/// doesn't). `rect` is its `startx`, `starty`, `endx` and `endy` now:
+/// when the root window shrinks under them, it rewrites them to the whole
+/// new root, saying so only in its debug log, and goes on grabbing that.
+pub fn x11_grab_change(crop: &X11Crop, rect: (u32, u32, u32, u32)) -> Option<String> {
+    (rect != crop.rect()).then(|| {
+        format!(
+            "the X screen shrank and no longer holds this monitor ({crop}): it was unplugged, \
+             turned off or moved"
+        )
+    })
+}
+
 /// A human name for a recorded stream, for `CaptureFailed.source` and logs:
 /// `L1 screen DP-4 (GIGA-BYTE GS27QA)`, `A1 mic alsa_input.usb-…`.
 pub fn video_label(rec: &VideoRecord) -> String {
@@ -226,8 +340,14 @@ pub fn record_file_rel(plan_dir: &str, file: &str) -> String {
 
 /// The encoder factory and its properties as `(name, value)` strings
 /// (A§8.11): x264 `pass=qual quantizer=18 speed-preset=veryfast
-/// tune=zerolatency key-int-max=<fps>`; VA `rate-control=cqp qpi=qpp=qpb=<qp>
-/// key-int-max=<fps>`.
+/// tune=zerolatency key-int-max=<fps>`; VA (`va*h264enc` or
+/// `va*h264lpenc`) `rate-control=cqp qpi=qpp=qpb=<qp> key-int-max=<fps>`;
+/// OpenH264 `rate-control=quality qp-min=qp-max=<qp> bitrate=<target>
+/// complexity=low gop-size=<fps>`, its threads one slice each, with
+/// `usage-type=camera` (`screen` is five times slower: one thread encoded
+/// the 2560×1440 screen clip at 12 fps where `camera` did 57) and
+/// `enable-frame-skip=false` (a skipped frame would leave a gap in the CFR
+/// file).
 pub fn encoder_settings(rec: &VideoRecord) -> (String, Vec<(&'static str, String)>) {
     let key_int = rec.key_int_max.max(1).to_string();
     match &rec.encoder {
@@ -256,14 +376,40 @@ pub fn encoder_settings(rec: &VideoRecord) -> (String, Vec<(&'static str, String
                 ("key-int-max", key_int),
             ],
         ),
+        VideoEncoder::OpenH264 {
+            rate_control,
+            qp,
+            bitrate,
+            complexity,
+            threads,
+        } => {
+            let threads = (*threads).max(1).to_string();
+            (
+                "openh264enc".to_owned(),
+                vec![
+                    ("rate-control", rate_control.clone()),
+                    ("qp-min", qp.to_string()),
+                    ("qp-max", qp.to_string()),
+                    ("bitrate", bitrate.to_string()),
+                    ("complexity", complexity.clone()),
+                    ("gop-size", key_int),
+                    ("multi-thread", threads.clone()),
+                    ("slice-mode", "n-slices".to_owned()),
+                    ("num-slices", threads),
+                    ("usage-type", "camera".to_owned()),
+                    ("enable-frame-skip", "false".to_owned()),
+                ],
+            )
+        }
     }
 }
 
-/// The raw format the encoder takes: NV12 for VA, I420 for x264.
+/// The raw format the encoder takes: NV12 for VA, I420 for x264 and
+/// OpenH264 (its only one).
 pub fn encoder_input_format(encoder: &VideoEncoder) -> &'static str {
     match encoder {
         VideoEncoder::Va { .. } => "NV12",
-        VideoEncoder::X264 { .. } => "I420",
+        VideoEncoder::X264 { .. } | VideoEncoder::OpenH264 { .. } => "I420",
     }
 }
 
@@ -371,6 +517,7 @@ pub fn tick_settings(tone: &FakeTone) -> (u32, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use qrec_core::ids::{LayerId, TakeId, TrackId};
     use qrec_core::model::{AudioRole, AudioTrack, Crop, Fit, Layer, Rect};
 
@@ -637,6 +784,37 @@ mod tests {
         assert_eq!(props[3], ("qpb", "18".to_owned()));
         assert_eq!(encoder_input_format(&va.encoder), "NV12");
         assert_eq!(encoder_input_format(&x264()), "I420");
+        // The low-power VA encoder takes the same CQP settings.
+        va.encoder = VideoEncoder::Va {
+            factory: "varenderD129h264lpenc".into(),
+            qp: 18,
+        };
+        let (factory, lp_props) = encoder_settings(&va);
+        assert_eq!(factory, "varenderD129h264lpenc");
+        assert_eq!(lp_props, props);
+
+        let mut openh264 = screen("L1", "DP-4");
+        openh264.encoder = qrec_core::capture_plan::openh264();
+        let (factory, props) = encoder_settings(&openh264);
+        assert_eq!(factory, "openh264enc");
+        assert_eq!(
+            props,
+            [
+                ("rate-control", "quality"),
+                ("qp-min", "22"),
+                ("qp-max", "22"),
+                ("bitrate", "100000000"),
+                ("complexity", "low"),
+                ("gop-size", "30"),
+                ("multi-thread", "4"),
+                ("slice-mode", "n-slices"),
+                ("num-slices", "4"),
+                ("usage-type", "camera"),
+                ("enable-frame-skip", "false"),
+            ]
+            .map(|(name, value)| (name, value.to_owned()))
+        );
+        assert_eq!(encoder_input_format(&openh264.encoder), "I420");
 
         let tone = FakeTone {
             channels: 1,
@@ -645,5 +823,217 @@ mod tests {
             period_ms: 1500,
         };
         assert_eq!(tick_settings(&tone), (220, 1_500_000_000));
+    }
+
+    fn x11_screen(output: &str, (x, y, width, height): (i32, i32, u32, u32)) -> ScreenInfo {
+        ScreenInfo {
+            output: output.into(),
+            description: String::new(),
+            x,
+            y,
+            width,
+            height,
+            scale: 1.0,
+        }
+    }
+
+    /// `ximagesrc`'s ends are inclusive and I420 needs an even size (the
+    /// X11 probe of issue #9: `endx=x+w` grabbed a column too many, an odd
+    /// width failed x264enc); a screen outside the root is an error, never
+    /// the whole root (what `ximagesrc` falls back to).
+    #[test]
+    fn x11_crops_have_inclusive_ends_and_even_sizes() {
+        let root = (1920, 1080);
+        let right = x11_crop(&x11_screen("VIRT-R", (960, 0, 960, 1080)), root).unwrap();
+        assert_eq!(
+            right,
+            X11Crop {
+                x: 960,
+                y: 0,
+                width: 960,
+                height: 1080
+            }
+        );
+        assert_eq!((right.endx(), right.endy()), (1919, 1079));
+        let whole = x11_crop(&x11_screen("screen", (0, 0, 1920, 1080)), root).unwrap();
+        assert_eq!((whole.endx(), whole.endy()), (1919, 1079));
+        // Odd sizes lose their last column and row.
+        let odd = x11_crop(&x11_screen("ODD", (101, 51, 959, 539)), root).unwrap();
+        assert_eq!((odd.x, odd.y, odd.width, odd.height), (101, 51, 958, 538));
+        assert_eq!((odd.endx(), odd.endy()), (1058, 588));
+        // The smallest: 2×2 (3×3 loses a column and a row).
+        let tiny = x11_crop(&x11_screen("TINY", (1917, 1077, 3, 3)), root).unwrap();
+        assert_eq!((tiny.width, tiny.height, tiny.endx()), (2, 2, 1918));
+        for (rect, why) in [
+            (
+                (961, 0, 960, 1080),
+                "960x1080 at (961, 0) isn't inside the X screen (1920x1080)",
+            ),
+            (
+                (0, 1, 1920, 1080),
+                "1920x1080 at (0, 1) isn't inside the X screen (1920x1080)",
+            ),
+            (
+                (-1, 0, 100, 100),
+                "100x100 at (-1, 0) isn't inside the X screen (1920x1080)",
+            ),
+            (
+                (0, -5, 100, 100),
+                "100x100 at (0, -5) isn't inside the X screen (1920x1080)",
+            ),
+            (
+                (1920, 0, 2, 2),
+                "2x2 at (1920, 0) isn't inside the X screen (1920x1080)",
+            ),
+            (
+                (0, 0, 1, 100),
+                "1x100 is too small to record (2x2 at least)",
+            ),
+            (
+                (10, 10, 100, 0),
+                "100x0 is too small to record (2x2 at least)",
+            ),
+        ] {
+            let err = x11_crop(&x11_screen("DP-1", rect), root).unwrap_err();
+            assert_eq!(err, why, "{rect:?}");
+        }
+    }
+
+    /// A branch keeps grabbing while its monitor's crop is what it was;
+    /// a monitor that went away, moved or changed size stops it (the
+    /// rectangle would show something else now), saying which.
+    #[test]
+    fn a_changed_x11_monitor_stops_its_branch() {
+        let root = (1920, 1080);
+        let crop = x11_crop(&x11_screen("VIRT-R", (960, 0, 960, 1080)), root).unwrap();
+        let left = x11_screen("VIRT-L", (0, 0, 960, 1080));
+        let at = |rect| vec![left.clone(), x11_screen("VIRT-R", rect)];
+        assert_eq!(
+            x11_monitor_change("VIRT-R", &crop, &at((960, 0, 960, 1080)), root),
+            None
+        );
+        // The root grew (a monitor added to the right): VIRT-R stays put,
+        // and a pixel more, rounded down to even, is the same rectangle.
+        for rect in [(960, 0, 960, 1080), (960, 0, 961, 1080)] {
+            assert_eq!(
+                x11_monitor_change("VIRT-R", &crop, &at(rect), (2880, 1080)),
+                None
+            );
+        }
+        assert_eq!(
+            x11_monitor_change("VIRT-R", &crop, std::slice::from_ref(&left), root).as_deref(),
+            Some("the X server no longer has this monitor (unplugged, turned off or renamed)")
+        );
+        assert_eq!(
+            x11_monitor_change("VIRT-R", &crop, &at((0, 0, 960, 1080)), root).as_deref(),
+            Some(
+                "the monitor moved or changed size on the X server (960x1080 at (960, 0) when \
+                 it started, 960x1080 at (0, 0) now)"
+            )
+        );
+        assert_eq!(
+            x11_monitor_change("VIRT-R", &crop, &at((960, 0, 640, 480)), root).as_deref(),
+            Some(
+                "the monitor moved or changed size on the X server (960x1080 at (960, 0) when \
+                 it started, 640x480 at (960, 0) now)"
+            )
+        );
+        // The root shrank under it (the discovery clips a monitor to the
+        // root, but a layout may come from elsewhere).
+        assert_eq!(
+            x11_monitor_change("VIRT-R", &crop, &at((960, 0, 960, 1080)), (960, 1080)).as_deref(),
+            Some(
+                "the monitor changed on the X server: 960x1080 at (960, 0) isn't inside the X \
+                 screen (960x1080)"
+            )
+        );
+    }
+
+    /// `ximagesrc`'s rectangle is the crop's until its fallback rewrites it
+    /// to the whole root, even one of the same size (VIRT-R on a root that
+    /// shrank to VIRT-L: 960×1080 either way, and no new caps).
+    #[test]
+    fn ximagesrc_falling_back_to_the_root_is_seen() {
+        let crop = X11Crop {
+            x: 960,
+            y: 0,
+            width: 960,
+            height: 1080,
+        };
+        assert_eq!(crop.rect(), (960, 0, 1919, 1079));
+        assert_eq!(x11_grab_change(&crop, (960, 0, 1919, 1079)), None);
+        for fallback in [(0, 0, 959, 1079), (0, 0, 1279, 1079), (960, 0, 1279, 1079)] {
+            assert_eq!(
+                x11_grab_change(&crop, fallback).as_deref(),
+                Some(
+                    "the X screen shrank and no longer holds this monitor (960x1080 at (960, \
+                     0)): it was unplugged, turned off or moved"
+                ),
+                "{fallback:?}"
+            );
+        }
+    }
+
+    proptest! {
+        /// The layout a crop came from never stops its branch, and any
+        /// move of its monitor does.
+        #[test]
+        fn only_a_moved_x11_monitor_stops_its_branch(
+            x in 0i32..3000,
+            y in 0i32..2000,
+            width in 2u32..2000,
+            height in 2u32..2000,
+            dx in -500i32..500,
+            dy in -500i32..500,
+        ) {
+            let root = (5000, 4000);
+            let screen = x11_screen("S", (x, y, width, height));
+            let crop = x11_crop(&screen, root).unwrap();
+            let same = std::slice::from_ref(&screen);
+            prop_assert_eq!(x11_monitor_change("S", &crop, same, root), None);
+            prop_assert_eq!(x11_grab_change(&crop, crop.rect()), None);
+            let moved = x11_screen("S", (x + dx, y + dy, width, height));
+            let change = x11_monitor_change("S", &crop, std::slice::from_ref(&moved), root);
+            prop_assert_eq!(change.is_some(), (dx, dy) != (0, 0));
+        }
+    }
+
+    proptest! {
+        /// A crop is inside the root, even, never empty, a pixel at most
+        /// smaller than its screen each way, and ends at start + size - 1;
+        /// there is one exactly when the screen lies inside the root and
+        /// is 2×2 at least.
+        #[test]
+        fn x11_crops_lie_inside_the_root(
+            x in -100i32..5000,
+            y in -100i32..5000,
+            width in 0u32..5000,
+            height in 0u32..5000,
+            root_w in 1u32..8000,
+            root_h in 1u32..8000,
+        ) {
+            let screen = x11_screen("S", (x, y, width, height));
+            let fits = x >= 0
+                && y >= 0
+                && x as u32 + width <= root_w
+                && y as u32 + height <= root_h
+                && width >= 2
+                && height >= 2;
+            match x11_crop(&screen, (root_w, root_h)) {
+                Ok(crop) => {
+                    prop_assert!(fits);
+                    prop_assert_eq!((crop.x, crop.y), (x as u32, y as u32));
+                    prop_assert!(crop.width > 0 && crop.height > 0);
+                    prop_assert_eq!(crop.width % 2, 0);
+                    prop_assert_eq!(crop.height % 2, 0);
+                    prop_assert!(width - crop.width <= 1);
+                    prop_assert!(height - crop.height <= 1);
+                    prop_assert_eq!(crop.endx(), crop.x + crop.width - 1);
+                    prop_assert_eq!(crop.endy(), crop.y + crop.height - 1);
+                    prop_assert!(crop.endx() < root_w && crop.endy() < root_h);
+                }
+                Err(_) => prop_assert!(!fits),
+            }
+        }
     }
 }

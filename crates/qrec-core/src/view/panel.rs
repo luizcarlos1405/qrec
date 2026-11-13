@@ -43,10 +43,15 @@ pub const INSPECTOR_EMPTY: &str =
     "Select a layer on the canvas or in the list to edit its position, size and crop.";
 /// The tooltip of the disabled Add buttons in a take layout (D-07).
 pub const ADD_IN_LIVE: &str = "Add sources in Live mode (Tab): they go into the project scene";
-/// A screen the portal refused (S13b, S24).
+/// A screen the portal refused (S13b, S24). Only the ScreenCast portal
+/// asks for a screen, so only it refuses one: an X11 screen needs no
+/// consent and is never refused.
 pub const ACCESS_DENIED: &str = "Access denied by the desktop portal";
 /// A screen whose picker was closed (S24's variant).
 pub const PICKER_CLOSED: &str = "Screen picker closed";
+/// A refused camera (no frame: nothing asks for a camera yet; a sandbox's
+/// Camera portal would). It has no picker to close.
+pub const CAMERA_DENIED: &str = "Camera access denied";
 /// A take-scene layer whose source is missing (S13b).
 pub const MISSING_IN_TAKE: &str = "Missing in this take";
 /// A Live audio track whose device doesn't deliver (C10).
@@ -159,8 +164,9 @@ pub struct LayerRow {
     pub selected: bool,
     pub hidden: bool,
     pub locked: bool,
-    /// Live: "Access denied by the desktop portal", "Screen picker
-    /// closed", or the source's message.
+    /// Live: a refusal as its source's kind words it ([`refusal`]: "Access
+    /// denied by the desktop portal", "Screen picker closed"), or the
+    /// source's message.
     pub error: Option<String>,
     /// "Missing in this take".
     pub missing: Option<String>,
@@ -228,12 +234,21 @@ pub fn source_key(source: &VideoSource) -> &str {
 /// The error a Live layer row shows for its source's status.
 fn live_error(source: &VideoSource, live: &LiveSources) -> Option<String> {
     match &live.get(source_key(source))?.state {
-        LiveSourceState::Refused {
-            cancelled: true, ..
-        } => Some(PICKER_CLOSED.to_owned()),
-        LiveSourceState::Refused { .. } => Some(ACCESS_DENIED.to_owned()),
+        LiveSourceState::Refused { cancelled, .. } => Some(refusal(source, *cancelled).to_owned()),
         LiveSourceState::Dead { message } => Some(format::capitalized(message)),
         LiveSourceState::AwaitingPortal | LiveSourceState::Live => None,
+    }
+}
+
+/// What a row says when its source was refused (`cancelled`: the picker
+/// was closed), by the source's kind: a screen's refusal is the ScreenCast
+/// portal's ([`ACCESS_DENIED`], [`PICKER_CLOSED`]); a camera's is
+/// [`CAMERA_DENIED`], with or without a dialog closed.
+pub fn refusal(source: &VideoSource, cancelled: bool) -> &'static str {
+    match source {
+        VideoSource::Screen { .. } if cancelled => PICKER_CLOSED,
+        VideoSource::Screen { .. } => ACCESS_DENIED,
+        VideoSource::Camera { .. } => CAMERA_DENIED,
     }
 }
 
@@ -1313,6 +1328,41 @@ mod tests {
         .into_iter()
         .collect();
         insta::assert_json_snapshot!("s13b_states", rows);
+    }
+
+    /// A refusal is worded by its source's kind: a screen's is the
+    /// ScreenCast portal's (S13b, S24's variant); a camera has no screen
+    /// picker to close.
+    #[test]
+    fn refusals_follow_the_source_kind() {
+        let screen = VideoSource::Screen {
+            output: "DP-4".into(),
+            label: String::new(),
+        };
+        let camera = VideoSource::Camera {
+            device: "/dev/video0".into(),
+            label: String::new(),
+        };
+        assert_eq!(
+            refusal(&screen, false),
+            "Access denied by the desktop portal"
+        );
+        assert_eq!(refusal(&screen, true), "Screen picker closed");
+        assert_eq!(refusal(&camera, false), "Camera access denied");
+        assert_eq!(refusal(&camera, true), "Camera access denied");
+        let closed = live(&[(
+            "/dev/video0",
+            LiveSourceState::Refused {
+                cancelled: true,
+                message: "closed".into(),
+            },
+        )]);
+        let rows = layer_rows(&s02(), &closed);
+        let face = rows
+            .iter()
+            .find(|r| r.layer == LayerId::numbered(2))
+            .unwrap();
+        assert_eq!(face.error.as_deref(), Some(CAMERA_DENIED));
     }
 
     #[test]

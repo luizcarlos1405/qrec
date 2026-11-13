@@ -66,7 +66,8 @@ pub enum UiAction {
     OpenPath(String),
     RevealPath(String),
     CopyText(String),
-    /// Copies a PNG file's image (`wl-copy --type image/png`).
+    /// Copies a PNG file's image to the clipboard (the GUI's: the PNG, its
+    /// picture and its `file://` URI).
     CopyImage(String),
     /// Runs a command (e.g. "Undo").
     Dispatch(Box<Command>),

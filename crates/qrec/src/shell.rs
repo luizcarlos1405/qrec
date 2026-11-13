@@ -27,7 +27,9 @@
 //!   GUI (`qrec` without a command) logs to its project's GUI log
 //!   (`UserDirs::gui_log`: appended, a header per run, rotated past 8 MiB;
 //!   `info`, `debug` with `-v`), warnings also on stderr (docs/GUI.md
-//!   G§3.2), then runs `qrec_gui::run`.
+//!   G§3.2), then runs `qrec_gui::run`. Both logs name the platform
+//!   `main` detected (`platform: session=wayland desktop=niri …`), whose
+//!   desktop's global shortcuts the agent guide gives.
 
 use std::ffi::OsString;
 use std::io::IsTerminal;
@@ -44,7 +46,7 @@ use qrec_shell::capture::{self, EngineOptions};
 use qrec_shell::deps::{CaptureEngine, Deps, NoCapture, OpenOpts, os_entropy, system_clock};
 use qrec_shell::doctor::{self, DoctorOptions};
 use qrec_shell::facts::{ConfigFile, config_problem_toast};
-use qrec_shell::gpu::GpuInputs;
+use qrec_shell::gpu::{self, GpuInputs};
 use qrec_shell::host::signals::{self, HOST_SIGNALS, Interrupts};
 use qrec_shell::host::{
     self, ExitRules, HeadlessArgs, HostProgram, HostSession, Opener, RequestContext, RequestEvents,
@@ -53,6 +55,7 @@ use qrec_shell::host::{
 use qrec_shell::media::FfmpegRunner;
 use qrec_shell::msg::Request;
 use qrec_shell::paths::{self, Env, UserDirs};
+use qrec_shell::platform::{self, Desktop};
 use qrec_shell::session::{Notifier, Session, SessionConfig, SessionEnv};
 use qrec_shell::sources::{self, Discover, LiveDevices, SourceInventory};
 use qrec_shell::{ShellError, caps, ipc, projects};
@@ -387,8 +390,18 @@ impl Backend for Shell {
         Ok(SourceInventory::discover(Discover::ALL).to_json())
     }
 
+    fn desktop(&mut self) -> Desktop {
+        platform::current().desktop.clone()
+    }
+
+    fn program(&mut self) -> String {
+        platform::current().program().to_owned()
+    }
+
     fn host(&mut self, project: &Path, args: &HostArgs) -> Result<u8, CoreError> {
         self.init_logging(Role::Host);
+        tracing::info!("platform: {}", platform::current());
+        gpu::log_startup_report();
         let mut opener = ShellOpener {
             notices: None,
             config: None,
@@ -428,6 +441,8 @@ impl Backend for Shell {
             "qrec {VERSION}: the window for {} (from {from})",
             project.display(),
         );
+        tracing::info!("platform: {}", platform::current());
+        gpu::log_startup_report();
         let (verbose, _) = self.verbosity.unwrap_or((0, false));
         qrec_gui::run(qrec_gui::GuiArgs {
             project: project.to_path_buf(),
@@ -441,6 +456,7 @@ impl Backend for Shell {
     fn picker(&mut self, cwd: Option<&Path>) -> Result<u8, CoreError> {
         self.init_gui_logging(None);
         tracing::info!("qrec {VERSION}: the project picker");
+        gpu::log_startup_report();
         let (verbose, _) = self.verbosity.unwrap_or((0, false));
         qrec_gui::run_picker(qrec_gui::PickerArgs {
             cwd: cwd.map(Path::to_path_buf),
@@ -587,11 +603,12 @@ impl Opener for ShellOpener {
         {
             env.config = config;
         }
-        // Hosts that record find the `va*h264enc` bound to their render node
-        // in a probe child (`main` runs it); never under the fake backend,
-        // which records without a GPU.
-        if matches!(opts.host, HostKind::Gui | HostKind::Headless) && !env.fake_backend {
-            env.caps.gst_factory = Some(caps::gst_factory_probe);
+        // Hosts that record ask a probe child (`main` runs it) for the H.264
+        // encoders GStreamer has: the VA ones bound to their render node
+        // (never under the fake backend, which records without a GPU) and
+        // x264enc and openh264enc.
+        if matches!(opts.host, HostKind::Gui | HostKind::Headless) {
+            env.caps.gst_probe = Some(caps::gst_probe);
         }
         // Only hosts that record get the engine: a CLI command's own host
         // never records (A§8.5), so a recording never runs inside a command

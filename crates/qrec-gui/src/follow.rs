@@ -40,6 +40,7 @@ use qrec_shell::watcher::{self, Settings, SettingsEvent, SettingsWatcher};
 
 use crate::host::queue::{Inbound, Queue};
 use crate::media::io::BusyToken;
+use crate::store::local::StartupPhase;
 use crate::theme::MotionPolicy;
 use crate::{Ctx, guard, guarded};
 
@@ -218,8 +219,14 @@ impl Inner {
         // The token goes once the change is applied (and with a panic too).
         let busy = self.busy.borrow_mut().take();
         // `scenes.json` lives in the same folder (SPEC §5.6): the Session
-        // reads it again for the scene bar, whichever file changed.
-        self.ctx.store.dispatch(qrec_core::Command::ScenesReload);
+        // reads it again for the scene bar, whichever file changed. Only
+        // once it is open: it reads the file as it opens, and on a blocking
+        // page (X1, S23) the reload can only fail, in a toast nobody asked
+        // for ("the project isn't open yet", S23's missing dependencies).
+        let open = matches!(self.ctx.store.local().startup, StartupPhase::Open);
+        if open {
+            self.ctx.store.dispatch(qrec_core::Command::ScenesReload);
+        }
         self.deadline.stop();
         let theme = &self.ctx.theme;
         let store = &self.ctx.store;

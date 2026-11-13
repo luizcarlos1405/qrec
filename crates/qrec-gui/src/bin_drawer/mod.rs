@@ -687,12 +687,16 @@ impl Drawer {
         );
     }
 
-    /// The list's keys (D-11, D-37); `true` when used.
+    /// The list's keys (D-11, D-37); `true` when used. A key with Ctrl,
+    /// Alt, Super, Meta or Hyper held isn't the list's (`Meta+↓` isn't
+    /// `↓`, as in the router).
     fn key(self: &Rc<Self>, keyval: gdk::Key, state: gdk::ModifierType) -> bool {
         let plain = !state.intersects(
             gdk::ModifierType::CONTROL_MASK
                 | gdk::ModifierType::ALT_MASK
-                | gdk::ModifierType::SUPER_MASK,
+                | gdk::ModifierType::SUPER_MASK
+                | gdk::ModifierType::META_MASK
+                | gdk::ModifierType::HYPER_MASK,
         );
         if !plain {
             return false;

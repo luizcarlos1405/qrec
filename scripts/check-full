@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # The milestone gate (CLAUDE.md, docs/GUI.md G§8.4): fmt, clippy, the
 # workspace tests (nextest, then the doc-tests), `nix build` (the package;
-# its own sandbox runs the core's tests), every nested suite on gles2 and
+# its own sandbox runs the core's tests), the X11 cases (tests/x11.rs, on a
+# private Xvfb), every nested suite on gles2 and
 # on pixman (many cases at once, each timing-sensitive case alone; the
 # packaged case runs the fresh build), every suite again at scale 1.5 and
-# 2 on pixman, and G§8.6's probes (the frame-time probe and the smoke's
+# 2 on pixman, the X11 smoke (gui_x11, the harness's X11 session: a private
+# Xvfb with no window manager) with Cairo, with GL on llvmpipe and at
+# GDK_SCALE=2, and G§8.6's probes (the frame-time probe and the smoke's
 # main-loop check, three times each alone on gles2; the cache bounds).
 #
 #   scripts/check-full
@@ -33,15 +36,19 @@ if [ -z "${QREC_FONT_DIR:-}" ] || ! command -v sway >/dev/null 2>&1; then
   [ -x tmp/dev ] && exec tmp/dev "$self" "$@"
   exec nix develop "git+file://$repo" --command "$self" "$@"
 fi
-unset DISPLAY WAYLAND_DISPLAY WAYLAND_SOCKET GDK_BACKEND XAUTHORITY QREC_TEST_WLR QREC_TEST_SCALE
+unset DISPLAY WAYLAND_DISPLAY WAYLAND_SOCKET GDK_BACKEND XAUTHORITY QREC_TEST_WLR QREC_TEST_SCALE QREC_TEST_DISPLAY
 threads=${QREC_NESTED_THREADS:-6}
 out="$repo/tmp/check-full/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$out"
 summary="$out/summary.txt"
+# The nested suites on sway, and gui_x11 apart: its cases start a private
+# Xvfb whatever the run's variables say, and X11 has no 1.5 scale.
 suites=()
-for f in crates/qrec/tests/gui_*.rs; do suites+=("$(basename "$f" .rs)"); done
-nested=()
-for s in "${suites[@]}"; do nested+=(--test "$s"); done
+x11_suites=()
+for f in crates/qrec/tests/gui_*.rs; do
+  s=$(basename "$f" .rs)
+  if [ "$s" = gui_x11 ]; then x11_suites+=("$s"); else suites+=("$s"); fi
+done
 
 failed=0
 note() { echo "$*" | tee -a "$summary"; }
@@ -65,21 +72,27 @@ step() {
     tee -a "$summary"
   return $rc
 }
-# Every nested case with the variables given, <threads> at once, then the
-# cases that ran alone last time, one at a time (the harness lists them in
+# all_nested <suites array name> [VAR=value...]: those suites' nested
+# cases with the variables given, <threads> at once, then the cases that
+# ran alone last time, one at a time (the harness lists them in
 # target/tmp/gui-exclusive/; its locks keep them alone either way, the
 # list only spares the parallel run a drain for each).
 all_nested() {
+  local -n run_suites=$1
+  shift
   (
     for kv in "$@"; do export "${kv?}"; done
-    local f n alone=() rc=0
+    local f n s tests=() alone=() rc=0
+    for s in "${run_suites[@]}"; do tests+=(--test "$s"); done
     for f in target/tmp/gui-exclusive/*--*; do
       [ -e "$f" ] || continue
       n=${f##*/}
-      [ -f "crates/qrec/tests/${n%%--*}.rs" ] && alone+=("(binary(=${n%%--*}) & test(=${n#*--}))")
+      for s in "${run_suites[@]}"; do
+        [ "${n%%--*}" = "$s" ] && alone+=("(binary(=$s) & test(=${n#*--}))")
+      done
     done
     local run=(cargo nextest run -p qrec --no-fail-fast --no-tests=warn --run-ignored only
-      --retries "${QREC_NESTED_RETRIES:-1}" "${nested[@]}")
+      --retries "${QREC_NESTED_RETRIES:-1}" "${tests[@]}")
     if [ ${#alone[@]} -eq 0 ]; then
       "${run[@]}" --test-threads "$threads"
       exit
@@ -92,7 +105,7 @@ all_nested() {
     exit $rc
   )
 }
-matrix() { # matrix <name> <log> [VAR=value...]
+matrix() { # matrix <name> <log> <suites array name> [VAR=value...]
   local name=$1 log=$2
   shift 2
   step "$name" "$log" all_nested "$@"
@@ -114,6 +127,8 @@ nix build "git+file://$repo" --cores 4 --max-jobs 1 --out-link "$repo/result" -L
 nix_pid=$!
 
 step "doc-tests" doc-tests cargo test --workspace --doc --no-fail-fast
+nested=()
+for s in "${suites[@]}" "${x11_suites[@]}"; do nested+=(--test "$s"); done
 step "nested binaries (build)" nested-build cargo nextest run -p qrec --no-run "${nested[@]}"
 
 echo "== nix build: waiting for it"
@@ -127,16 +142,23 @@ else
     "nix build" "$((SECONDS - nix_start))" "$rc")"
 fi
 
+step "x11 (private Xvfb)" x11 cargo nextest run -p qrec --no-fail-fast --run-ignored only --test x11
+
 start=$(date +%s)
-matrix "nested, gles2" nested-gles2 QREC_TEST_WLR=gles2
+matrix "nested, gles2" nested-gles2 suites QREC_TEST_WLR=gles2
 # Its shots, before the pixman run writes the same names.
 (cd tmp/gui-shots && find . -path ./scale -prune -o -path ./final -prune -o -type f -newermt "@$start" -print) |
   while read -r f; do
     mkdir -p "$out/shots-gles2/$(dirname "$f")" && cp -p "tmp/gui-shots/$f" "$out/shots-gles2/$f"
   done
-matrix "nested, pixman" nested-pixman
-matrix "nested, pixman, scale 1.5" nested-scale-1.5 QREC_TEST_SCALE=1.5
-matrix "nested, pixman, scale 2" nested-scale-2 QREC_TEST_SCALE=2
+matrix "nested, pixman" nested-pixman suites
+matrix "nested, pixman, scale 1.5" nested-scale-1.5 suites QREC_TEST_SCALE=1.5
+matrix "nested, pixman, scale 2" nested-scale-2 suites QREC_TEST_SCALE=2
+# The X11 smoke: its windows draw with Cairo (pixman's run), then with GL on
+# llvmpipe (gles2's: Xvfb has no GPU), then with Cairo at GDK_SCALE=2.
+matrix "nested, x11 (cairo)" nested-x11-cairo x11_suites
+matrix "nested, x11 (gl)" nested-x11-gl x11_suites QREC_TEST_WLR=gles2
+matrix "nested, x11, scale 2" nested-x11-scale-2 x11_suites QREC_TEST_SCALE=2
 
 # G§8.6's probes, each alone.
 for i in 1 2 3; do

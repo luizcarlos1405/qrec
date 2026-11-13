@@ -45,7 +45,9 @@ fn cast_probe() {
         OpenRequest {
             id: 1,
             outputs: vec![output.clone()],
-            screens: vec![],
+            // The screens identify the stream: with none known, the token
+            // file would lose the output's token instead of renewing it.
+            screens: crate::capture::DeviceInfo::screens(&crate::sources::LiveDevices),
             tokens,
             timeout: Duration::from_secs(120),
             register_app_id: false,

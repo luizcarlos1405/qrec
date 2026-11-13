@@ -1,0 +1,123 @@
+# Builds Qrec's AppImage (packaging/appimage/README.md) and tries it on
+# Ubuntu 24.04, Debian 13, Fedora and Arch in containers. The AppImage, its
+# checksum and its package list are the run's artifacts; for a v* tag they
+# also go to that tag's GitHub release, a draft with CHANGELOG.md's notes
+# when the job makes it.
+name: AppImage
+
+on:
+  push:
+    branches: [main, distribution-work]
+    tags: ["v*"]
+    paths:
+      - "crates/**"
+      - "data/**"
+      - "packaging/appimage/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/appimage.yml"
+  pull_request:
+    paths:
+      - "crates/**"
+      - "data/**"
+      - "packaging/appimage/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/appimage.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: appimage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      JOBS: 4
+      QREC_APPIMAGE_DIR: ${{ github.workspace }}/tmp/appimage
+    steps:
+      - uses: actions/checkout@v4
+
+      # The builder image (Arch with one archive day's packages, 3 GB) and
+      # cargo's downloads and build, between runs.
+      - name: Cache the builder image
+        id: builder
+        uses: actions/cache@v4
+        with:
+          path: tmp/appimage-builder.tar.zst
+          key: appimage-builder-${{ hashFiles('packaging/appimage/build.sh') }}
+      - name: Load the builder image
+        if: steps.builder.outputs.cache-hit == 'true'
+        run: zstd -dc tmp/appimage-builder.tar.zst | docker load
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            tmp/appimage/cargo-home
+            tmp/appimage/target
+            tmp/appimage/cache
+          key: appimage-cargo-${{ hashFiles('Cargo.lock', 'packaging/appimage/build.sh') }}
+          restore-keys: appimage-cargo-
+
+      - name: Build the AppImage
+        run: packaging/appimage/build.sh
+      - name: Keep the builder image for the next run
+        if: steps.builder.outputs.cache-hit != 'true'
+        run: |
+          image=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep '^qrec-appimage-builder:' | head -n 1)
+          docker save "$image" | zstd -T0 -3 -q -o tmp/appimage-builder.tar.zst
+
+      - name: Try it on other distributions
+        run: packaging/appimage/test.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qrec-appimage
+          path: |
+            tmp/appimage/out/*.AppImage
+            tmp/appimage/out/*.sha256
+            tmp/appimage/out/*.build.txt
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qrec-appimage-tests
+          path: |
+            tmp/appimage/test/*/summary.txt
+            tmp/appimage/shots/*.png
+          if-no-files-found: ignore
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: qrec-appimage
+          path: out
+      # A release the job makes is a draft, with the tag's section of
+      # CHANGELOG.md (`## 0.1.0 (…)` up to the next `## `) as its notes.
+      - name: Attach the AppImage to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=${TAG#v}
+          awk -v v="$version" '
+            /^## / { if (found) exit; found = ($2 == v) ; next }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+                 --title "Qrec $version" --notes-file notes.md
+          gh release upload "$TAG" out/* --clobber --repo "$GITHUB_REPOSITORY"

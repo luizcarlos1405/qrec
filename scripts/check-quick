@@ -11,7 +11,8 @@
 # Changed: `git diff` against the merge base with main (QREC_CHECK_BASE to
 # compare with another ref) plus untracked files. Runs in the dev env
 # (tmp/dev when this checkout has one, else `nix develop`); the nested
-# cases run in headless sway, never on your display. QREC_NESTED_THREADS
+# cases run in headless sway (gui_x11's on a private Xvfb), never on your
+# display. QREC_NESTED_THREADS
 # sets how many cases run at once (default 6). A failed nested case runs
 # once more and, passed then, is FLAKY, not a failure (no known cause
 # since 2026-10-18's fixes, G§8.4); QREC_NESTED_RETRIES=0 for none. Exit
@@ -29,7 +30,7 @@ if [ -z "${QREC_FONT_DIR:-}" ] || ! command -v sway >/dev/null 2>&1; then
   [ -x tmp/dev ] && exec tmp/dev "$self" "$@"
   exec nix develop "git+file://$repo" --command "$self" "$@"
 fi
-unset DISPLAY WAYLAND_DISPLAY WAYLAND_SOCKET GDK_BACKEND XAUTHORITY
+unset DISPLAY WAYLAND_DISPLAY WAYLAND_SOCKET GDK_BACKEND XAUTHORITY QREC_TEST_DISPLAY
 threads=${QREC_NESTED_THREADS:-6}
 plan=0
 if [ "${1:-}" = --plan ]; then
@@ -38,10 +39,16 @@ if [ "${1:-}" = --plan ]; then
 fi
 
 # The suites a changed file's area has (G§3.16's owners), "all", or none.
+# `x11` isn't nested: its cases run qrec on a private Xvfb. `gui_x11` is:
+# the harness's X11 session, a private Xvfb with no window manager.
 suites_for() {
   case "$1" in
+    crates/qrec/tests/gui_support/x11.rs) echo gui_x11 ;;
     crates/qrec/tests/gui_support/* | crates/qrec/tests/support/*) echo all ;;
-    crates/qrec/tests/gui_*.rs) basename "$1" .rs ;;
+    crates/qrec/tests/gui_*.rs | crates/qrec/tests/x11.rs) basename "$1" .rs ;;
+    crates/qrec-shell/src/testkit/x11.rs) echo x11 gui_x11 gui_shell gui_smoke ;;
+    crates/qrec-shell/src/sources.rs | crates/qrec-shell/src/sources/* | crates/qrec-shell/src/capture/*)
+      echo x11 gui_shell gui_smoke ;;
     crates/qrec-gui/src/timeline/* | */components/timeline.css | crates/qrec-core/src/view/timeline* | crates/qrec-core/src/view/ruler*)
       echo gui_timeline ;;
     crates/qrec-gui/src/stage/* | crates/qrec-gui/src/media/live.rs | crates/qrec-gui/src/media/program.rs | */components/stage.css | crates/qrec-core/src/view/canvas*)
@@ -62,6 +69,8 @@ suites_for() {
     crates/qrec-gui/src/follow.rs) echo gui_live ;;
     crates/qrec-gui/src/window/announce.rs | crates/qrec-gui/src/keys/*) echo gui_a11y gui_shell ;;
     crates/qrec-gui/src/probe.rs | crates/qrec-gui/src/gpu_warmup.rs) echo gui_smoke gui_audits ;;
+    crates/qrec-gui/src/app.rs | crates/qrec-gui/src/desktop.rs | crates/qrec-gui/src/window/mod.rs)
+      echo gui_x11 gui_shell gui_smoke ;;
     crates/qrec-gui/* | crates/qrec-shell/*) echo gui_shell gui_smoke ;;
     crates/qrec-core/* | crates/qrec-cli/* | crates/qrec/src/*) echo gui_smoke ;;
   esac

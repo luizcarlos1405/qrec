@@ -14,3 +14,9 @@ gst-pipelines = { max-threads = 1 }
 filter = 'package(qrec-shell) & kind(lib) & test(/^(player::tests|ges_render::parity_tests|capture::(tests|fake_tests|meters::tests|record::tests))::/)'
 test-group = 'gst-pipelines'
 priority = 100
+
+# The X11 take (tests/x11.rs) runs alone: it records a private Xvfb for 3 s
+# and checks the take against the time it took.
+[[profile.default.overrides]]
+filter = 'package(qrec) & binary(=x11) & test(=an_x11_screen_is_recorded_without_the_portal)'
+threads-required = 'num-test-threads'

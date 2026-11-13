@@ -1,6 +1,7 @@
 //! WP9's cases (docs/GUI.md G§7 WP9, G§8.4) in a nested headless sway: the
 //! command palette (S19, S19b) and the rows it runs (D-19's Clear undo
-//! history through its confirmation), the cheat sheet (S20, S20b),
+//! history through its confirmation), the cheat sheet (S20, S20b, and its
+//! global shortcuts on GNOME),
 //! Settings › Appearance (S21) and › Keyboard (S22: the conflict banner,
 //! Q5's inert key, the capture and the edits), the Recording and Autocut
 //! pages (not drawn), and S25's toasts, each triggered for real (#8: the
@@ -25,6 +26,8 @@ use std::process::Command;
 use std::time::Duration;
 
 use gui_support::{HeldKeys, Launch, Nested, Options, assert_regions, poll, wait_for_gui_host};
+use qrec_core::keymap::global_snippet;
+use qrec_core::platform::{Desktop, QREC};
 use qrec_core::state::{CanvasMode, UiState};
 use qrec_core::{ClipId, LayerId};
 use qrec_shell::testkit::design::{DesignVariant, design_fixture, write_ui};
@@ -381,7 +384,8 @@ fn query_status(nested: &Nested, project: &Path) -> Value {
 
 /// S20: `?` over S06 with Save frame rebound to F: the sheet at (40, 40,
 /// 1520, 920) over `scrim-strong`, three columns, "default P", the
-/// footer; `Esc` closes it.
+/// global shortcuts of the frame's desktop (niri: its KDL and config
+/// file), the footer; `Esc` closes it.
 #[test]
 #[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
 fn s20_the_cheat_sheet() {
@@ -390,7 +394,12 @@ fn s20_the_cheat_sheet() {
     let (config, launch) = home_config(&nested);
     fs::write(config.join("keys.toml"), "[bindings]\nframe.save = \"f\"\n").expect("keys.toml");
     let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base, &s06());
-    open(&mut nested, &project, launch);
+    // The frame's desktop.
+    open(
+        &mut nested,
+        &project,
+        launch.with_env("XDG_CURRENT_DESKTOP", "niri"),
+    );
     nested.keys(&["?"]);
     let gui = nested.window(0);
     gui.wait_idle();
@@ -424,7 +433,11 @@ fn s20_the_cheat_sheet() {
         "Keyboard shortcuts",
         "Toggle record (start / stop)",
         "default P",
-        "Copy niri snippet",
+        "Global shortcuts",
+        "Bind these in niri to record while another app has focus.",
+        "Copy snippet",
+        "Paste into",
+        "~/.config/niri/config.kdl",
         "Shuttle reverse / stop / forward",
         "Nudge trim edge 1 frame (Shift: 10)",
     ] {
@@ -463,6 +476,76 @@ fn s20_the_cheat_sheet() {
     assert_eq!(overlays(&mut nested), ["CheatSheet"]);
     ctrl(&mut nested, "comma");
     assert_eq!(overlays(&mut nested), [settings_overlay("keyboard")]);
+    key(&mut nested, "Escape");
+    assert!(overlays(&mut nested).is_empty());
+    assert_clean(&mut nested);
+    nested.close_window();
+    assert_eq!(nested.window(0).wait_exit(EXIT), Some(0));
+}
+
+/// The nested display's clipboard (`wl-paste`), once it reads `want`.
+fn wait_clipboard(nested: &Nested, want: &str) -> String {
+    poll(APPLY, "the clipboard", || {
+        let out = run_tool(
+            nested.nested_tool("wl-paste").arg("--no-newline"),
+            gui_support::TOOL_TIMEOUT,
+        );
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        (out.status.success() && text == want).then_some(text)
+    })
+}
+
+/// The cheat sheet where Qrec runs on GNOME (`XDG_CURRENT_DESKTOP`): the
+/// Global shortcuts group's rows with Super, the note naming GNOME
+/// Settings › Keyboard and no file to paste into; Copy snippet copies the
+/// steps with the three commands, says "Copied", then the core's label
+/// again. "Copied" shows for 2 s, read after the click's `waitIdle`: the
+/// case runs alone.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_cheat_sheet_on_gnome() {
+    let mut nested = Nested::start(
+        AREA,
+        "s20-gnome",
+        Options::default().exclusive("Copy snippet says \"Copied\" for 2 s, read after the click"),
+    );
+    let (_, launch) = home_config(&nested);
+    let project = fixture(&nested, "rust-traits-talk", DesignVariant::Base, &s06());
+    open(
+        &mut nested,
+        &project,
+        launch.with_env("XDG_CURRENT_DESKTOP", "GNOME"),
+    );
+    nested.keys(&["?"]);
+    nested.window(0).wait_idle();
+    assert_eq!(overlays(&mut nested), ["CheatSheet"]);
+    let gnome = global_snippet(&Desktop::Gnome, QREC);
+    let labels = nested.window(0).labels("cheatsheet-group-globalshortcuts");
+    assert_eq!(
+        labels,
+        [
+            "Global shortcuts",
+            "Record toggle",
+            "Super",
+            "Shift",
+            "R",
+            "Record over",
+            "Super",
+            "Shift",
+            "O",
+            "Discard last take",
+            "Super",
+            "Shift",
+            "D",
+            gnome.note.as_str(),
+            "Copy snippet",
+        ]
+    );
+    nested.screenshot("sheet");
+    click(&mut nested, "cheatsheet-copy-snippet");
+    wait_labels(&mut nested, "cheatsheet-copy-snippet", "Copied");
+    wait_clipboard(&nested, &gnome.text);
+    wait_labels(&mut nested, "cheatsheet-copy-snippet", "Copy snippet");
     key(&mut nested, "Escape");
     assert!(overlays(&mut nested).is_empty());
     assert_clean(&mut nested);

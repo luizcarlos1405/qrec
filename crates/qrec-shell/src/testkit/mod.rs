@@ -9,6 +9,8 @@
 //! - [`design`] (feature `testkit`: it builds on `qrec_core::testkit`): the
 //!   GUI's fixture projects, BRIEF §3's sample among them (docs/GUI.md
 //!   G§8.4).
+//! - [`x11::Xvfb`]: a private X server (RandR, its own cookie), never the
+//!   developer's display.
 //!
 //! Helpers panic with a clear message instead of returning errors: they only
 //! run in tests.
@@ -19,6 +21,7 @@ mod media;
 pub mod process;
 mod project;
 mod tool;
+pub mod x11;
 
 use std::ffi::OsString;
 use std::fs;
@@ -34,10 +37,10 @@ pub use tool::{ToolOutput, run_tool};
 
 /// The developer's session variables a [`TestEnv::command`] never passes
 /// on: the displays and what picks or opens one (`GDK_BACKEND`, which
-/// `qrec` takes for a reachable display, and the X11 cookie), what names
-/// the session's kind and desktop, and the compositors' IPC sockets (with
-/// the inherited `NIRI_SOCKET`, `niri msg` lists the developer's real
-/// monitors). A test that needs a display sets its variables after
+/// picks the one `qrec`'s window opens on, and the X11 cookie), what
+/// names the session's kind and desktop, and the compositors' IPC sockets
+/// (with the inherited `NIRI_SOCKET`, `niri msg` lists the developer's
+/// real monitors). A test that needs a display sets its variables after
 /// `command()`, as the GUI harness does.
 pub const SESSION_VARS: [&str; 13] = [
     "DISPLAY",
@@ -354,16 +357,15 @@ mod tests {
 
     /// What the env spawns never sees the developer's session, whatever the
     /// test process inherited: `qrec` without a command opens the window
-    /// (and with `GDK_BACKEND` set takes the folder's lock before GTK even
-    /// connects), and `niri msg` answers with the real monitors. The names
-    /// are written out here too, so trimming [`SESSION_VARS`] fails this
-    /// test (the check scripts unset `GDK_BACKEND`, so
-    /// `qrec_without_a_command` wouldn't notice). Checked in a child of
-    /// this test binary given every one of them (`tmp/dev` unsets the
-    /// displays, so this process may have none to pass on); the values
-    /// point nowhere, in case one ever got through. A variable set after
-    /// `command()` still reaches the process: that's how a test gives one
-    /// its display.
+    /// (on the display `GDK_BACKEND` picks), and `niri msg` answers with
+    /// the real monitors. The names are written out here too, so trimming
+    /// [`SESSION_VARS`] fails this test (the check scripts unset
+    /// `GDK_BACKEND`, so `qrec_without_a_command` wouldn't notice). Checked
+    /// in a child of this test binary given every one of them (`tmp/dev`
+    /// unsets the displays, so this process may have none to pass on); the
+    /// values point nowhere, in case one ever got through. A variable set
+    /// after `command()` still reaches the process: that's how a test gives
+    /// one its display.
     #[test]
     fn commands_never_see_the_developers_session() {
         const CHILD: &str = "QREC_TESTKIT_SESSION_CHILD";

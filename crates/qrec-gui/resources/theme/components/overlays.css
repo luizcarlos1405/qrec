@@ -217,8 +217,8 @@
   border-spacing: 6px;
 }
 
-/* Global (niri)'s note and button: 8 under the rows, 12 between. */
-.qrec-cheatsheet .cheat-niri {
+/* Global shortcuts' note and button: 8 under the rows, 12 between. */
+.qrec-cheatsheet .cheat-global {
   padding-top: 8px;
   border-spacing: 12px;
 }

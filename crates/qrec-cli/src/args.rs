@@ -28,8 +28,8 @@ PROJECT FOLDER
   current directory. It must contain qrec.json or be strictly empty (hidden
   files such as .git count); an empty folder becomes a project with `qrec
   init` or on the first change. Without --project, a current directory that
-  is neither falls back to the single running Qrec host (so compositor key
-  binds work from $HOME), except inside a project's subfolder and for `qrec
+  is neither falls back to the single running Qrec host (so global shortcuts
+  work from $HOME), except inside a project's subfolder and for `qrec
   init`, which only acts on its own folder. When no project is found the
   command exits 3 with
     \"Not my swamp: this folder isn't empty and has no qrec.json\"
@@ -70,7 +70,7 @@ EXIT CODES
 #[command(
     name = "qrec",
     version,
-    about = "Quick Wayland screen and camera recorder: press R, talk, press R",
+    about = "Quick screen and camera recorder for Linux: press R, talk, press R",
     long_about = LONG_ABOUT,
     after_help = "Run `qrec agent-guide` for a concise guide for LLM agents, \
                   `qrec <command> --help` for details.",
@@ -135,7 +135,7 @@ pub enum Cmd {
     Folders(FoldersArgs),
     /// Show a project summary; with --json the full state plus host and recording status.
     Status,
-    /// Check dependencies, portal and devices; print the niri key-bind snippet.
+    /// Check dependencies, portal and devices; print this desktop's global shortcuts.
     ///
     /// Lists every check with a hint for each failure. Exits 5 when a required
     /// dependency is missing.
@@ -1099,7 +1099,7 @@ impl From<AudioRoleArg> for AudioRole {
 /// Which H.264 encoder records and exports MP4.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum EncoderArg {
-    /// VA-API when it works on the chosen node, else x264.
+    /// VA-API when it works on the chosen node, else x264, or OpenH264 where x264 isn't installed.
     Auto,
     /// VA-API hardware encoding.
     Vaapi,

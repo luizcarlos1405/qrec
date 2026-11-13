@@ -1,6 +1,6 @@
 ---
 source: crates/qrec-core/src/agent_guide.rs
-expression: agent_guide()
+expression: "agent_guide(&Desktop::Niri)"
 ---
 # Qrec agent guide
 
@@ -27,7 +27,7 @@ the same commands, and every edit is undoable. Always pass `--json`.
 - Inside a project's subfolder, commands exit 3 (`not_project`) and name the
   project: pass `--project DIR` or run them there.
 - Elsewhere, without `--project`, commands use the single running Qrec (so
-  compositor key binds work from `$HOME`; several running ones are a usage
+  global shortcuts work from `$HOME`; several running ones are a usage
   error that lists them), except `qrec init`, which only acts on its own
   folder. With none running they exit 3 with
   "Not my swamp: this folder isn't empty and has no qrec.json".
@@ -212,8 +212,10 @@ Some keys only act on the window and have no CLI form:
 | Shift+F6 | Focus previous region |
 | Ctrl+Q | Quit |
 
-Global binds for recording while another app has focus (niri; `qrec doctor`
-prints them too):
+To record while another app has focus, bind the commands to global keys
+(`qrec doctor` prints how for the desktop it runs on).
+
+Global shortcuts for niri (paste into ~/.config/niri/config.kdl):
 
 ```kdl
 binds {

@@ -32,6 +32,7 @@ pub mod new_project;
 pub mod on_event;
 pub mod parse;
 pub mod plans;
+pub mod platform;
 pub mod project_folders;
 pub mod protocol;
 pub mod query;

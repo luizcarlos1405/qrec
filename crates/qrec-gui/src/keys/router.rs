@@ -5,7 +5,11 @@
 //!
 //! For each press, first match:
 //!
-//! 1. A key Qrec can't bind (`KeyChord::from_gdk` gave `None`) propagates.
+//! 1. A key Qrec can't bind ([`press_chord`] gave `None`: a modifier
+//!    alone, a dead key, a chord with Meta or Hyper, an AltGr letter such
+//!    as Polish `ś`) propagates. A keyval Qrec doesn't bind (a letter of a
+//!    non-Latin layout) is the same physical key at the same shift level
+//!    in the first layout where it binds.
 //! 2. Focus in an editable propagates: the field handles `Enter`, `Esc`
 //!    and `Tab`, and a held key's repeats (typing, `Backspace`).
 //! 3. During a drag (D-42): `Esc` cancels it; `n` toggles snapping during a
@@ -71,8 +75,8 @@ use crate::store::local::{ExportPanelMode, LocalUi, Overlay};
 /// One key press as the router sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyInput {
-    /// `KeyChord::from_gdk` of the press; `None` for keys Qrec can't bind
-    /// (a modifier alone, a dead key).
+    /// [`press_chord`] of the press; `None` for keys Qrec can't bind (a
+    /// modifier alone, a dead key, a chord with Meta or Hyper).
     pub chord: Option<KeyChord>,
     /// The focus is in an editable: a text or numeric field, a label being
     /// edited.
@@ -95,6 +99,58 @@ impl KeyInput {
             repeat: false,
         }
     }
+}
+
+/// The modifiers held during a press, from GDK's mask.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PressMods {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub super_: bool,
+    /// Meta or Hyper (macOS reports Command as Meta): no chord has them.
+    pub unmodelled: bool,
+}
+
+/// The keyboard layouts a press is looked up in: XKB's (and GDK's) four
+/// groups.
+const LAYOUT_GROUPS: u8 = 4;
+
+/// The chord of a press (step 1), whose keyval is named `keyval`, at shift
+/// level `level` of its key (GDK's `KeyEvent::level`: 0 plain, 1 Shift or
+/// Caps Lock, 2 and 3 AltGr; `None` when GDK didn't say):
+///
+/// - `None` while Meta or Hyper is held: `Meta+R` is no chord Qrec has,
+///   and running `R`'s binding for it would be wrong.
+/// - When `keyval` is no key Qrec binds (`Cyrillic_ka`, `Greek_rho`: a
+///   letter of a non-Latin layout), the same physical key at the same
+///   level in the keyboard's layouts, first to last, the first that binds:
+///   `in_layout(group)` is its keyval's name in layout `group` with the
+///   press's modifiers, and the level it is at. So `R` records with a
+///   Russian layout active; the key caps still show the bound key.
+/// - A lookup at another level isn't the press's key. GDK's mask doesn't
+///   carry AltGr, so an AltGr letter (`registered` from Brazilian
+///   `AltGr+R`, `sacute` from Polish `AltGr+S`) is looked up as the plain
+///   letter, at level 0: it has no chord and propagates. GTK's own
+///   shortcuts match a key in another layout only at the press's level
+///   too.
+pub fn press_chord(
+    keyval: Option<&str>,
+    level: Option<u32>,
+    in_layout: impl Fn(u8) -> Option<(String, u32)>,
+    mods: PressMods,
+) -> Option<KeyChord> {
+    if mods.unmodelled {
+        return None;
+    }
+    let chord = |name: &str| KeyChord::from_gdk(name, mods.ctrl, mods.alt, mods.shift, mods.super_);
+    keyval.and_then(chord).or_else(|| {
+        let level = level?;
+        (0..LAYOUT_GROUPS).find_map(|group| {
+            let (name, at) = in_layout(group)?;
+            if at == level { chord(&name) } else { None }
+        })
+    })
 }
 
 /// The keys held down (hardware keycodes, whose keyval can change mid-hold

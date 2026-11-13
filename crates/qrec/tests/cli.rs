@@ -8,13 +8,15 @@
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use qrec_core::error::NOT_MY_SWAMP;
+use qrec_core::keymap::{NIRI_SNIPPET, global_snippet};
+use qrec_core::platform::{Desktop, QREC};
 use qrec_shell::testkit::{MediaSpec, TestEnv, ffprobe, fixture_project, run_tool};
 use serde_json::{Value, json};
 
@@ -1759,6 +1761,32 @@ fn schema_keys_and_agent_guide() {
     );
     let json = qrec(&env, &dir, &["agent-guide", "--json"]);
     assert!(json.only_reply()["data"].as_str().unwrap().contains("qrec"));
+    // Its global shortcuts are the desktop's: none named here (the env
+    // drops the session's variables), so the generic list; niri's KDL on
+    // niri, GNOME's settings on GNOME.
+    let generic = global_snippet(&Desktop::Unknown, QREC);
+    assert!(guide.stdout.contains(&generic.text), "{}", guide.stdout);
+    assert!(!guide.stdout.contains(NIRI_SNIPPET), "{}", guide.stdout);
+    for (name, desktop) in [("niri", Desktop::Niri), ("GNOME", Desktop::Gnome)] {
+        let guide = qrec_with(
+            &env,
+            &dir,
+            &["agent-guide"],
+            &[("XDG_CURRENT_DESKTOP", OsStr::new(name))],
+        );
+        guide.ok();
+        let snippet = global_snippet(&desktop, QREC);
+        assert!(
+            guide.stdout.contains(&snippet.text),
+            "{name}: {}",
+            guide.stdout
+        );
+        assert_eq!(
+            guide.stdout.contains(NIRI_SNIPPET),
+            desktop == Desktop::Niri,
+            "{name}"
+        );
+    }
 }
 
 #[test]
@@ -1789,6 +1817,249 @@ fn sources_and_doctor_use_the_fake_inventory() {
         reply["error"]["details"]["checks"].clone()
     };
     assert!(checks.as_array().is_some_and(|c| !c.is_empty()), "{reply}");
+}
+
+/// From an AppImage (its runtime's `APPIMAGE` and `APPDIR`, with this
+/// binary in `$APPDIR`) the doctor says so, under the session line and in
+/// its JSON, and the global shortcuts it and the agent guide print run the
+/// AppImage's path. The same variables leaked into a qrec that runs from
+/// elsewhere change nothing.
+#[test]
+fn an_appimage_shows_in_the_doctor_and_runs_the_shortcuts() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("anywhere");
+    let bin = qrec_bin();
+    let appdir = bin.parent().unwrap().as_os_str();
+    let appimage = OsStr::new("/opt/Qrec-0.1.0-x86_64.AppImage");
+    let sway = OsStr::new("sway");
+    let vars = [
+        ("APPIMAGE", appimage),
+        ("APPDIR", appdir),
+        ("XDG_CURRENT_DESKTOP", sway),
+    ];
+    let out = qrec_with(&env, &dir, &["--json", "doctor"], &vars);
+    let reply = out.only_reply();
+    let report = if reply["ok"] == true {
+        &reply["data"]
+    } else {
+        &reply["error"]["details"]
+    };
+    assert_eq!(
+        report["platform"]["appImage"],
+        json!({"path": appimage.to_str(), "dir": appdir.to_str()}),
+        "{reply}"
+    );
+    let bind = "bindsym $mod+Shift+r exec /opt/Qrec-0.1.0-x86_64.AppImage record toggle";
+    let shortcuts = report["shortcuts"]["text"].as_str().unwrap();
+    assert!(shortcuts.contains(bind), "{shortcuts}");
+    let niri = report["niriSnippet"].as_str().unwrap();
+    assert!(
+        niri.contains(r#"spawn "/opt/Qrec-0.1.0-x86_64.AppImage" "record" "toggle""#),
+        "{niri}"
+    );
+    let text = qrec_with(&env, &dir, &["doctor"], &vars);
+    let line = format!(
+        "\nAppImage: /opt/Qrec-0.1.0-x86_64.AppImage (APPDIR={})\n",
+        appdir.to_string_lossy()
+    );
+    assert!(text.stdout.contains(&line), "{}", text.stdout);
+    let guide = qrec_with(&env, &dir, &["agent-guide"], &vars);
+    guide.ok();
+    assert!(guide.stdout.contains(bind), "{}", guide.stdout);
+
+    // APPDIR somewhere this binary isn't: no AppImage.
+    let elsewhere = env.empty_dir("elsewhere");
+    let leaked = [
+        ("APPIMAGE", appimage),
+        ("APPDIR", elsewhere.as_os_str()),
+        ("XDG_CURRENT_DESKTOP", sway),
+    ];
+    let out = qrec_with(&env, &dir, &["--json", "doctor"], &leaked);
+    let reply = out.only_reply();
+    let report = if reply["ok"] == true {
+        &reply["data"]
+    } else {
+        &reply["error"]["details"]
+    };
+    assert_eq!(report["platform"]["appImage"], Value::Null, "{reply}");
+    assert!(
+        report["shortcuts"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("exec qrec record toggle"),
+        "{reply}"
+    );
+}
+
+/// A session bus that isn't there: as on a desktop without one, the portal
+/// can't be asked.
+fn no_bus(env: &TestEnv) -> OsString {
+    format!("unix:path={}", env.root().join("no-bus").display()).into()
+}
+
+/// `qrec --json doctor` is one object whatever is missing (A§8.6): each
+/// check says `required` (an app check: exit 5) and what needs it
+/// (`neededFor`), and the report says where Qrec runs and what is off.
+#[test]
+fn doctor_json_is_one_object_with_tiers() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("anywhere");
+    let bus = no_bus(&env);
+    let out = qrec_with(
+        &env,
+        &dir,
+        &["--json", "doctor"],
+        &[("DBUS_SESSION_BUS_ADDRESS", bus.as_os_str())],
+    );
+    let reply = out.only_reply();
+    let report = if reply["ok"] == true {
+        &reply["data"]
+    } else {
+        &reply["error"]["details"]
+    };
+    let checks = report["checks"].as_array().expect("the checks");
+    assert!(!checks.is_empty(), "{reply}");
+    for check in checks {
+        let needed: Vec<&str> = check["neededFor"]
+            .as_array()
+            .unwrap_or_else(|| panic!("neededFor: {check}"))
+            .iter()
+            .map(|f| f.as_str().expect("a feature"))
+            .collect();
+        assert_eq!(check["required"], needed.contains(&"app"), "{check}");
+    }
+    let app_failed = checks
+        .iter()
+        .any(|c| c["required"] == true && c["ok"] == false);
+    assert_eq!(out.code, Some(if app_failed { 5 } else { 0 }), "{reply}");
+    assert!(report["featuresOff"].is_array(), "{report}");
+    assert!(report["platform"]["session"].is_string(), "{report}");
+    // No display here, so no screen backend: the screen checks are the
+    // display's alone (no portal is asked), and the fake backend needs
+    // none of it: its failure turns nothing off.
+    assert_eq!(report["screenBackend"], "none", "{report}");
+    assert_eq!(report["session"], "no display · screens: none", "{report}");
+    let display = checks
+        .iter()
+        .find(|c| c["id"] == "display")
+        .expect("the display's check");
+    assert_eq!(
+        (&display["ok"], &display["neededFor"]),
+        (&json!(false), &json!([]))
+    );
+    for check in checks {
+        let id = check["id"].as_str().expect("an id");
+        assert!(
+            !id.starts_with("portal.") && id != "gst.pipewiresrc" && id != "wl-copy",
+            "{check}"
+        );
+    }
+    // A check that passed has no fix.
+    for check in checks.iter().filter(|c| c["ok"] == true) {
+        assert!(check.get("fix").is_none(), "{check}");
+    }
+}
+
+/// The features `qrec --json doctor`'s report turns off.
+fn features_off(reply: &Value) -> Vec<String> {
+    reply["data"]["featuresOff"]
+        .as_array()
+        .expect("featuresOff")
+        .iter()
+        .map(|f| f["feature"].as_str().expect("a feature").to_owned())
+        .collect()
+}
+
+/// No display at all, then a Wayland session without a ScreenCast portal
+/// (no session bus) or a PipeWire daemon, each with no sound server:
+/// screen and audio capture are off, a line each, and nothing else is;
+/// exit 0 (issue #9: Qrec still opens projects, edits and exports). The
+/// real backend, with a configured VA device that is no render node, so
+/// no GPU probe runs. (An X11 session needs no portal: `tests/x11.rs`.)
+#[test]
+fn doctor_without_a_display_or_a_portal_turns_screens_off() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("anywhere");
+    let config_dir = env.config_home().join("qrec");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        "[encoder]\nvaapi_device = \"/nonexistent/renderD999\"\n",
+    )
+    .unwrap();
+    let bus = no_bus(&env);
+    let pulse: OsString = format!("unix:{}", env.root().join("no-pulse").display()).into();
+    let vars = [
+        ("QREC_CAPTURE_BACKEND", OsStr::new("real")),
+        ("DBUS_SESSION_BUS_ADDRESS", bus.as_os_str()),
+        ("PULSE_SERVER", pulse.as_os_str()),
+    ];
+    let human = qrec_with(&env, &dir, &["doctor"], &vars);
+    assert_eq!(human.code, Some(0), "{}{}", human.stdout, human.stderr);
+    let out = &human.stdout;
+    assert!(
+        out.starts_with("Session: no display · screens: none\n\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "\nScreen capture is off: no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display\n"
+        ),
+        "{out}"
+    );
+    assert!(out.contains("\nAudio capture is off: "), "{out}");
+    assert!(
+        out.ends_with("\nEverything else Qrec needs is here.\n"),
+        "{out}"
+    );
+    assert!(!out.contains("can't record or export"), "{out}");
+    let json = qrec_with(&env, &dir, &["--json", "doctor"], &vars);
+    assert_eq!(json.code, Some(0));
+    let reply = json.only_reply();
+    assert_eq!(features_off(&reply), ["screens", "audio"], "{reply}");
+    let va = &reply["data"]["va"];
+    assert_eq!(
+        (&va["ffmpegH264"], &va["gstFactory"]),
+        (&Value::Null, &Value::Null),
+        "no GPU probe: {va}"
+    );
+
+    // A Wayland session (a display name nothing serves in the env's own
+    // runtime dir: the doctor connects to no compositor) without the
+    // portal or PipeWire's socket (an empty folder of the env's).
+    let pipewire = env.empty_dir("no-pipewire");
+    let wayland = [
+        ("WAYLAND_DISPLAY", OsStr::new("qrec-test-no-compositor")),
+        ("PIPEWIRE_RUNTIME_DIR", pipewire.as_os_str()),
+    ];
+    let vars: Vec<(&str, &OsStr)> = vars.iter().chain(&wayland).copied().collect();
+    let json = qrec_with(&env, &dir, &["--json", "doctor"], &vars);
+    assert_eq!(json.code, Some(0));
+    let reply = json.only_reply();
+    let report = &reply["data"];
+    assert_eq!(report["session"], "Wayland · screens: portal", "{report}");
+    assert_eq!(features_off(&reply), ["screens", "audio"], "{reply}");
+    let screens = &report["featuresOff"][0];
+    assert_eq!(
+        screens["checks"],
+        json!(["pipewire.daemon", "portal.screencast"]),
+        "{screens}"
+    );
+    // A failed check's hint is the fix for this machine, whole in `fix`
+    // (an unknown desktop: xdg-desktop-portal and the desktop's backend).
+    let portal = report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "portal.screencast")
+        .expect("the portal's check");
+    assert_eq!(portal["hint"], portal["fix"]["note"], "{portal}");
+    assert!(
+        portal["fix"]["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("ScreenCast backend")),
+        "{portal}"
+    );
 }
 
 #[test]
@@ -2107,6 +2378,185 @@ fn missing_ffmpeg_or_ffprobe_is_a_missing_dependency() {
         &[("PATH", path.as_os_str())],
     )
     .ok();
+}
+
+/// A `PATH` whose `ffmpeg` (in `<root>/<name>/`) leaves `hidden` out of
+/// `ffmpeg -encoders` and is the real one otherwise, as Fedora's
+/// ffmpeg-free has no libx264. ffprobe stays the real one.
+fn path_hiding_encoders(env: &TestEnv, name: &str, hidden: &[&str]) -> OsString {
+    let bin = env.root().join(name);
+    fs::create_dir_all(&bin).unwrap();
+    let patterns: String = hidden.iter().map(|e| format!(" -e ' {e} '")).collect();
+    let script = format!(
+        "#!/bin/sh\n\
+         # ffmpeg without {hidden:?} in its encoder list.\n\
+         case \" $* \" in\n  \
+           *' -encoders '*)\n    \
+             '{real}' \"$@\" | grep -v -F{patterns}\n    \
+             exit 0 ;;\n\
+         esac\n\
+         exec '{real}' \"$@\"\n",
+        real = ffmpeg_on_path().display(),
+    );
+    let wrapper = bin.join("ffmpeg");
+    fs::write(&wrapper, script).unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path))).unwrap()
+}
+
+/// The checks of a `qrec --json doctor` reply, whatever its exit.
+fn doctor_report(out: &Out) -> Value {
+    let reply = out.only_reply();
+    if reply["ok"] == true {
+        reply["data"].clone()
+    } else {
+        reply["error"]["details"].clone()
+    }
+}
+
+/// Fedora's ffmpeg-free has libopenh264 and no libx264 (the dev shell's
+/// ffmpeg-full has both; the wrapper hides libx264): an MP4 export
+/// encodes with libopenh264 (A§9.3), every frame in Constrained Baseline,
+/// BT.709 limited range, no B-frames, and the doctor says libopenh264
+/// exports MP4. Without libopenh264 either, the export is
+/// `missing_dependency` naming both, before anything renders.
+#[test]
+fn an_mp4_export_without_libx264_encodes_with_openh264() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "openh264", &[video(30), video(30)]);
+    let fedora = path_hiding_encoders(&env, "ffmpeg-free", &["libx264"]);
+    let vars = [("PATH", fedora.as_os_str())];
+    let out = qrec_with(
+        &env,
+        &dir,
+        &["export", "--quality", "draft", "--json"],
+        &vars,
+    );
+    out.ok();
+    let reply = out.reply();
+    assert_eq!(reply["data"]["result"]["frames"], 60);
+    let path = PathBuf::from(reply["data"]["result"]["path"].as_str().unwrap());
+    let probe = ffprobe(&path);
+    let video = probe["streams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["codec_type"] == "video")
+        .unwrap();
+    assert_eq!(
+        (
+            &video["codec_name"],
+            &video["profile"],
+            &video["has_b_frames"]
+        ),
+        (&json!("h264"), &json!("Constrained Baseline"), &json!(0)),
+        "{video}"
+    );
+    assert_eq!(video["nb_read_packets"], "60", "{video}");
+    assert_eq!(
+        [
+            &video["color_range"],
+            &video["color_space"],
+            &video["color_primaries"],
+            &video["color_transfer"]
+        ],
+        [
+            &json!("tv"),
+            &json!("bt709"),
+            &json!("bt709"),
+            &json!("bt709")
+        ],
+        "{video}"
+    );
+    let duration: f64 = probe["format"]["duration"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((duration - 2.0).abs() < 0.05, "duration {duration}");
+    // Each segment's log starts with its argv.
+    let argvs: Vec<String> = fs::read_dir(dir.join(".qrec/logs"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.to_string_lossy().contains("-seg"))
+        .map(|p| {
+            fs::read_to_string(p)
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert!(!argvs.is_empty());
+    for argv in &argvs {
+        assert!(
+            argv.contains(" -c:v libopenh264 ") && !argv.contains("libx264"),
+            "{argv}"
+        );
+    }
+
+    // The doctor: libopenh264 exports MP4, libx264 is needed for nothing.
+    let bus = no_bus(&env);
+    let doctor = qrec_with(
+        &env,
+        &dir,
+        &["--json", "doctor"],
+        &[
+            ("PATH", fedora.as_os_str()),
+            ("DBUS_SESSION_BUS_ADDRESS", bus.as_os_str()),
+        ],
+    );
+    let report = doctor_report(&doctor);
+    let check = |id: &str| {
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id)
+            .unwrap_or_else(|| panic!("no {id}: {report}"))
+            .clone()
+    };
+    let x264 = check("ffmpeg.libx264");
+    assert_eq!(
+        (&x264["ok"], &x264["neededFor"]),
+        (&json!(false), &json!([]))
+    );
+    assert_eq!(
+        x264["detail"],
+        "ffmpeg has no libx264 encoder: MP4 exports use libopenh264"
+    );
+    let openh264 = check("ffmpeg.libopenh264");
+    assert_eq!(
+        (&openh264["ok"], &openh264["neededFor"]),
+        (&json!(true), &json!(["export.mp4"]))
+    );
+    let off = report["featuresOff"].as_array().unwrap();
+    assert!(off.iter().all(|f| f["feature"] != "export.mp4"), "{report}");
+
+    // Neither: refused before anything renders.
+    let segments = || {
+        fs::read_dir(dir.join(".qrec/cache/segments"))
+            .unwrap()
+            .count()
+    };
+    let cached = segments();
+    let neither = path_hiding_encoders(&env, "no-h264", &["libx264", "libopenh264"]);
+    let out = qrec_with(
+        &env,
+        &dir,
+        &["--json", "export"],
+        &[("PATH", neither.as_os_str())],
+    );
+    assert_eq!(out.code, Some(5), "{out:?}");
+    let error = &out.only_reply()["error"];
+    assert_eq!(error["code"], "missing_dependency");
+    assert_eq!(
+        error["message"],
+        "ffmpeg has no libx264 or libopenh264 encoder"
+    );
+    assert_eq!(segments(), cached, "nothing was rendered");
 }
 
 /// A GStreamer element that isn't installed is `missing_dependency` (exit
@@ -4764,11 +5214,15 @@ fn the_design_fixture_is_the_briefs_sample_project() {
 }
 
 /// The window prints nothing on stdout: `qrec --json` alone is a usage
-/// error, one object (docs/GUI.md G§3.2). Without `--json`, `qrec` logs to
-/// its project's GUI log (appended per run, one per project) and opens the
-/// window; with no Wayland display (the test env has none, and GDK never
-/// falls back to X11) it says so and exits 1, leaving the empty folder as it
-/// was.
+/// error, one object (docs/GUI.md G§3.2). Without `--json`, `qrec --project`
+/// logs to its project's GUI log (appended per run, one per project) and opens
+/// the window on Wayland or X11; with no display it says so, naming both
+/// variables, and exits 1, leaving the empty folder as it was. So it does
+/// with only a `GDK_BACKEND` (which used to take the lock ahead of a
+/// doomed `gtk::init`, GUI-19), with a `WAYLAND_DISPLAY` whose socket file
+/// nobody listens on (a compositor that died), and with a `DISPLAY` no X
+/// server answers (only connecting tells, so on X11 the lock waits for
+/// GTK).
 #[test]
 fn qrec_without_a_command() {
     use qrec_shell::paths::UserDirs;
@@ -4786,18 +5240,36 @@ fn qrec_without_a_command() {
     let log_of = |dir: &Path| dirs.gui_log(&fs::canonicalize(dir).unwrap());
     assert!(!log_of(&a).exists(), "--json opened no window");
 
+    let dead = dead_x11_display();
+    // Dropping a listener leaves its socket file.
+    drop(
+        std::os::unix::net::UnixListener::bind(env.xdg_runtime_dir().join("wayland-dead")).unwrap(),
+    );
+    let runs: [&[(&str, &OsStr)]; 6] = [
+        &[],
+        &[],
+        &[("GDK_BACKEND", OsStr::new("x11"))],
+        &[("GDK_BACKEND", OsStr::new("wayland"))],
+        &[("WAYLAND_DISPLAY", OsStr::new("wayland-dead"))],
+        &[("DISPLAY", OsStr::new(&dead))],
+    ];
     let on = |dir: &Path| dir.to_str().unwrap().to_owned();
-    for _ in 0..2 {
-        let gui = qrec(&env, &a, &["--project", &on(&a)]);
-        assert_eq!(gui.code, Some(1), "{}", gui.stderr);
+    for vars in runs {
+        let gui = qrec_with(&env, &a, &["--project", &on(&a)], vars);
+        assert_eq!(gui.code, Some(1), "{vars:?}: {}", gui.stderr);
         assert!(
-            gui.stderr.contains("can't open the window"),
-            "{}",
+            gui.stderr.contains("can't open the window")
+                && gui.stderr.contains("(WAYLAND_DISPLAY)")
+                && gui.stderr.contains("(DISPLAY)"),
+            "{vars:?}: {}",
             gui.stderr
         );
+        let left: Vec<_> = fs::read_dir(&a).unwrap().flatten().collect();
+        assert!(
+            left.is_empty(),
+            "{vars:?}: the folder stays empty: {left:?}"
+        );
     }
-    let left: Vec<_> = fs::read_dir(&a).unwrap().flatten().collect();
-    assert!(left.is_empty(), "the folder stays empty: {left:?}");
     qrec(&env, &b, &["-v", "--project", &on(&b)]);
     let headers = |dir: &Path| {
         fs::read_to_string(log_of(dir))
@@ -4806,7 +5278,7 @@ fn qrec_without_a_command() {
             .filter(|l| l.starts_with("=== qrec "))
             .count()
     };
-    assert_eq!((headers(&a), headers(&b)), (2, 1));
+    assert_eq!((headers(&a), headers(&b)), (runs.len(), 1));
     assert_ne!(log_of(&a), log_of(&b));
     let text = fs::read_to_string(log_of(&a)).unwrap();
     assert!(
@@ -4825,7 +5297,7 @@ fn qrec_without_a_command() {
         picker.stderr
     );
     assert!(dirs.picker_log().exists(), "the picker logs to its own");
-    assert_eq!(headers(&a), 2, "not the project's log");
+    assert_eq!(headers(&a), runs.len(), "not the project's log");
     assert!(fs::read_dir(&a).unwrap().next().is_none());
 
     // A project here opens instead (its log), and `--pick` still asks.
@@ -4836,6 +5308,31 @@ fn qrec_without_a_command() {
     qrec(&env, &b, &["--pick"]);
     assert_eq!(headers(&b), 2);
     assert!(fs::metadata(dirs.picker_log()).unwrap().len() > size);
+}
+
+/// An X11 display name (`:N`) no server answers at: nothing listens on
+/// its abstract or file socket, nor on its TCP port (libxcb's fallback).
+fn dead_x11_display() -> String {
+    use std::net::{SocketAddr, TcpStream};
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::{SocketAddr as UnixAddr, UnixStream};
+    let answers = |n: u16| {
+        let path = format!("/tmp/.X11-unix/X{n}");
+        let tcp: [SocketAddr; 2] = [
+            ([127, 0, 0, 1], 6000 + n).into(),
+            (std::net::Ipv6Addr::LOCALHOST, 6000 + n).into(),
+        ];
+        UnixAddr::from_abstract_name(&path)
+            .is_ok_and(|addr| UnixStream::connect_addr(&addr).is_ok())
+            || UnixStream::connect(&path).is_ok()
+            || tcp
+                .iter()
+                .any(|addr| TcpStream::connect_timeout(addr, Duration::from_secs(1)).is_ok())
+    };
+    let n = (4242..4342)
+        .find(|&n| !answers(n))
+        .expect("an X11 display number nothing answers at");
+    format!(":{n}")
 }
 
 /// X1 "Stop & open" against a real headless recorder (the fake backend):
@@ -5037,4 +5534,55 @@ fn the_design_inventory_labels_the_fake_sources() {
         data["monitors"][0]["description"],
         "Built-in Audio Analog Stereo"
     );
+}
+
+/// W10: `QREC_FAKE_INVENTORY=noscreens` stands in for a machine whose
+/// discovery found no screens and said why (no display): `sources list`
+/// says it under Screens (and in its JSON's `warnings`), and adding a
+/// screen layer is `not_found` with the reason as its hint.
+#[test]
+fn a_machine_without_screens_says_why() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("no-screens");
+    let noscreens = [("QREC_FAKE_INVENTORY", OsStr::new("noscreens"))];
+    let why = "no Wayland (WAYLAND_DISPLAY) or X11 (DISPLAY) display";
+
+    let human = qrec_with(&env, &dir, &["sources", "list"], &noscreens);
+    human.ok();
+    let lines: Vec<&str> = human.stdout.lines().collect();
+    assert_eq!(
+        lines[..3],
+        ["Screens", &format!("  none found: {why}"), "Cameras"],
+        "{}",
+        human.stdout
+    );
+    assert!(human.stdout.contains("/dev/fake0"), "{}", human.stdout);
+    let listed = qrec_with(&env, &dir, &["sources", "list", "--json"], &noscreens);
+    listed.ok();
+    let data = &listed.only_reply()["data"];
+    assert_eq!(data["screens"], json!([]));
+    assert_eq!(data["warnings"], json!([format!("screens: {why}")]));
+    // The fake screens go through a (fake) portal: its caption.
+    assert_eq!(data["screenBackend"], "portal");
+    assert_eq!(data["mics"][0]["name"], "alsa_input.fake");
+
+    let args = ["scene", "layer", "add", "screen", "--output", "FAKE-1"];
+    let add = qrec_with(&env, &dir, &[&["--json"], &args[..]].concat(), &noscreens);
+    assert_eq!(add.code, Some(7), "{add:?}");
+    let error = add.only_reply()["error"].clone();
+    assert_eq!(error["code"], "not_found", "{error}");
+    assert_eq!(error["message"], "no screen named \"FAKE-1\"");
+    assert_eq!(error["hint"], format!("no screens were detected: {why}"));
+    // People read it on stderr.
+    let human_add = qrec_with(&env, &dir, &args, &noscreens);
+    assert_eq!(human_add.code, Some(7), "{human_add:?}");
+    assert!(
+        human_add
+            .stderr
+            .contains(&format!("hint: no screens were detected: {why}")),
+        "{}",
+        human_add.stderr
+    );
+    // With the screens there, the same command adds the layer.
+    qrec(&env, &dir, &args).ok();
 }

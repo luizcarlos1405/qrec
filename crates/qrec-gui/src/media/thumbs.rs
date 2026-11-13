@@ -1090,7 +1090,6 @@ pub(crate) mod nested {
     use std::time::{Duration, Instant};
 
     use crossbeam_channel::{Receiver, unbounded};
-    use gtk::prelude::*;
     use gtk::{gdk, glib, graphene, gsk};
     use qrec_shell::media::preview::{PreviewCache, PreviewData, image_bytes};
     use qrec_shell::testkit::{MediaSpec, fixture};

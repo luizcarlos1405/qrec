@@ -1,0 +1,94 @@
+---
+source: crates/qrec-core/src/keymap/global.rs
+expression: out
+---
+=== niri
+binds {
+    Mod+Shift+R { spawn "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage" "record" "toggle"; }
+    Mod+Shift+O { spawn "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage" "record" "start" "--over-selection"; }
+    Mod+Shift+D { spawn "/home/me/Applications/Qrec-0.1.0-x86_64.AppImage" "take" "discard-last"; }
+}
+
+=== sway
+bindsym $mod+Shift+r exec /home/me/Applications/Qrec-0.1.0-x86_64.AppImage record toggle
+bindsym $mod+Shift+o exec /home/me/Applications/Qrec-0.1.0-x86_64.AppImage record start --over-selection
+bindsym $mod+Shift+d exec /home/me/Applications/Qrec-0.1.0-x86_64.AppImage take discard-last
+
+=== i3
+# i3's default config binds $mod+Shift+r to restart: remove that line.
+bindsym $mod+Shift+r exec --no-startup-id /home/me/Applications/Qrec-0.1.0-x86_64.AppImage record toggle
+bindsym $mod+Shift+o exec --no-startup-id /home/me/Applications/Qrec-0.1.0-x86_64.AppImage record start --over-selection
+bindsym $mod+Shift+d exec --no-startup-id /home/me/Applications/Qrec-0.1.0-x86_64.AppImage take discard-last
+
+=== hyprland
+bind = SUPER SHIFT, R, exec, /home/me/Applications/Qrec-0.1.0-x86_64.AppImage record toggle
+bind = SUPER SHIFT, O, exec, /home/me/Applications/Qrec-0.1.0-x86_64.AppImage record start --over-selection
+bind = SUPER SHIFT, D, exec, /home/me/Applications/Qrec-0.1.0-x86_64.AppImage take discard-last
+
+=== river
+riverctl map normal Super+Shift R spawn '/home/me/Applications/Qrec-0.1.0-x86_64.AppImage record toggle'
+riverctl map normal Super+Shift O spawn '/home/me/Applications/Qrec-0.1.0-x86_64.AppImage record start --over-selection'
+riverctl map normal Super+Shift D spawn '/home/me/Applications/Qrec-0.1.0-x86_64.AppImage take discard-last'
+
+=== gnome
+In GNOME Settings › Keyboard › View and Customize Shortcuts › Custom Shortcuts,
+for each line choose Add Shortcut (or +), type its name and command, then set its shortcut.
+
+Name               Command                                                                         Shortcut
+Record toggle      /home/me/Applications/Qrec-0.1.0-x86_64.AppImage record toggle                  Super+Shift+R
+Record over        /home/me/Applications/Qrec-0.1.0-x86_64.AppImage record start --over-selection  Super+Shift+O
+Discard last take  /home/me/Applications/Qrec-0.1.0-x86_64.AppImage take discard-last              Super+Shift+D
+
+=== kde
+In System Settings › Keyboard › Shortcuts, for each line choose
+Add New › Command or Script…, type its command, then set its shortcut.
+
+Name               Command                                                                         Shortcut
+Record toggle      /home/me/Applications/Qrec-0.1.0-x86_64.AppImage record toggle                  Meta+Shift+R
+Record over        /home/me/Applications/Qrec-0.1.0-x86_64.AppImage record start --over-selection  Meta+Shift+O
+Discard last take  /home/me/Applications/Qrec-0.1.0-x86_64.AppImage take discard-last              Meta+Shift+D
+
+=== the generic list
+Bind each command to its shortcut in your desktop's keyboard settings.
+
+Name               Command                                                                         Shortcut
+Record toggle      /home/me/Applications/Qrec-0.1.0-x86_64.AppImage record toggle                  Super+Shift+R
+Record over        /home/me/Applications/Qrec-0.1.0-x86_64.AppImage record start --over-selection  Super+Shift+O
+Discard last take  /home/me/Applications/Qrec-0.1.0-x86_64.AppImage take discard-last              Super+Shift+D
+
+=== niri from /home/me/My Apps/Qrec.AppImage
+binds {
+    Mod+Shift+R { spawn "/home/me/My Apps/Qrec.AppImage" "record" "toggle"; }
+    Mod+Shift+O { spawn "/home/me/My Apps/Qrec.AppImage" "record" "start" "--over-selection"; }
+    Mod+Shift+D { spawn "/home/me/My Apps/Qrec.AppImage" "take" "discard-last"; }
+}
+
+=== sway from /home/me/My Apps/Qrec.AppImage
+bindsym $mod+Shift+r exec '/home/me/My Apps/Qrec.AppImage' record toggle
+bindsym $mod+Shift+o exec '/home/me/My Apps/Qrec.AppImage' record start --over-selection
+bindsym $mod+Shift+d exec '/home/me/My Apps/Qrec.AppImage' take discard-last
+
+=== river from /home/me/My Apps/Qrec.AppImage
+riverctl map normal Super+Shift R spawn "'/home/me/My Apps/Qrec.AppImage' record toggle"
+riverctl map normal Super+Shift O spawn "'/home/me/My Apps/Qrec.AppImage' record start --over-selection"
+riverctl map normal Super+Shift D spawn "'/home/me/My Apps/Qrec.AppImage' take discard-last"
+
+=== unknown from /home/me/My Apps/Qrec.AppImage
+Bind each command to its shortcut in your desktop's keyboard settings.
+
+Name               Command                                                         Shortcut
+Record toggle      '/home/me/My Apps/Qrec.AppImage' record toggle                  Super+Shift+R
+Record over        '/home/me/My Apps/Qrec.AppImage' record start --over-selection  Super+Shift+O
+Discard last take  '/home/me/My Apps/Qrec.AppImage' take discard-last              Super+Shift+D
+
+=== niri from /home/me/Qrec's.AppImage
+binds {
+    Mod+Shift+R { spawn "/home/me/Qrec's.AppImage" "record" "toggle"; }
+    Mod+Shift+O { spawn "/home/me/Qrec's.AppImage" "record" "start" "--over-selection"; }
+    Mod+Shift+D { spawn "/home/me/Qrec's.AppImage" "take" "discard-last"; }
+}
+
+=== river from /home/me/Qrec's.AppImage
+riverctl map normal Super+Shift R spawn ''\''/home/me/Qrec'\''\'\'''\''s.AppImage'\'' record toggle'
+riverctl map normal Super+Shift O spawn ''\''/home/me/Qrec'\''\'\'''\''s.AppImage'\'' record start --over-selection'
+riverctl map normal Super+Shift D spawn ''\''/home/me/Qrec'\''\'\'''\''s.AppImage'\'' take discard-last'

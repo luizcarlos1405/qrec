@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata for software centers (data/install.sh installs it as
+     share/metainfo/com.rsensato.qrec.metainfo.xml). The id is the app ID
+     (SPEC's App ID row); the screenshots are the design frames in
+     design/screens/, which the GUI follows (docs/GUI.md G§7.2). -->
+<component type="desktop-application">
+  <id>com.rsensato.qrec</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>Qrec</name>
+  <summary>Record your screen and camera, then edit</summary>
+  <developer id="com.rsensato">
+    <name>RSensato</name>
+  </developer>
+
+  <description>
+    <p>
+      Qrec is a screen and camera recorder built for one loop: press R, talk,
+      press R, repeat. Every take lands on a magnetic timeline, so when you
+      stop recording the video is already mostly edited.
+    </p>
+    <ul>
+      <li>Record any number of screens and cameras as layers, with microphones and system audio</li>
+      <li>Trim, split and reorder the takes on the timeline</li>
+      <li>Remove the silences automatically</li>
+      <li>Export to MP4 or WebM, or save a frame as a picture</li>
+      <li>Record from a global shortcut while another app has the focus</li>
+    </ul>
+    <p>
+      The window and the qrec command line drive the same project, so a script
+      can record and edit as well.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">com.rsensato.qrec.desktop</launchable>
+  <provides>
+    <binary>qrec</binary>
+  </provides>
+
+  <url type="homepage">https://github.com/luizcarlos1405/qrec</url>
+  <url type="bugtracker">https://github.com/luizcarlos1405/qrec/issues</url>
+  <url type="vcs-browser">https://github.com/luizcarlos1405/qrec</url>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>The live canvas with a screen and a camera layer, and the timeline of takes</caption>
+      <image>https://raw.githubusercontent.com/luizcarlos1405/qrec/main/design/screens/S02-live-idle.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Autocut shows the silences it will remove</caption>
+      <image>https://raw.githubusercontent.com/luizcarlos1405/qrec/main/design/screens/S12-autocut-preview.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Exporting the timeline</caption>
+      <image>https://raw.githubusercontent.com/luizcarlos1405/qrec/main/design/screens/S15a-export-setup.png</image>
+    </screenshot>
+  </screenshots>
+
+  <categories>
+    <category>AudioVideo</category>
+    <category>Video</category>
+    <category>Recorder</category>
+  </categories>
+  <keywords>
+    <keyword>screen</keyword>
+    <keyword>camera</keyword>
+    <keyword>recorder</keyword>
+    <keyword>screencast</keyword>
+    <keyword>video</keyword>
+    <keyword>editor</keyword>
+  </keywords>
+
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.1.0" date="2026-11-10">
+      <description>
+        <p>The first release: recording, the timeline editor, autocut and export, on Wayland and X11.</p>
+      </description>
+    </release>
+  </releases>
+</component>

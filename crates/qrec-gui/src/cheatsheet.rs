@@ -18,8 +18,9 @@
 //! The search field has the keyboard while it is open: typing searches
 //! (S20b: the rows left in one column under "3 shortcuts match “trim”",
 //! the palette's tip under them), `Esc` closes, `Ctrl+,` opens Settings ›
-//! Keyboard. Copy niri snippet copies SPEC §10.2's binds and says
-//! "Copied" for 2 s.
+//! Keyboard. The Global shortcuts group is the desktop's
+//! (`qrec_shell::platform::current`): Copy snippet copies how to bind
+//! SPEC §10.2's global keys there and says "Copied" for 2 s.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -41,7 +42,7 @@ use crate::{Ctx, guard, guarded};
 /// Whether the cheat sheet is built (`GuiFacts.built`).
 pub const BUILT: bool = true;
 
-/// How long Copy niri snippet says "Copied".
+/// How long Copy snippet says "Copied".
 const COPIED_FOR: Duration = Duration::from_secs(2);
 
 /// `label` as Pango markup with the chars `matched` at weight 600 (the
@@ -237,7 +238,7 @@ struct Sheet {
     note: gtk::Box,
     settings: gtk::Box,
     open: Cell<bool>,
-    /// "Copied" goes back to "Copy niri snippet".
+    /// "Copied" goes back to the snippet's button label.
     copied: guard::Slot,
     snippet_button: RefCell<Option<gtk::Button>>,
 }
@@ -262,11 +263,20 @@ impl Sheet {
         self.text.grab_focus();
     }
 
-    /// The sheet for the search as it is.
+    /// The sheet for the search as it is, with the global shortcuts of
+    /// the desktop the window runs on, run by `qrec` or the AppImage's
+    /// path.
     fn refresh(self: &Rc<Self>) {
         let keymap = self.ctx.store.keymap();
         let keys_path = crate::settings::user_files().keys_shown;
-        let view = cheat_sheet(&keymap, &keys_path, &self.text.text());
+        let platform = qrec_shell::platform::current();
+        let view = cheat_sheet(
+            &keymap,
+            &keys_path,
+            &self.text.text(),
+            &platform.desktop,
+            platform.program(),
+        );
         self.build(&view);
     }
 
@@ -346,7 +356,8 @@ impl Sheet {
         self.settings.append(&label);
     }
 
-    /// A group: its title, its rows, Global (niri)'s note and button.
+    /// A group: its title, its rows, Global shortcuts' note, button and
+    /// the file to paste into (when the desktop's snippet has one).
     fn group(self: &Rc<Self>, group: &CheatGroup) -> gtk::Box {
         let block = gtk::Box::new(gtk::Orientation::Vertical, 0);
         block.add_css_class("cheat-group");
@@ -379,7 +390,7 @@ impl Sheet {
         }
         if let Some(snippet) = &group.snippet {
             let footer = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            footer.add_css_class("cheat-niri");
+            footer.add_css_class("cheat-global");
             let note = gtk::Label::new(Some(&snippet.note));
             note.add_css_class("t-caption");
             note.add_css_class("muted");
@@ -395,30 +406,33 @@ impl Sheet {
                 &self.ctx.store.keymap(),
                 button::Kind::Secondary,
             );
-            copy.set_widget_name("cheatsheet-copy-niri");
+            copy.set_widget_name("cheatsheet-copy-snippet");
             // A button the keyboard can reach inside the sheet's trap.
             copy.set_focus_on_click(true);
-            let (sheet, text) = (Rc::downgrade(self), snippet.text.clone());
-            copy.connect_clicked(guarded!("cheat sheet: copy niri snippet", move |b| {
+            let sheet = Rc::downgrade(self);
+            let (text, label) = (snippet.text.clone(), snippet.button.clone());
+            copy.connect_clicked(guarded!("cheat sheet: copy the snippet", move |b| {
                 if let Some(sheet) = sheet.upgrade() {
-                    sheet.copy(b, &text);
+                    sheet.copy(b, &text, &label);
                 }
             }));
             line.append(&copy);
-            let target = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-            target.add_css_class("cheat-paste");
-            target.set_valign(gtk::Align::Center);
-            let into = gtk::Label::new(Some(&snippet.paste_into));
-            into.add_css_class("t-caption");
-            into.add_css_class("muted");
-            into.set_valign(gtk::Align::BaselineCenter);
-            let path = gtk::Label::new(Some(&snippet.path));
-            path.add_css_class("t-mono-sm");
-            path.add_css_class("muted");
-            path.set_valign(gtk::Align::BaselineCenter);
-            target.append(&into);
-            target.append(&path);
-            line.append(&target);
+            if let Some(file) = &snippet.path {
+                let target = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                target.add_css_class("cheat-paste");
+                target.set_valign(gtk::Align::Center);
+                let into = gtk::Label::new(Some(&snippet.paste_into));
+                into.add_css_class("t-caption");
+                into.add_css_class("muted");
+                into.set_valign(gtk::Align::BaselineCenter);
+                let path = gtk::Label::new(Some(file));
+                path.add_css_class("t-mono-sm");
+                path.add_css_class("muted");
+                path.set_valign(gtk::Align::BaselineCenter);
+                target.append(&into);
+                target.append(&path);
+                line.append(&target);
+            }
             footer.append(&line);
             block.append(&footer);
             *self.snippet_button.borrow_mut() = Some(copy);
@@ -426,8 +440,9 @@ impl Sheet {
         block
     }
 
-    /// Copies the snippet; the button says "Copied" for a while.
-    fn copy(&self, button: &gtk::Button, text: &str) {
+    /// Copies the snippet; the button says "Copied" for a while, then
+    /// `label` again.
+    fn copy(&self, button: &gtk::Button, text: &str, label: &str) {
         let window = self.root.root().and_downcast::<gtk::Window>();
         crate::desktop::run(
             &self.ctx,
@@ -436,11 +451,11 @@ impl Sheet {
             &UiAction::CopyText(text.to_owned()),
         );
         set_button_label(button, "Copied");
-        let button = button.downgrade();
+        let (button, label) = (button.downgrade(), label.to_owned());
         self.copied
             .timeout_once(COPIED_FOR, "cheat sheet: copied", move || {
                 if let Some(button) = button.upgrade() {
-                    set_button_label(&button, "Copy niri snippet");
+                    set_button_label(&button, &label);
                 }
             });
     }

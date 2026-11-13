@@ -26,7 +26,8 @@
 //! A failure stops the other segments; a cancel stops everything. Either way
 //! the job's temp files are deleted (finished segments stay cached). A
 //! failed segment of a VA-API plan re-runs the whole export once with
-//! `export_plan::without_vaapi` (libx264, other keys: nothing mixes).
+//! `export_plan::without_vaapi` (libx264, else libopenh264, as
+//! `ffmpeg -encoders` says; other keys: nothing mixes).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
@@ -50,8 +51,10 @@ use super::jobs::{JobCtl, Temp};
 use super::logs::{LogFile, TAIL_LINES};
 use super::place::{self, Destination, OutDir, PlaceError, TempOut, rename_noreplace, temp_path};
 use super::verify;
+use crate::caps::parse_encoders;
 use crate::msg::Inbox;
 use crate::paths::path_text;
+use crate::proc::PROBE_TIMEOUT;
 
 /// How a job (or one of its steps) didn't finish.
 #[derive(Debug)]
@@ -66,7 +69,7 @@ pub(crate) enum Failure {
         log: String,
     },
     /// A segment of a VA-API plan failed (a `Failed`): the export can be
-    /// re-planned with libx264.
+    /// re-planned in software (libx264, else libopenh264).
     VaSegment(Box<Failure>),
     /// The hand-picked `out` appeared while the job ran (`bytes` is what is
     /// there now) and may not be replaced: the result was kept at `kept`
@@ -106,8 +109,25 @@ pub(crate) fn run(
     plan: &ExportPlan,
     out: &Inbox,
 ) -> Event {
+    run_listing(ctx, ctl, job, plan, out, ffmpeg_encoders)
+}
+
+/// What a VA plan's fallback asks for ffmpeg's encoders
+/// ([`ffmpeg_encoders`]; tests list another machine's).
+pub(super) type Listing = fn(&Ctx, JobId) -> BTreeSet<String>;
+
+/// [`run`], the fallback of a VA plan picking its encoder from what
+/// `encoders` lists.
+pub(super) fn run_listing(
+    ctx: &Arc<Ctx>,
+    ctl: &JobCtl,
+    job: JobId,
+    plan: &ExportPlan,
+    out: &Inbox,
+    encoders: Listing,
+) -> Event {
     let result = match export(ctx, ctl, job, plan, out) {
-        Err(Failure::VaSegment(va)) => retry_without_vaapi(ctx, ctl, job, plan, out, *va),
+        Err(Failure::VaSegment(va)) => retry_without_vaapi(ctx, ctl, job, plan, out, *va, encoders),
         other => other,
     };
     match result {
@@ -154,8 +174,10 @@ pub(crate) fn appeared(job: JobId, out: &Path, bytes: u64, kept: &Path) -> Event
 }
 
 /// A§9.3 "one encoder per export": after a VA segment failed, the whole
-/// export runs again with `without_vaapi`'s libx264 plan. Without one (no
-/// ffmpeg identity, not a VA plan) the VA failure stands.
+/// export runs again with `without_vaapi`'s plan, on the software encoder
+/// ffmpeg has (`encoders`, [`ffmpeg_encoders`]): libx264, else
+/// libopenh264. Without one (no ffmpeg identity, not a VA plan, a canvas
+/// larger than libopenh264 encodes where it would) the VA failure stands.
 fn retry_without_vaapi(
     ctx: &Arc<Ctx>,
     ctl: &JobCtl,
@@ -163,14 +185,15 @@ fn retry_without_vaapi(
     plan: &ExportPlan,
     out: &Inbox,
     va: Failure,
+    encoders: Listing,
 ) -> Result<(PathBuf, u64), Failure> {
     let va_message = match &va {
         Failure::Failed { message, .. } => message.clone(),
         _ => return Err(va),
     };
-    let fallback =
-        ffmpeg_identity().and_then(|identity| without_vaapi(plan, &identity_caps(identity)));
-    let Some(x264) = fallback else {
+    let fallback = ffmpeg_identity()
+        .and_then(|identity| without_vaapi(plan, &fallback_caps(identity, encoders(ctx, job))));
+    let Some(software) = fallback else {
         return Err(va);
     };
     if ctl.is_cancelled() {
@@ -178,14 +201,15 @@ fn retry_without_vaapi(
     }
     ctl.remove_temps();
     ctl.resume();
-    tracing::warn!("{job}: h264_vaapi failed ({va_message}); exporting with libx264");
-    match export(ctx, ctl, job, &x264, out) {
+    let encoder = video_encoder(&software);
+    tracing::warn!("{job}: h264_vaapi failed ({va_message}); exporting with {encoder}");
+    match export(ctx, ctl, job, &software, out) {
         Err(Failure::Failed {
             message,
             stderr_tail,
             log,
         }) => Err(Failure::Failed {
-            message: format!("{message} (libx264, after h264_vaapi failed: {va_message})"),
+            message: format!("{message} ({encoder}, after h264_vaapi failed: {va_message})"),
             stderr_tail,
             log,
         }),
@@ -202,16 +226,69 @@ fn ffmpeg_identity() -> Option<String> {
     Some(path.to_string_lossy().into_owned())
 }
 
-/// What `without_vaapi` reads: the ffmpeg identity.
-fn identity_caps(identity: String) -> Capabilities {
+/// `ffmpeg -encoders`' names, from which `without_vaapi` picks the
+/// fallback's encoder (a plan doesn't carry the list it was made with);
+/// its stderr goes to the job's `encoders` log, and it has the probes' 10 s
+/// (A§8.7). Empty when ffmpeg can't say: the fallback is then libx264, as
+/// before.
+pub(super) fn ffmpeg_encoders(ctx: &Ctx, job: JobId) -> BTreeSet<String> {
+    let argv: Vec<String> = ["ffmpeg", "-hide_banner", "-encoders"]
+        .map(String::from)
+        .to_vec();
+    let log = match ctx.open_log(&ctx.job_log_base(job, "encoders"), &argv) {
+        Ok(log) => log,
+        Err(e) => {
+            tracing::warn!("{job}: {e}; the fallback assumes libx264");
+            return BTreeSet::new();
+        }
+    };
+    // Not the job's stop flag: it is still set from the VA failure.
+    let spec = Spec::new(&argv, Stderr::Log(log.file()))
+        .cwd(ctx.root())
+        .stdout(Stdout::Capture {
+            limit: ENCODERS_LIMIT,
+        })
+        .timeout(PROBE_TIMEOUT)
+        .kill_grace(ctx.options.kill_grace);
+    match child::run(spec) {
+        Ok(done) if done.exited_ok() => parse_encoders(&String::from_utf8_lossy(&done.stdout)),
+        Ok(done) => {
+            log.note(&format!(
+                "{}; the fallback assumes libx264",
+                done.describe("ffmpeg")
+            ));
+            BTreeSet::new()
+        }
+        Err(e) => {
+            log.note(&format!("{e}; the fallback assumes libx264"));
+            BTreeSet::new()
+        }
+    }
+}
+
+/// The most of `ffmpeg -encoders` kept (ffmpeg-full 8.1.2 prints 14 KiB),
+/// as capability detection keeps.
+const ENCODERS_LIMIT: usize = 4 << 20;
+
+/// The video encoder a plan's segments use (their `-c:v`).
+fn video_encoder(plan: &ExportPlan) -> &str {
+    plan.segments
+        .first()
+        .and_then(|s| s.argv.windows(2).find(|w| w[0] == "-c:v"))
+        .map_or("the software encoder", |w| w[1].as_str())
+}
+
+/// What `without_vaapi` reads: the ffmpeg identity and its encoders.
+fn fallback_caps(identity: String, encoders: BTreeSet<String>) -> Capabilities {
     Capabilities {
         ffmpeg: Some(FfmpegCaps {
             version: String::new(),
             identity,
-            encoders: BTreeSet::new(),
+            encoders,
         }),
         ffprobe: None,
         vaapi: None,
+        gst_h264: None,
         cores: 0,
     }
 }
@@ -838,20 +915,18 @@ pub(crate) fn check_ffmpeg(done: &Finished, what: &str, log: &LogFile) -> Result
     Ok(())
 }
 
-/// For VA plans (`-init_hw_device vaapi=va:<node>`), the `LIBVA_DRIVER_NAME`
-/// of the node's vendor (A§8.10): Intel `iHD`, AMD `radeonsi`.
-pub(crate) fn vaapi_driver(argv: &[String]) -> Option<&'static str> {
+/// For VA plans (`-init_hw_device vaapi=va:<node>`), the node's
+/// `LIBVA_DRIVER_NAME` (A§8.10), the one its h264_vaapi check passed with
+/// (`gpu::export_libva_driver_for`): this process's when it fits the
+/// node's vendor, else AMD's `radeonsi`, Intel's `i965` (the chips only it
+/// drives, or only it installed) or `iHD`; or Intel's other driver where
+/// capability detection found only that one encodes there.
+pub(crate) fn vaapi_driver(argv: &[String]) -> Option<String> {
     let device = argv
         .windows(2)
         .find(|w| w[0] == "-init_hw_device")
         .and_then(|w| w[1].strip_prefix("vaapi=va:"))?;
-    let node = Path::new(device).file_name()?.to_str()?;
-    let vendor = fs::read_to_string(format!("/sys/class/drm/{node}/device/vendor")).ok()?;
-    match vendor.trim() {
-        "0x8086" => Some("iHD"),
-        "0x1002" => Some("radeonsi"),
-        _ => None,
-    }
+    crate::gpu::export_libva_driver_for(device)
 }
 
 #[cfg(test)]
