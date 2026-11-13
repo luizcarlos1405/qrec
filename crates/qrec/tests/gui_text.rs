@@ -211,8 +211,10 @@ fn title_trace(case: &str, spec: &str) -> (usize, Vec<PathBuf>, Vec<Value>) {
     let (partial, full) = (crop(&shots[0]), crop(&shots[1]));
     assert_eq!(partial.len(), (cw * ch * 3) as usize);
     let differing = partial
-        .chunks_exact(3)
-        .zip(full.chunks_exact(3))
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(full.as_chunks::<3>().0)
         .filter(|(a, b)| a != b)
         .count();
     (differing, shots, fonts)

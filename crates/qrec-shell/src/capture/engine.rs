@@ -1100,13 +1100,12 @@ impl Engine {
                         message: message.clone(),
                     };
                     (state, None)
-                } else if let Some(message) = self.failed.get(name).or(self.broken.as_ref()) {
+                } else {
+                    let message = self.failed.get(name).or(self.broken.as_ref())?;
                     let state = LiveSourceState::Dead {
                         message: message.clone(),
                     };
                     (state, known)
-                } else {
-                    return None;
                 };
                 Some(LiveSourceStatus {
                     source: live_source(&spec),

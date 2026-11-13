@@ -1295,8 +1295,10 @@ impl PeakReader {
 
     fn bucket(&mut self, bytes: usize) {
         let samples: Vec<i16> = self.carry[..bytes]
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b))
             .collect();
         self.per_ms
             .extend(bucket_peaks(&samples, PEAK_SAMPLES_PER_MS));
@@ -1328,7 +1330,9 @@ fn decode_peaks(bytes: &[u8]) -> Option<Vec<(i16, i16)>> {
         return None;
     }
     let per_ms: Vec<(i16, i16)> = body
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|b| {
             (
                 i16::from_le_bytes([b[0], b[1]]),

@@ -1852,10 +1852,7 @@ pub fn rgb_pixels(png: &Path, [x, y, w, h]: [u32; 4]) -> Vec<[u8; 3]> {
         png.display(),
         out.stderr
     );
-    out.stdout
-        .chunks_exact(3)
-        .map(|c| [c[0], c[1], c[2]])
-        .collect()
+    out.stdout.as_chunks::<3>().0.to_vec()
 }
 
 /// How many pixels of `rect` are within `tolerance` of `color` on every

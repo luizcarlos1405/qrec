@@ -725,7 +725,9 @@ fn edid_label(edid: &[u8]) -> Option<String> {
         return None;
     }
     let name = block[54..126]
-        .chunks_exact(18)
+        .as_chunks::<18>()
+        .0
+        .iter()
         .find(|d| d[..3] == [0, 0, 0] && d[3] == 0xFC)
         .and_then(|d| descriptor_text(&d[5..]));
     name.or_else(|| pnp_id(u16::from_be_bytes([block[8], block[9]])))

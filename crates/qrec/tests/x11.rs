@@ -385,7 +385,9 @@ fn frame_rgb(file: &Path, index: u64) -> Vec<u8> {
 
 /// How many pixels of an RGB frame are VIRT-L's red.
 fn red_pixels(rgb: &[u8]) -> usize {
-    rgb.chunks_exact(3)
+    rgb.as_chunks::<3>()
+        .0
+        .iter()
         .filter(|p| p[0] > 128 && p[1] < 64 && p[2] < 64)
         .count()
 }
@@ -543,11 +545,13 @@ fn an_x11_screen_is_recorded_without_the_portal() {
         (0, 0),
         "VIRT-L's red"
     );
-    let luma = |p: &[u8]| (u16::from(p[0]) + u16::from(p[1]) + u16::from(p[2])) / 3;
+    let luma = |p: &[u8; 3]| (u16::from(p[0]) + u16::from(p[1]) + u16::from(p[2])) / 3;
     let moved = first
-        .chunks_exact(3)
-        .zip(last.chunks_exact(3))
-        .filter(|(a, b)| luma(a).abs_diff(luma(b)) > 96)
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .zip(last.as_chunks::<3>().0)
+        .filter(|&(a, b)| luma(a).abs_diff(luma(b)) > 96)
         .count();
     assert!(moved > 500, "the ball didn't move: {moved} pixels changed");
 
