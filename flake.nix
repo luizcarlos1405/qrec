@@ -207,7 +207,7 @@
                 base = baseNameOf path;
                 relative = pkgs.lib.removePrefix (toString ./. + "/") (toString path);
               in
-              !(builtins.elem base [ "target" "result" ".direnv" ".claude" "design" "tmp" "packaging" ])
+              !(builtins.elem base [ "target" "result" ".direnv" ".claude" ".github" "design" "tmp" "packaging" ])
               # Not part of the build, so editing them doesn't rebuild the
               # package: the docs, and the tests of every crate but the
               # core's (the sandbox runs only qrec-core's).
@@ -287,6 +287,6 @@
         };
       });
 
-      formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);
+      formatter = forAllSystems (pkgs: pkgs.nixfmt);
     };
 }
