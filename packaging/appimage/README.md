@@ -37,20 +37,24 @@ debloated Mesa and glycin-ng. Then each build:
    whose dlopen survey runs the window on a test-pattern project under Xvfb for
    25 s;
 4. puts the unpatched `qrec` back, adds the Adwaita icon theme and Qrec's
-   environment (below), makes the AppImage (DwarFS, zstd) and lets its runtime
-   extract images of any size when FUSE is missing (`URUNTIME_EXTRACT=2`).
+   environment (below), makes the AppImage and lets its runtime extract images
+   of any size when FUSE is missing (`URUNTIME_EXTRACT=2`). The image is
+   squashfs (zstd, 1 MiB blocks) behind uruntime's squashfs runtime, made by
+   `build.sh` in place of quick-sharun's appimagetool, which makes DwarFS
+   images only: `appimage-run` (NixOS), AppImageLauncher and appimaged read
+   squashfs AppImages only.
 
 Containers run at `nice 19` on at most `JOBS` CPUs (default 3). Everything goes
 under `tmp/appimage/` (`QREC_APPIMAGE_DIR`), owned by you: `out/` (the
 AppImage, `Qrec-<version>-<commit>-x86_64.AppImage`, or
 `Qrec-<version>-x86_64.AppImage` when built at the tag `v<version>`; its
 `.sha256`; and `.build.txt` with every package version), `build/AppDir`, the
-Cargo cache (`cargo-home/`, `target/`) and `cache/` (fonts, quick-sharun). With
-the builder image and the Cargo cache in place, a build takes about 5 minutes,
-half of it DwarFS's compression; making the builder image downloads about 460
-MB from the archive (2 GB installed), and a cold `cargo build` adds about 4
-minutes. `ARCH_SNAPSHOT=YYYY/MM/DD` picks another archive day (and makes a new
-builder image).
+Cargo cache (`cargo-home/`, `target/`) and `cache/` (fonts, quick-sharun,
+uruntime). With the builder image and the Cargo cache in place, a build takes
+about 3 minutes; making the builder image downloads about 460 MB from the
+archive (2 GB installed), and a cold `cargo build` adds about 4 minutes.
+`ARCH_SNAPSHOT=YYYY/MM/DD` picks another archive day (and makes a new builder
+image).
 
 ## Try it
 
@@ -127,7 +131,7 @@ has descendants.
 | Arch packages | the Arch Linux Archive of 2026-11-09 | `https://archive.archlinux.org/repos/2026/11/09/` |
 | quick-sharun | `pkgforge-dev/Anylinux-AppImages` at `3bc6529` (2026-11-09), sha256 checked | `https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/3bc6529073bf952de8db7b62c86380dbcdb38b64/useful-tools/quick-sharun.sh` |
 | sharun, `anylinux.so` | Anylinux-sharun 3.8.3, sha256 pinned by quick-sharun | `https://github.com/pkgforge-dev/Anylinux-sharun/releases/download/3.8.3/sharun+helper-libs-x86_64.tar` |
-| appimagetool, uruntime, mkdwarfs | Anylinux-appimagetool 0.5.6, sha256 pinned by quick-sharun | `https://github.com/pkgforge-dev/appimagetool/releases/download/0.5.6/appimagetool-full-x86_64-linux` |
+| uruntime | 0.8.1, the squashfs runtimes, sha256 checked: the lite one starts the AppImage, the full one's `mksquashfs` makes its image | `https://github.com/VHSgunzo/uruntime/releases/download/v0.8.1/uruntime-appimage-squashfs{,-lite}-x86_64` |
 | cross-libc-dlopen | 0.2.10, sha256 pinned by quick-sharun | `https://github.com/pkgforge-dev/cross-libc-dlopen/releases/download/v0.2.10/cross-libc-dlopen-x86_64.tar` |
 | Mesa, its Vulkan drivers, glycin-ng | pkgforge-dev's debloated builds (below): Mesa 26.2.6-1 built 2026-11-08 (`mesa-mini` sha256 `8eb0b90d…`), glycin-ng 0.5.3-1 built 2026-11-06 (`aaa865d9…`) | `https://github.com/pkgforge-dev/archlinux-pkgs-debloated/releases/download/continuous/{mesa,vulkan-intel,vulkan-radeon,vulkan-virtio,glycin}-mini-x86_64.pkg.tar.zst` |
 | Fraunces | 1.000, the TTF's sha256 checked | `https://github.com/undercasetype/Fraunces/releases/download/1.000/UnderCaseType_Fraunces_1.000.zip` |
@@ -170,7 +174,7 @@ sysfs), so it isn't bundled; only the Nix wrapper's `PATH` has it.
 
 ## How it starts
 
-The AppImage is uruntime with a DwarFS image. uruntime mounts it with FUSE
+The AppImage is uruntime with a squashfs image. uruntime mounts it with FUSE
 when it can (a stable mount point, dropped 5 s after the last process running
 from it is gone), else extracts it to `/tmp/appimage_extracted_<hash>`, runs
 it from there as a child subreaper that waits for every process started from
@@ -247,9 +251,12 @@ What `build.sh` adds (`tune_appdir`):
   never runs (`qrec doctor` lists it as optional). GStreamer's `openh264enc` is
   bundled.
 - **NixOS with `programs.appimage.binfmt`** hands every AppImage to
-  `appimage-run`, which unpacks it with `unsquashfs`: a DwarFS AppImage like
-  this one doesn't start that way. NixOS has the flake.
-- **Size**: 133 MiB (490 MiB unpacked, 4,776 inodes). The biggest parts,
+  `appimage-run`, which unpacks it into `~/.cache/appimage-run/<sha256>` the
+  first time and runs it in an FHS sandbox (bubblewrap); `test.sh` checks that
+  path on such a host. The flake is NixOS's own way.
+- **Size**: 146 MiB (491 MiB unpacked). A DwarFS image, as quick-sharun's
+  appimagetool makes, was 133 MiB; squashfs costs those 13 MiB so that
+  `appimage-run`, AppImageLauncher and appimaged can open it. The biggest parts,
   unpacked: intel-media-driver's `iHD` (40 MiB), Mesa's libgallium (36 MiB),
   ICU's data (32 MiB, for libxml2 and raptor2), the Vulkan drivers (51 MiB),
   x265 (21 MiB, ffmpeg's), libavcodec (20 MiB), Adwaita's icons (15 MiB) and

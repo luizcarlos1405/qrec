@@ -14,8 +14,8 @@ editor, made for one loop: press R, talk, press R, repeat.
   The `.sha256` file is its checksum, and `.build.txt` lists what it was
   built from.
 - **Nix**, with flakes: `nix run github:luizcarlos1405/qrec/v0.1.0`, or
-  `nix profile install github:luizcarlos1405/qrec/v0.1.0`. On NixOS, use
-  this: `appimage-run` can't open the AppImage.
+  `nix profile install github:luizcarlos1405/qrec/v0.1.0`. On NixOS the
+  AppImage runs too, through `appimage-run`, but the flake is native there.
 
 ### What it does
 

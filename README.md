@@ -154,9 +154,9 @@ and runs from there. Its `qrec doctor` names the AppImage and gives install
 hints only for the system's parts, and the global shortcuts it and the
 cheat sheet give run the AppImage's path, so bind them again if you move the
 file. Without a GPU it can use (a VM without 3D acceleration, a container),
-the window draws with Cairo. On NixOS with `programs.appimage.binfmt`, every
-AppImage goes through `appimage-run`, which can't open this one (a DwarFS
-image, not squashfs): use the flake there.
+the window draws with Cairo. On NixOS with `programs.appimage.binfmt`, it runs
+through `appimage-run`, which unpacks it into `~/.cache/appimage-run` the
+first time; the flake below is NixOS's own way.
 
 `packaging/appimage/build.sh` builds the AppImage from source in docker
 (`packaging/appimage/README.md`).

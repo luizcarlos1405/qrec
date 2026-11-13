@@ -24,6 +24,11 @@
 #      made and its log's criticals;
 #   5. --appimage-extract-and-run.
 #
+# On a host whose kernel hands AppImages to an interpreter (NixOS's
+# programs.appimage.binfmt, which runs appimage-run), the containers get a
+# copy without the AppImage magic, and the AppImage itself runs here too:
+# qrec --version and qrec doctor, through that interpreter.
+#
 # Results go to $QREC_APPIMAGE_DIR/test/<image>/ (summary.txt first) and the
 # screenshots to $QREC_APPIMAGE_DIR/shots/<image>.png. No host display,
 # session bus or FUSE is used.
@@ -222,6 +227,8 @@ host() {
 	fi
 	[ -n "$appimage" ] || { echo "test.sh: no AppImage in $work/out" >&2; exit 1; }
 	appimage=$(cd "$(dirname "$appimage")" && pwd)/$(basename "$appimage")
+	original=$appimage
+	binfmt=
 	mkdir -p "$work/test"
 	# A kernel that hands AppImages to an interpreter of the host's
 	# (binfmt_misc; NixOS's programs.appimage.binfmt runs appimage-run) can't
@@ -235,6 +242,7 @@ host() {
 		printf '\000\000\000' | dd of="$copy" bs=1 seek=8 conv=notrunc status=none
 		echo "test.sh: this kernel runs AppImages through binfmt_misc; testing $copy" >&2
 		appimage=$copy
+		binfmt=$(sed -n 's/^interpreter //p' /proc/sys/fs/binfmt_misc/appimage_type_2)
 	fi
 	# shellcheck disable=SC2086
 	[ $# -gt 0 ] || set -- $DEFAULT_IMAGES
@@ -276,6 +284,32 @@ host() {
 			failed="$failed $name"
 		fi
 	done
+	# Where the kernel hands AppImages to an interpreter, the AppImage as
+	# people start it there, on this host: NixOS's appimage-run unpacks it
+	# (squashfs only) into ~/.cache/appimage-run/<sha256> and runs it in an
+	# FHS sandbox. That copy goes again after, unless it was there before.
+	if [ -n "$binfmt" ]; then
+		out=$work/test/host-binfmt
+		rm -rf "$out" && mkdir -p "$out"
+		cache=${XDG_CACHE_HOME:-$HOME/.cache}/appimage-run/$(sha256sum "$original" | cut -d' ' -f1)
+		had=
+		[ ! -e "$cache" ] || had=1
+		echo "== this host, through $binfmt ($original)"
+		host_step() {
+			name=$1
+			shift
+			if timeout 600 "$original" "$@" > "$out/$name.txt" 2>&1; then
+				echo "ok    $name" >> "$out/summary.txt"
+			else
+				echo "FAIL  $name (exit $?), see $name.txt" >> "$out/summary.txt"
+			fi
+		}
+		host_step version --version
+		host_step doctor doctor
+		[ -n "$had" ] || rm -rf "$cache"
+		cat "$out/summary.txt"
+		! grep -q '^FAIL' "$out/summary.txt" || failed="$failed host-binfmt"
+	fi
 	# A failed check fails the run (and CI).
 	[ -z "$failed" ] || { echo "test.sh: checks failed on:$failed" >&2; exit 1; }
 }

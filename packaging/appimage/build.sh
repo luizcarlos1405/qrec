@@ -23,10 +23,19 @@ ARCH_IMAGE=docker.io/library/archlinux@sha256:d4594bb2300cba11f41c2f27923eb56f63
 # The Arch Linux Archive day every Arch package comes from.
 ARCH_SNAPSHOT=${ARCH_SNAPSHOT:-2026/11/09}
 # pkgforge-dev/Anylinux-AppImages at 2026-11-09: quick-sharun.sh, which pins
-# sharun 3.8.3, appimagetool 0.5.6 (uruntime, DwarFS) and cross-libc-dlopen
-# 0.2.10 by sha256.
+# sharun 3.8.3 and cross-libc-dlopen 0.2.10 by sha256. Its appimagetool isn't
+# used: it makes DwarFS images only (below).
 ANYLINUX_COMMIT=3bc6529073bf952de8db7b62c86380dbcdb38b64
 QUICK_SHARUN_SHA256=0329d9d6742d741a8cecf1c09d825016c8c5d911b316c3bdabf0cca993fd5b10
+# The AppImage's runtime: uruntime 0.8.1, the release that appimagetool uses,
+# in its squashfs builds. The image is squashfs, not DwarFS: appimage-run
+# (NixOS's handler for AppImages), AppImageLauncher and appimaged read
+# squashfs only. The full runtime brings mksquashfs for the build; the
+# AppImage starts with the lite one.
+URUNTIME_URL=https://github.com/VHSgunzo/uruntime/releases/download/v0.8.1
+URUNTIME_VERSION=0.8.1
+URUNTIME_SQUASHFS_SHA256=2153e68d63f570c7ebe3d1f38df0fa16814f34d839c5cce2ee42667e327708e8
+URUNTIME_SQUASHFS_LITE_SHA256=32c6024a14ff375749ee3bed3330c1586a6dd2bfeddbbd7ceacc053aec2b27a3
 DEBLOATED_URL=https://github.com/pkgforge-dev/archlinux-pkgs-debloated/releases/download/continuous
 # Bump when the builder's package list changes.
 BUILDER_REVISION=${BUILDER_REVISION:-2}
@@ -201,7 +210,11 @@ bundle() {
 	quick-sharun /usr/bin/qrec /usr/bin/ffmpeg /usr/bin/ffprobe /usr/bin/pactl /usr/bin/wl-copy
 
 	tune_appdir
-	quick-sharun --make-appimage
+	# quick-sharun's last step puts the desktop entry and the icon at the
+	# AppDir's root, then runs APPIMAGETOOL: ours makes the file (make_image).
+	printf '#!/bin/sh\nexec sh /opt/qrec-build.sh --make-image\n' > /usr/local/bin/qrec-make-image
+	chmod 755 /usr/local/bin/qrec-make-image
+	APPIMAGETOOL=/usr/local/bin/qrec-make-image quick-sharun --make-appimage
 	patch_runtime "/work/out/$name"
 	sha256sum "/work/out/$name" | sed 's|/work/out/||' > "/work/out/$name.sha256"
 	log "$(du -h "/work/out/$name" | cut -f1) /work/out/$name"
@@ -264,6 +277,31 @@ tune_appdir() {
 	cp "$APPDIR/share/qrec/appimage-build.txt" "/work/out/$OUTNAME.build.txt"
 }
 
+# The AppImage file, as quick-sharun's APPIMAGETOOL: $APPDIR as a squashfs
+# image (zstd, 1 MiB blocks) behind uruntime's lite squashfs runtime, without
+# update information (no .zsync is published). The image is made by the full
+# runtime's built-in mksquashfs, run from a copy without the AppImage magic
+# (ELF ident bytes 8-10): a kernel that hands AppImages to an interpreter
+# (NixOS's binfmt_misc) would send the runtime itself to one this container
+# doesn't have.
+make_image() {
+	full=/work/cache/uruntime-$URUNTIME_VERSION-appimage-squashfs-x86_64
+	lite=/work/cache/uruntime-$URUNTIME_VERSION-appimage-squashfs-lite-x86_64
+	fetch "$URUNTIME_URL/uruntime-appimage-squashfs-x86_64" "$full" "$URUNTIME_SQUASHFS_SHA256"
+	fetch "$URUNTIME_URL/uruntime-appimage-squashfs-lite-x86_64" "$lite" "$URUNTIME_SQUASHFS_LITE_SHA256"
+	tool=/tmp/uruntime-mksquashfs
+	cp "$full" "$tool"
+	chmod 755 "$tool"
+	printf '\000\000\000' | dd of="$tool" bs=1 seek=8 conv=notrunc status=none
+	image=/tmp/qrec-appdir.squashfs
+	rm -f "$image"
+	"$tool" --appimage-mksquashfs "$APPDIR" "$image" -root-owned -noappend \
+		-comp zstd -Xcompression-level 19 -b 1M -processors "$JOBS" -quiet
+	cat "$lite" "$image" > "$OUTPATH/$OUTNAME"
+	chmod 755 "$OUTPATH/$OUTNAME"
+	rm -f "$image" "$tool"
+}
+
 # uruntime falls back to extracting without FUSE only for images up to
 # 350 MiB (URUNTIME_EXTRACT=3); 2 extracts whatever the size. The policy is a
 # fixed-width string in the runtime, before the image.
@@ -289,6 +327,9 @@ in_container() {
 			install_fonts
 			drop_gst_plugins
 			bundle
+			;;
+		--make-image)
+			make_image
 			;;
 	esac
 }
@@ -336,7 +377,7 @@ host() {
 		"$builder" nice -n 19 sh /opt/qrec-build.sh --bundle
 }
 
-if [ "${1:-}" = --prepare-builder ] || [ "${1:-}" = --bundle ]; then
+if [ "${1:-}" = --prepare-builder ] || [ "${1:-}" = --bundle ] || [ "${1:-}" = --make-image ]; then
 	in_container "$1"
 else
 	host "$@"
