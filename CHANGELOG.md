@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The picker's New project starts with what the search has, so a project
+  the search didn't find can be made without typing its name again.
+
 ## 0.1.0 (2026-11-13)
 
 The first release: a screen and camera recorder for Linux with a built-in

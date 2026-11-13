@@ -1,7 +1,7 @@
 //! What `qrec` opens and the project picker (SPEC §4.4, docs/GUI.md G§4.12)
 //! in a nested headless sway (G§8.4): a project in the current folder, the
 //! picker elsewhere, `projects.open_last`, and the picker opening a recent
-//! project and making a new one. A project the picker opens replaces its
+//! project and making a new one, from the search too. A project the picker opens replaces its
 //! process, so the case's window goes on being the same pid.
 //!
 //! `cargo test -p qrec --test gui_picker -- --ignored --test-threads=1`
@@ -174,6 +174,37 @@ fn the_picker_makes_a_new_project() {
     assert!(!projects_home.join("demo").exists());
     let list = nested.cli_json(&elsewhere, &["folders"]);
     assert_eq!(list["data"]["defaultFolder"], "videos", "{list}");
+    opened_then_close(&mut nested, &project);
+}
+
+/// A search that finds nothing, then New project: the field starts with
+/// what was searched, the cursor after it, so typing goes on from there.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn new_project_starts_with_the_search() {
+    let mut nested = Nested::start(AREA, "new-from-search", Options::default());
+    let elsewhere = busy_folder(&nested);
+    let known = fixture(&nested, "rust-traits-talk");
+    remember(&nested, &[&known]);
+    let videos = fs::canonicalize(nested.env.empty_dir("videos")).expect("the folder");
+    let set = nested.cli_json(
+        &elsewhere,
+        &["folders", "add", "videos", videos.to_str().unwrap()],
+    );
+    assert_eq!(set["ok"], true, "{set}");
+    nested.launch(&elsewhere, Launch::bare_in(&elsewhere, &[]));
+    wait_picker(&nested);
+    wtype(&nested, &["launch-demo"]);
+    nested.screenshot("no-match");
+    wtype(&nested, &["-M", "ctrl", "-k", "n", "-m", "ctrl"]);
+    std::thread::sleep(Duration::from_millis(700));
+    nested.screenshot("new-from-search");
+    // Selected, the text would give way to this: after it, it adds on.
+    wtype(&nested, &["2", "-k", "Return"]);
+    let project = videos.join("launch-demo2");
+    poll(OPEN, "the new project's file", || {
+        project.join("qrec.json").is_file().then_some(())
+    });
     opened_then_close(&mut nested, &project);
 }
 

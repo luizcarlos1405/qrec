@@ -980,10 +980,21 @@ impl Picker {
 
     // ---------------------------------------------------------- new project
 
+    /// New project. What the search has comes along in the field, the
+    /// cursor after it: a name the list didn't find is often the one to
+    /// make.
     fn show_new(self: &Rc<Self>) {
         self.clear_errors();
         self.stack.set_visible_child_name(NEW);
-        self.entry.grab_focus();
+        let searched = self.search.text();
+        let searched = searched.trim();
+        if searched.is_empty() {
+            self.entry.grab_focus();
+        } else {
+            self.entry.set_text(searched);
+            self.entry.grab_focus_without_selecting();
+            self.entry.set_position(-1);
+        }
     }
 
     fn show_list(self: &Rc<Self>) {
