@@ -1,7 +1,8 @@
 # Builds Qrec's AppImage (packaging/appimage/README.md) and tries it on
 # Ubuntu 24.04, Debian 13, Fedora and Arch in containers. The AppImage, its
 # checksum and its package list are the run's artifacts; for a v* tag they
-# also go to that tag's GitHub release, a draft when the job makes it.
+# also go to that tag's GitHub release, a draft with CHANGELOG.md's notes
+# when the job makes it.
 name: AppImage
 
 on:
@@ -95,16 +96,28 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v4
         with:
           name: qrec-appimage
           path: out
+      # A release the job makes is a draft, with the tag's section of
+      # CHANGELOG.md (`## 0.1.0 (…)` up to the next `## `) as its notes.
       - name: Attach the AppImage to the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          version=${TAG#v}
+          awk -v v="$version" '
+            /^## / { if (found) exit; found = ($2 == v) ; next }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
             || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
-                 --title "Qrec ${TAG#v}" --notes "See CHANGELOG.md."
+                 --title "Qrec $version" --notes-file notes.md
           gh release upload "$TAG" out/* --clobber --repo "$GITHUB_REPOSITORY"

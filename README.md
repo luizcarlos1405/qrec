@@ -130,17 +130,18 @@ off: …"), and the rest works.
 
 ## Install
 
-There are no releases yet. Qrec runs from an AppImage you build, or from
-the Nix flake.
+Qrec comes as an AppImage, for any distribution, and as a Nix flake. What
+changed in each release is in `CHANGELOG.md`.
 
 ### The AppImage
 
-One file for x86_64 Linux, whatever the distribution's GTK (Ubuntu 24.04,
-Debian 13, Fedora and Arch were tried). It bundles GTK, GStreamer, ffmpeg,
-Mesa and the VA-API drivers, and takes from the system only the session
-(the display, the desktop portal, PipeWire or PulseAudio) and the GPU's
-kernel driver. `packaging/appimage/build.sh` builds it in docker
-(`packaging/appimage/README.md`); then:
+Download `Qrec-<version>-x86_64.AppImage` from the
+[latest release](https://github.com/luizcarlos1405/qrec/releases/latest).
+It's one file for x86_64 Linux, whatever the distribution's GTK (Ubuntu
+24.04, Debian 13, Fedora and Arch were tried). It bundles GTK, GStreamer,
+ffmpeg, Mesa and the VA-API drivers, and takes from the system only the
+session (the display, the desktop portal, PipeWire or PulseAudio) and the
+GPU's kernel driver.
 
 ```sh
 chmod +x Qrec-0.1.0-x86_64.AppImage
@@ -157,6 +158,9 @@ the window draws with Cairo. On NixOS with `programs.appimage.binfmt`, every
 AppImage goes through `appimage-run`, which can't open this one (a DwarFS
 image, not squashfs): use the flake there.
 
+`packaging/appimage/build.sh` builds the AppImage from source in docker
+(`packaging/appimage/README.md`).
+
 ### With Nix
 
 With Nix (flakes enabled), Qrec runs and installs straight from this
@@ -167,13 +171,23 @@ nix run github:luizcarlos1405/qrec                # try it
 nix profile install github:luizcarlos1405/qrec    # install it, with its desktop entry and icons
 ```
 
-Nix builds Qrec itself, which takes a few minutes; GTK, GStreamer and ffmpeg
-come prebuilt from cache.nixos.org. Outside NixOS, Nix-built apps usually
-can't load the system's GPU drivers, so expect the window to draw in software
-and recordings to use x264 or OpenH264 instead of VA-API (`qrec doctor` says
-which); nixGL may give it the system's OpenGL. Neither has been tried.
+That's `main` as it is now; `github:luizcarlos1405/qrec/v0.1.0` is a
+release. In a NixOS configuration that is a flake, add the input
+`qrec.url = "github:luizcarlos1405/qrec/v0.1.0";` and put
+`inputs.qrec.packages.${pkgs.stdenv.hostPlatform.system}.default` in
+`environment.systemPackages`.
 
-Released AppImages, an AUR package and a .deb are on the way (issue #9).
+Nix builds Qrec itself, which takes a few minutes; GTK, GStreamer and ffmpeg
+come prebuilt from cache.nixos.org (about 1.4 GiB the first time). Outside
+NixOS, Nix-built apps usually can't load the system's GPU drivers, so expect
+the window to draw in software and recordings to use x264 instead of VA-API
+(`qrec doctor` says which). That much was tried in an Ubuntu 24.04 container
+that had the Nix store and no GPU driver: the doctor, a take, an MP4 export
+and the window all worked. nixGL may give it the system's OpenGL (not
+tried). The AppImage brings Mesa and its VA-API drivers, so it uses Intel
+and AMD GPUs.
+
+An AUR package and a .deb are on the way (issue #9).
 
 ## Build and run
 
