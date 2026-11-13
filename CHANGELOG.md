@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-11-13)
 
 The first release: a screen and camera recorder for Linux with a built-in
 editor, made for one loop: press R, talk, press R, repeat.
