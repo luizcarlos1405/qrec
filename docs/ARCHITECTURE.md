@@ -370,7 +370,8 @@ pub enum JobKind {
     Purge { takes: Vec<TakeId> },
 }
 pub struct AutocutTarget { pub clip: ClipRef, pub tracks: Vec<AutocutSource> /* ≥ 1 */,
-                           pub warning: Option<String> /* named tracks the take couldn't use */ }
+                           pub warning: Option<String> /* named tracks the take couldn't use */,
+                           pub keep: Vec<[Frame; 2]> /* overrides.keep for this clip, A§5.7 step 8; serde default */ }
 pub struct AutocutSource { pub track: TrackId, pub key: SilenceKey }  // one analysis per track
 pub struct AutocutParams { pub threshold_db: f64, pub min_silence_ms: u32, pub padding_ms: u32, pub min_keep_ms: u32,
                            pub edges_only: bool /* serde default */ }
@@ -569,7 +570,7 @@ need confirmation, `G` = GUI host only, `R` = allowed while recording (A§5.3).
 | `ClipTrim` | `clip`, `start: Option<TimeArg>`, `end: Option<TimeArg>`, `timeline` | U | `qrec clip trim <clip> [--start T] [--end T] [--timeline]` |
 | `ClipSplit` | `clip: Option<ClipId>`, `at: TimeArg`, `timeline` | U | `qrec clip split <clip> --at T` / `--timeline --at T` |
 | `ClipRemove` | `clips` | U | `qrec clip remove <clip>…` |
-| `Autocut` | `scope: ClipScope`, `overrides: AutocutOverrides`, `dryRun` | U, A | `qrec autocut [--clips …\|--all] [--track A1]… [--threshold-db] [--min-silence-ms] [--padding-ms] [--min-keep-ms] [--edges-only[=BOOL]] [--dry-run]` |
+| `Autocut` | `scope: ClipScope`, `overrides: AutocutOverrides`, `dryRun` | U, A | `qrec autocut [--clips …\|--all] [--track A1]… [--threshold-db] [--min-silence-ms] [--padding-ms] [--min-keep-ms] [--edges-only[=BOOL]] [--keep CLIP:IN-OUT]… [--dry-run]` |
 | `Undo` / `Redo` | `steps: u32` | | `qrec undo [N]` / `qrec redo [N]` |
 | `HistoryRestore` | `seq` | `!` | `qrec history restore <seq> --yes` |
 | `HistoryClear` | – | `!` | `qrec history clear --yes` |
@@ -594,7 +595,9 @@ pub struct AutocutPatch { auto_run_after_take: Option<bool>,
                           tracks: Option<Vec<TrackId>> /* Some([]) = each take's first mic */,
                           threshold_db, min_silence_ms, padding_ms, min_keep_ms, edges_only: Option<…> }
 pub struct AutocutOverrides { tracks: Vec<TrackId> /* empty = the settings' */, threshold_db,
-                              min_silence_ms, padding_ms, min_keep_ms, edges_only: Option<…> }
+                              min_silence_ms, padding_ms, min_keep_ms, edges_only: Option<…>,
+                              keep: Vec<AutocutKeep> /* cuts to keep this run, A§5.7 step 8 */ }
+pub struct AutocutKeep { clip: ClipId, #[serde(rename = "in")] in_: Frame, out: Frame } // take frames; `--keep c3e9:120-168`
 pub enum RecordModeArg { Append, Over(Vec<ClipId>), OverSelection }
 pub enum InsertAt { End, Index(usize), After(ClipId), AfterSelection }
 pub enum MoveTo { Index(usize), By(i64), Before(ClipId), After(ClipId) }
@@ -676,7 +679,8 @@ pub enum UiAction { OpenPath(String), RevealPath(String), CopyText(String), Copy
 Typed result views (in `protocol/reply.rs`, all camelCase):
 `StatusView { project, path, initialized, host, pid, record, jobs, takes, clips, durationFrames, cursor }`,
 `TakeRow`, `ClipRow { id, take, in, out, start, duration }`, `HistoryRow { seq, ts, label, current }`,
-`AutocutPlanView { clips: [{ clip, kept: [[in, out]], removedFrames, silences }], skipped }`,
+`AutocutPlanView { clips: [{ clip, tracks, kept: [[in, out]], removedFrames, silences, removed: [[in, out]], excepted: [[in, out]], warning? }], skipped, edgesOnly }`
+(`removed`: the cuts as `--keep` names them; `excepted`: the cuts kept),
 `ExportDone { path, bytes, frames }`, `FrameSavedView { path }`,
 `TakeFinalizedView { take, status, durationFrames, placed, clips }`,
 `RecordStartedView { take, mode, files }`.
@@ -1065,6 +1069,19 @@ Plan (pure, `autocut.rs`), per clip, over the tracks it listens to:
    says `edgesOnly`, and the labels count edges: "Trims 2 edges (3.1 s)",
    "Autocut take 3: trimmed 2 edges (3.1 s)", "Nothing to trim: no silence
    long enough at the clips' edges at −35 dB".
+8. `overrides.keep` (issue #15: a previewed cut kept; the target's `keep`,
+   the ranges of its clip) ⇒ every removed run of steps 1–7 that overlaps
+   one is kept whole (`autocut::cut_clip_keeping`): its time is taken out
+   of the silences and the clip is planned again, so the fragments beside
+   it join it (a sound `minKeepMs` dropped comes back with it); then the
+   run is added to the kept fragments, so none of its frames is removed
+   whatever the snapping and `minKeepMs` do. A range overlapping no run
+   changes nothing, so a range from an older plan keeps whatever cut now
+   overlaps it. `ClipCut.excepted` and `AutocutClipView.excepted` list
+   the kept runs; they count in neither `silences` nor `removedFrames`.
+   The message notes them ("…; 2 cuts kept"); a run where every cut is
+   kept is "Nothing to cut: every cut is kept". `keep` must name a clip on
+   the timeline (`not_found`) with `in < out` (`usage`); it is never saved.
 
 Tracks: the override's (`--track`, repeated) when it names any → else
 `autocut.tracks` → else the take scene's first `mic` → first track
@@ -1094,7 +1111,8 @@ Flow: `Autocut` snapshots params and targets (`AutocutTarget` with a
   the job's `cmd` under `skipped`, stripped from the history entry.
 Properties: kept ⊇ every padded-speech region with `minKeepMs` of speech;
 fragments stay inside the clip; a clip without silence is unchanged; edges
-only keeps exactly the full plan's hull (one fragment at most).
+only keeps exactly the full plan's hull (one fragment at most); a frame of
+an excepted run is never removed, and keeping never removes more.
 
 ### A§5.8 Jobs
 

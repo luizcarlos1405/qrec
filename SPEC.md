@@ -869,6 +869,14 @@ silencedetect=noise=<thresholdDb>dB:d=<minSilence> -vn -f null -` on
      before the first word still goes) and frame snapping work as above,
      and the analysis is the same (no new detection). It pairs with
      "Run autocut after every take": each new take lands trimmed.
+   - **Keep a previewed cut** (issue #15): a run can name ranges to keep
+     (`keep`, `[in, out)` take frames of a clip). Every cut the plan above
+     would remove that overlaps one is kept whole: its time no longer
+     counts as silence and the clip is planned again, so the fragments on
+     both sides join it (a short sound `minKeepMs` would drop comes back
+     with it), and none of its frames is removed. A range that overlaps no
+     cut changes nothing. With edges only, keeping an edge leaves that
+     edge untrimmed. Kept cuts are never saved: they belong to one run.
 3. **Apply.** The clip is replaced by N clips from the same take as **one
    history entry**, for example _"Autocut take 3: removed 4 silences
    (6.2 s)"_; with edges only, _"Autocut take 3: trimmed 2 edges
@@ -881,8 +889,17 @@ silencedetect=noise=<thresholdDb>dB:d=<minSilence> -vn -f null -` on
      A _Trim edges only_ check box under the sliders is part of the same
      draft: Apply saves it with them, and the summary then reads _"Trims 2
      edges (3.1 s)"_ (or _"Nothing to trim"_).
+   - A click on a hatched cut keeps it, and a click on a kept one cuts it
+     again; while the page is open, that click neither selects the clip
+     nor seeks. Each region row has a box (checked = cut) that toggles it
+     the same way, also from the keyboard. A kept cut shows as a dashed
+     outline tagged _kept_, its row unchecked and dimmed, and the summary
+     reads _"Removes 3 silences (4.8 s) · 1 kept"_. Kept cuts are part of
+     the draft: Cancel or `Esc` drops them, Apply's cut keeps them, and
+     "Run autocut after every take" never uses them.
    - The CLI equivalent is `qrec autocut --dry-run`, which prints the planned
-     segments.
+     segments and each cut as `--keep` names it (`c3e9:120-168`);
+     `qrec autocut --keep c3e9:120-168` (repeatable) keeps it.
    - With no clips yet, Shift+C still opens the settings, so autocut can be
      set up before the first take; there is nothing to preview, and Save
      keeps the settings.
@@ -1187,7 +1204,8 @@ qrec clip split <clip> --at T          # or: qrec clip split --timeline --at T
 qrec clip remove <clip>…
 
 qrec autocut [--clips <clip>… | --all] [--track A1]… [--threshold-db -35] [--min-silence-ms 400]
-             [--padding-ms 120] [--min-keep-ms 200] [--edges-only[=false]] [--dry-run]
+             [--padding-ms 120] [--min-keep-ms 200] [--edges-only[=false]]
+             [--keep <clip>:<in>-<out>]… [--dry-run]
 qrec autocut settings [--auto-run BOOL] [--track A1|auto]… [--threshold-db DB] [--min-silence-ms MS]
              [--padding-ms MS] [--min-keep-ms MS] [--edges-only BOOL]
 qrec undo [N] | redo [N] | history [--limit 20]

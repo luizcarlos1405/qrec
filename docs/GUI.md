@@ -2656,7 +2656,16 @@ As built (WP6, round 3):
     `hatch-stripe`, and both draw the padding beside each cut as a flat
     `padding-fill` (no edges, no dim, no tag); while the autocut page's
     preview shows, the lane's own spans don't (its draft may differ from
-    the settings); at frame level the waveform is the 1 ms
+    the settings). Kept cuts (issue #15, board 05) draw a 1 px dashed
+    `muted` outline and a "kept" tag in `muted`, with no stripes, padding
+    or dim. The cut under the pointer gets a `warning-20` fill, a 2 px
+    `warning` outline and its tag filled `warning` (`text-on-accent`); a
+    kept one a `hover` fill, a `text` outline and a `video-text` tag. While
+    the page shows, a primary click on a cut or kept cut (its lane's
+    height; 8 px wide at least) toggles it (`LocalUi.autocut_keep`) and
+    neither selects nor seeks; the pointer is a hand there, with a text
+    tooltip "Click to keep this silence" / "Click to cut this silence"
+    (`autocut::span_tip`) instead of the clip's; at frame level the waveform is the 1 ms
     min/max envelope (S09 draws a sample curve), and waveforms are color
     rects, not path fills (frame time on 300 clips).
 - **Ruler**: label interval L = the smallest of 1f, 2f, 5f, 10f, 15f, 1s,
@@ -3085,6 +3094,15 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     a C20 check box under the sliders with its caption "Keeps the pauses
     inside each clip.", the draft's `edges_only` (its toggle re-runs the
     dry run; Apply saves it, Cancel drops it).
+    Keeping a previewed cut (issue #15, `design/boards/10-autocut-options/01`
+    and `05`): the draft's `keep` (`AutocutKeep { clip, in, out }`, take
+    frames), toggled by `autocut::toggle_keep` from a region row's box or a
+    click on its hatch. Both write `LocalUi.autocut_keep` (the page empties
+    it when it opens and closes) and the page follows it into the draft:
+    the dry run goes after the same 250 ms debounce. It rides in each dry
+    run's overrides and in Apply's cut (`AutocutOverrides.keep`); it is
+    never saved (`changed` ignores it). The page's spacing follows boards
+    01–04: 12 px between the knobs, 16 px between the groups.
   - `dry_run(&State, &draft) -> Command`: scope = the selection, or All;
     overrides = the draft. `dry_run_key(&State, &draft) -> DryRunKey`: the
     command and what it doesn't carry but its answer is worked out on (the
@@ -3108,12 +3126,24 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     PNG: title "Removes 4 silences (6.2 s)"; rows ("Take 8",
     "00:01:43:15 → 00:01:37:09") per affected take, then ("Timeline",
     "00:04:06:11 → 00:04:00:05"); regions `{ n, range: "00:02:41:12 →
-    00:02:43:00", size: "48 f · 1.6 s", seek: Frame }` (a click seeks and
-    highlights the row R1). Nothing to cut: title "Nothing to cut" and the
-    core's message as one row. An edges-only plan (`AutocutPlanView.
-    edgesOnly`) reads "Trims 2 edges (3.1 s)" and "Nothing to trim".
+    00:02:43:00", size: "48 f · 1.6 s", seek: Frame, clip, cut: [in, out],
+    kept }` (a click seeks and highlights the row R1). Nothing to cut:
+    title "Nothing to cut" and the core's message as one row. An
+    edges-only plan (`AutocutPlanView.edgesOnly`) reads "Trims 2 edges
+    (3.1 s)" and "Nothing to trim". Kept cuts (`AutocutClipView.excepted`)
+    stay in the regions, in timeline order with the others, as `kept` rows
+    (size "kept"), and `kept` reads " · 1 kept" after the title (board 01:
+    "Removes 3 silences (4.8 s) · 1 kept"); with every cut kept, "Nothing
+    to cut" with "Every cut is kept" and the kept rows, so they can be cut
+    again. Each row starts with a C20 box, checked = cut (its own control:
+    a click on the row still seeks; Tab reaches it and Space toggles it,
+    G§3.8 step 7); a kept row shows its range and number `muted` and
+    "kept" in the UI font, italic. A toggle that keeps the same cuts
+    updates the rows in place, so the box keeps the focus.
   - `preview_spans(&AutocutPlanView, &State) -> Vec<AutocutPreviewSpan>`:
-    the clip minus what is kept, in timeline frames before the cut.
+    the clip minus what is kept, in timeline frames before the cut, each
+    with its take range (`cut`); the kept cuts as `HatchKind::Kept`
+    (tagged "kept").
   - Header subtitle: "Previewing take 8 · c3e9" (one clip), "Previewing 4
     clips", "Previewing all 10 clips".
 - **As built** (WP5, 99197b5): Apply's answer is a GUI-owned success toast
