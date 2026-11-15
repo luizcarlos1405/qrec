@@ -23,7 +23,7 @@
 </head>
 <body>
   <h1>Autocut options</h1>
-  <p class="lede">Issue #15: three options for autocut (SPEC §9) on the autocut page (S12) and Settings › Autocut. Not approved yet. The boards are S12 with only what changes; everything else on the page is as built.</p>
+  <p class="lede">Issue #15: three options for autocut (SPEC §9) on the autocut page (S12) and Settings › Autocut. Not approved yet (the options' boards are, the analyzing cue is up for review). The boards are S12 with only what changes; everything else on the page is as built.</p>
 
   <h2>What's on the board</h2>
   <ol>
@@ -31,6 +31,7 @@
     <li><b>S12 · Trim edges only</b>: the new check box under the sliders, on. Only the silence before the first sound and after the last is hatched (2.2 s and 0.9 s); the four pauses inside stay. The summary says <i>Trims 2 edges (3.1 s)</i>.</li>
     <li><b>S12 · Two tracks · dropdown</b>: <i>Detect silence on</i> stays a dropdown; its menu has a check box per track in the scope. The value reads <i>A1 · Yeti Nano + A2 · System audio</i>. Silence 3 is no longer cut, because System audio plays a sound there. Both lanes are hatched, the tag shows once, and A2's header gets the scissors.</li>
     <li><b>S12 · Two tracks · inline</b>: the same, but the tracks are listed as check boxes on the page. It's one click less, but it takes a row per track.</li>
+    <li><b>S12 · Analyzing</b>: the threshold just moved to −40 dB, so take 8 is being analyzed again. The summary title becomes <i>Analyzing take 8 · 40%</i> with a progress bar under it. The old plan's numbers, regions and hatches dim, since they're what <i>was</i> planned, and the take plate on the timeline spins, as it does for a real autocut job.</li>
     <li><b>Span states</b> at 48 px/s: cut, cut with the pointer on it, kept, kept with the pointer on it. Also the region rows: selected, kept, and a box with keyboard focus.</li>
     <li><b>Settings › Autocut</b>: a <i>Trim edges only</i> switch for new projects. Other settings in the dialog are saved at once, so this one is a switch here and a check box (a draft until Apply) on S12.</li>
   </ol>
@@ -40,17 +41,18 @@
     <li><b>Exceptions survive a slider change.</b> The core first plans without them, marks every span that overlaps a <code>keep</code> range as kept (the whole span), then plans again with those spans as sound. A kept range that no longer overlaps any span is dropped. The GUI sends ranges that are exactly a span; the CLI's <code>--keep &lt;clip&gt;:&lt;in&gt;-&lt;out&gt;</code> takes any range.</li>
     <li><b>One threshold for all chosen tracks.</b> A threshold per track waits for issue #1 (detecting the threshold).</li>
     <li><b>Intersected silences are checked against Min silence again</b>, so a 100 ms overlap of two long silences isn't cut.</li>
+    <li><b>The track picker is the dropdown</b> (board 3). Settings › Autocut gets no track choice: a new project listens to its first mic. No extra key for keeping a span: the region list's boxes are the keyboard path. The wording stays as drawn.</li>
+    <li><b>Several tracks: keep only the intersection</b> of their silences (sound on any chosen track keeps the region), never the union.</li>
     <li>Exceptions are part of the page's draft: Cancel or <code>Esc</code> drops them, and "Run autocut after every take" never uses them. Edges only and the tracks do apply after every take.</li>
   </ul>
 
-  <h2>For you to pick</h2>
-  <div class="q"><b>1. Track picker: dropdown (board 3) or inline (board 4)?</b>
-    <span class="rec">I'd pick the dropdown. The page is already tall, most takes have two or three tracks, and the value line shows what's chosen. The last checked track can't be unchecked (its box is disabled).</span></div>
-  <div class="q"><b>2. Tracks in Settings › Autocut?</b> The issue says Settings should get the tracks too. Track ids (A1, A2…) belong to a project's scene, and Settings holds the defaults for new projects, which have no tracks yet.
-    <span class="rec">I'd leave tracks out of Settings: a new project listens to its first mic, as it does now, and you choose tracks per project on S12. The alternative is a choice by role (<i>Mics</i> / <i>Mics and system audio</i>), which adds a setting <code>qrec.json</code> doesn't have.</span></div>
-  <div class="q"><b>3. A key for the span at the playhead?</b> The boards make it keyboard-reachable through the region list's boxes (Tab, then Space).
-    <span class="rec">I'd stop there and not add a key. If you want one, <code>K</code> (keep / cut the region under the playhead) is free on the page.</span></div>
-  <div class="q"><b>4. Wording.</b> <i>Trim edges only</i> · “Keeps the pauses inside each clip.” · <i>Trims 2 edges (3.1 s)</i> · <i>· 1 kept</i> · the tooltips <i>Click to keep this silence</i> / <i>Click to cut this silence</i> · the history label <i>Autocut take 3: trimmed 2 edges (3.1 s)</i>.
-    <span class="rec">Change any of these freely.</span></div>
+  <h2>The analyzing cue: for you to pick</h2>
+  <p>Today the only cue is a small spinner and <i>Analyzing…</i> in the summary title, below the four sliders, and the timeline keeps showing the old hatches as if they were current. Only Threshold and Min silence run ffmpeg again (unless that analysis is cached); Padding, Min keep, edges only and the exceptions only re-plan, which is instant.</p>
+  <div class="q"><b>1. A percentage, or just "Analyzing"?</b> ffmpeg doesn't report progress to Qrec yet. A percentage needs a progress event from the analysis, the way export already has one. It's measured over the takes' durations, so several takes give one figure (<i>Analyzing 3 takes · 40%</i>).
+    <span class="rec">I'd do the percentage. The wait that bothers you is on long takes, and that's when knowing how far along it is helps. Without it, the bar becomes a sliding stripe (indeterminate) and the title loses the number.</span></div>
+  <div class="q"><b>2. No flicker on fast changes.</b> The cue appears only when the new plan takes longer than 300 ms. Re-plans and cached analyses then never flash it.
+    <span class="rec">I'd do this.</span></div>
+  <div class="q"><b>3. Dim the old plan, or hide it?</b> The board dims it (40%), so you can still compare it with what comes next.
+    <span class="rec">I'd dim it. Hiding it makes the timeline jump twice per change.</span></div>
 </body>
 </html>
