@@ -31,7 +31,7 @@
     <li><b>S12 · Trim edges only</b>: the new check box under the sliders, on. Only the silence before the first sound and after the last is hatched (2.2 s and 0.9 s); the four pauses inside stay. The summary says <i>Trims 2 edges (3.1 s)</i>.</li>
     <li><b>S12 · Two tracks · dropdown</b>: <i>Detect silence on</i> stays a dropdown; its menu has a check box per track in the scope. The value reads <i>A1 · Yeti Nano + A2 · System audio</i>. Silence 3 is no longer cut, because System audio plays a sound there. Both lanes are hatched, the tag shows once, and A2's header gets the scissors.</li>
     <li><b>S12 · Two tracks · inline</b>: the same, but the tracks are listed as check boxes on the page. It's one click less, but it takes a row per track.</li>
-    <li><b>S12 · Analyzing</b>: the threshold just moved to −40 dB, so take 8 is being analyzed again. The summary title becomes <i>Analyzing take 8 · 40%</i> with a progress bar under it. The old plan's numbers, regions and hatches dim, since they're what <i>was</i> planned, and the take plate on the timeline spins, as it does for a real autocut job.</li>
+    <li><b>S12 · Analyzing</b>: the threshold just moved to −40 dB, so take 8 is being analyzed again. The summary title becomes <i>Analyzing take 8 · 40%</i> with a progress bar under it. The old plan's numbers and regions dim (the panel keeps its layout). On the timeline the old hatches are gone, and the take plate spins, as it does for a real autocut job.</li>
     <li><b>Span states</b> at 48 px/s: cut, cut with the pointer on it, kept, kept with the pointer on it. Also the region rows: selected, kept, and a box with keyboard focus.</li>
     <li><b>Settings › Autocut</b>: a <i>Trim edges only</i> switch for new projects. Other settings in the dialog are saved at once, so this one is a switch here and a check box (a draft until Apply) on S12.</li>
   </ol>
@@ -46,13 +46,11 @@
     <li>Exceptions are part of the page's draft: Cancel or <code>Esc</code> drops them, and "Run autocut after every take" never uses them. Edges only and the tracks do apply after every take.</li>
   </ul>
 
-  <h2>The analyzing cue: for you to pick</h2>
-  <p>Today the only cue is a small spinner and <i>Analyzing…</i> in the summary title, below the four sliders, and the timeline keeps showing the old hatches as if they were current. Only Threshold and Min silence run ffmpeg again (unless that analysis is cached); Padding, Min keep, edges only and the exceptions only re-plan, which is instant.</p>
-  <div class="q"><b>1. A percentage, or just "Analyzing"?</b> ffmpeg doesn't report progress to Qrec yet. A percentage needs a progress event from the analysis, the way export already has one. It's measured over the takes' durations, so several takes give one figure (<i>Analyzing 3 takes · 40%</i>).
-    <span class="rec">I'd do the percentage. The wait that bothers you is on long takes, and that's when knowing how far along it is helps. Without it, the bar becomes a sliding stripe (indeterminate) and the title loses the number.</span></div>
-  <div class="q"><b>2. No flicker on fast changes.</b> The cue appears only when the new plan takes longer than 300 ms. Re-plans and cached analyses then never flash it.
-    <span class="rec">I'd do this.</span></div>
-  <div class="q"><b>3. Dim the old plan, or hide it?</b> The board dims it (40%), so you can still compare it with what comes next.
-    <span class="rec">I'd dim it. Hiding it makes the timeline jump twice per change.</span></div>
+  <h2>The analyzing cue (decided 2026-11-15)</h2>
+  <ul>
+    <li><b>A percentage.</b> The analysis reports ffmpeg's position (<code>-progress</code>) as it reads each audio file. Position ÷ the file's duration, with each file weighted by its length and cached analyses left out, gives one figure for the whole run (<i>Analyzing 3 takes · 40%</i>).</li>
+    <li><b>No flicker:</b> the cue shows only when the new plan takes longer than 300 ms. Re-plans (Padding, Min keep, edges only, exceptions) and cached analyses never show it.</li>
+    <li><b>The old plan is hidden on the timeline</b> while it's being replaced. On the page its numbers and regions dim instead, so the panel doesn't reflow.</li>
+  </ul>
 </body>
 </html>
