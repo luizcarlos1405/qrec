@@ -1023,12 +1023,15 @@ Plan (pure, `autocut.rs`), per clip and track:
    leave fake speech where they meet), then shrink each by `paddingMs` on
    both sides; drop empty ones.
 3. Kept = clip range minus shrunk silences.
-4. Drop leftover fragments shorter than `minKeepMs` (a clip no shrunk
-   silence reaches stays whole, however short).
+4. Drop leftover fragments with less than `minKeepMs` of sound: their
+   part outside every silence, so padding doesn't count (a fragment
+   between two silences is at least twice the padding long, whatever
+   its sound). A clip no shrunk silence reaches stays whole, however
+   short.
 5. Snap outward to frames (`in = ns_to_frame_floor`, `out = ns_to_frame_ceil`),
    clamp to the clip, merge touching fragments.
 6. Nothing kept ⇒ the clip is left unchanged and reported "entirely silent at
-   −35 dB" when the silences cover it, else "nothing of 200 ms or more to
+   −35 dB" when the silences cover it, else "no sound of 50 ms or more to
    keep" (autocut never deletes a whole clip).
 
 Track: override → `autocut.track` → first `mic` of the take scene → first
@@ -1051,7 +1054,7 @@ Flow: `Autocut` snapshots params and targets (`AutocutTarget` with a
   clips only skipped for project reasons (no such track, missing media or
   file) ⇒ Ok "Nothing to cut: …". Clips skipped before completion ride in
   the job's `cmd` under `skipped`, stripped from the history entry.
-Properties: kept ⊇ every padded-speech region of a fragment ≥ `minKeepMs`;
+Properties: kept ⊇ every padded-speech region with `minKeepMs` of speech;
 fragments stay inside the clip; a clip without silence is unchanged.
 
 ### A§5.8 Jobs

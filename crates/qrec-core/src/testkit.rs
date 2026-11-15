@@ -366,6 +366,8 @@ fn design_builder() -> ProjectBuilder {
     a2.label = "System audio".to_owned();
     a2.gain_db = -6.0;
     project.autocut.track = Some(parse_id("A1"));
+    // BRIEF §3.6's min keep, not the default.
+    project.autocut.min_keep_ms = 200;
     builder
 }
 

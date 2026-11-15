@@ -824,7 +824,7 @@ pub struct AutocutParamArgs {
     /// Audio kept on each side of speech.
     #[arg(long, value_name = "MS", allow_negative_numbers = true)]
     pub padding_ms: Option<u32>,
-    /// Kept fragments shorter than this are dropped.
+    /// Sounds shorter than this between cuts are cut too (padding doesn't count).
     #[arg(long, value_name = "MS", allow_negative_numbers = true)]
     pub min_keep_ms: Option<u32>,
 }
@@ -848,7 +848,7 @@ pub struct AutocutSettingsArgs {
     /// Audio kept on each side of speech.
     #[arg(long, value_name = "MS", allow_negative_numbers = true)]
     pub padding_ms: Option<u32>,
-    /// Kept fragments shorter than this are dropped.
+    /// Sounds shorter than this between cuts are cut too (padding doesn't count).
     #[arg(long, value_name = "MS", allow_negative_numbers = true)]
     pub min_keep_ms: Option<u32>,
 }

@@ -614,7 +614,7 @@ and doesn't take part in undo.
     "thresholdDb": -35.0,
     "minSilenceMs": 400, // only silences at least this long are removed
     "paddingMs": 120, // kept on each side of speech
-    "minKeepMs": 200, // drop leftover fragments shorter than this
+    "minKeepMs": 50, // sounds shorter than this between cuts are cut too
   },
 
   "takes": {
@@ -842,7 +842,8 @@ silencedetect=noise=<thresholdDb>dB:d=<minSilence> -vn -f null -` on
      shifted by the stream's `startOffsetNs` and `syncOffsetMs`.
    - Shrink each silence by `paddingMs` on both sides.
    - Keep the complement.
-   - Drop kept fragments shorter than `minKeepMs`.
+   - Drop kept fragments with less than `minKeepMs` of sound. Padding
+     doesn't count, so a click that splits a silence in two goes with it.
    - Snap boundaries to frames (rounding outward, so speech is never clipped).
 3. **Apply.** The clip is replaced by N clips from the same take as **one
    history entry**, for example _"Autocut take 3: removed 4 silences

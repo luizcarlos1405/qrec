@@ -156,7 +156,7 @@ started:
         dryRun: false
         kind: autocut
         params:
-          minKeepMs: 200
+          minKeepMs: 50
           minSilenceMs: 400
           paddingMs: 120
           thresholdDb: -35

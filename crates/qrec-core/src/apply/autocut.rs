@@ -426,7 +426,7 @@ pub(crate) mod fixtures {
             threshold_db: -35.0,
             min_silence_ms: 400,
             padding_ms: 120,
-            min_keep_ms: 200,
+            min_keep_ms: 50,
         }
     }
 

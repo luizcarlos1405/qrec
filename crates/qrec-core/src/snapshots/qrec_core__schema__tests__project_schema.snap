@@ -68,7 +68,7 @@ expression: project_schema()
           "type": "boolean"
         },
         "minKeepMs": {
-          "description": "Leftover fragments shorter than this are dropped.",
+          "description": "Sounds shorter than this between cuts are cut too (padding doesn't count).",
           "format": "uint32",
           "maximum": 60000,
           "minimum": 0,

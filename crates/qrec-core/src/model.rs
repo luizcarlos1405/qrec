@@ -492,7 +492,7 @@ pub struct AutocutSettings {
     pub min_silence_ms: u32,
     /// Kept on each side of speech.
     pub padding_ms: u32,
-    /// Leftover fragments shorter than this are dropped.
+    /// Sounds shorter than this between cuts are cut too (padding doesn't count).
     pub min_keep_ms: u32,
 }
 
@@ -504,7 +504,7 @@ impl Default for AutocutSettings {
             threshold_db: -35.0,
             min_silence_ms: 400,
             padding_ms: 120,
-            min_keep_ms: 200,
+            min_keep_ms: 50,
         }
     }
 }

@@ -352,7 +352,7 @@ pub fn autocut_page(config: &UserConfig, config_path: &str) -> AutocutPage {
                 Knob::MinKeep,
                 f64::from(a.min_keep_ms),
                 "autocut.min_keep_ms",
-                "Kept pieces shorter than this are cut too.",
+                "Sounds shorter than this between cuts are cut too.",
                 (0.0, 60_000.0),
             ),
         ],
@@ -891,7 +891,7 @@ mod tests {
                 ("Threshold", "\u{2212}35", "dB"),
                 ("Min silence", "400", "ms"),
                 ("Padding", "80", "ms"),
-                ("Min keep", "200", "ms"),
+                ("Min keep", "50", "ms"),
             ]
         );
         let mut text = String::new();

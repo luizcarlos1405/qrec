@@ -5,7 +5,8 @@
 //!    `t = x + startOffsetNs + syncOffsetMs·10⁶`;
 //! 2. shrink each by `paddingMs` on both sides and drop the empty ones;
 //! 3. kept = the clip range minus the shrunk silences;
-//! 4. drop kept fragments shorter than `minKeepMs`;
+//! 4. drop kept fragments with less than `minKeepMs` of sound: what isn't
+//!    silence, so their padding doesn't count;
 //! 5. snap outward to frames (`in = ns_to_frame_floor`, `out =
 //!    ns_to_frame_ceil`), clamp to the clip, merge touching fragments;
 //! 6. nothing kept ⇒ the clip is left unchanged and reported "entirely
@@ -17,9 +18,14 @@
 //!   fake "speech" where they meet.
 //! - `minKeepMs` drops *leftover* fragments (SPEC §6.3): a clip no shrunk
 //!   silence reaches is kept whole even when it is shorter than that. When
-//!   only slivers under `minKeepMs` are left of a clip that does have sound,
-//!   step 6 reports "nothing of 200 ms or more to keep" rather than
+//!   only sounds under `minKeepMs` are left of a clip that does have sound,
+//!   step 6 reports "no sound of 50 ms or more to keep" rather than
 //!   "entirely silent".
+//!
+//! Step 4 counts sound, not length: a fragment between two silences is at
+//! least twice the padding long however short its sound, so a click that
+//! splits a silence in two (ffmpeg ends a silence at one loud sample) would
+//! otherwise survive as a clip of padding around it.
 //!
 //! Everything here is pure planning; the command, the job and the history
 //! entry live in `apply::autocut` and `on_event::autocut`.
@@ -146,8 +152,10 @@ pub fn cut_clip(clip: &Clip, silences: &[Interval], params: &AutocutParams, fps:
 }
 
 /// Steps 2–4 in take-time nanoseconds: the parts of `range` outside every
-/// silence shrunk by `padding_ms`, without those shorter than `min_keep_ms`.
-/// Sorted and disjoint. These are the padded speech regions the cut must keep.
+/// silence shrunk by `padding_ms`, without those holding less than
+/// `min_keep_ms` of sound (their part outside every silence: padding
+/// doesn't count). Sorted and disjoint. These are the padded speech regions
+/// the cut must keep.
 ///
 /// A range no shrunk silence reaches comes back whole whatever its length:
 /// `minKeepMs` drops *leftover* fragments (SPEC §6.3), and nothing was cut.
@@ -159,9 +167,10 @@ pub fn kept_spans(
 ) -> Vec<Interval> {
     let pad = i64::from(padding_ms) * NS_PER_MS;
     let min_keep = i64::from(min_keep_ms) * NS_PER_MS;
+    let silences = union(silences);
     let mut spans = Vec::new();
     let mut cursor = range.start_ns;
-    for silence in union(silences) {
+    for &silence in &silences {
         let start = silence.start_ns.saturating_add(pad);
         let end = silence.end_ns.saturating_sub(pad);
         if start >= end || end <= cursor {
@@ -188,14 +197,32 @@ pub fn kept_spans(
         });
     }
     if spans != [range] {
-        spans.retain(|s| s.end_ns.saturating_sub(s.start_ns) >= min_keep);
+        spans.retain(|&s| sound_ns(s, &silences) >= min_keep);
     }
     spans
 }
 
+/// How much of `span` lies outside every silence of `silences` (sorted and
+/// disjoint, as [`union`] makes them).
+fn sound_ns(span: Interval, silences: &[Interval]) -> i64 {
+    let first = silences.partition_point(|s| s.end_ns <= span.start_ns);
+    let quiet: i64 = silences[first..]
+        .iter()
+        .take_while(|s| s.start_ns < span.end_ns)
+        .map(|s| {
+            s.end_ns
+                .min(span.end_ns)
+                .saturating_sub(s.start_ns.max(span.start_ns))
+        })
+        .sum();
+    span.end_ns
+        .saturating_sub(span.start_ns)
+        .saturating_sub(quiet)
+}
+
 /// Why a clip whose cut keeps nothing is left alone: "entirely silent at
-/// −35 dB" when the silences (file time) cover all of it, else "nothing of
-/// 200 ms or more to keep" (its sounds are slivers under `minKeepMs`).
+/// −35 dB" when the silences (file time) cover all of it, else "no sound of
+/// 50 ms or more to keep" (its sounds are all shorter than `minKeepMs`).
 pub fn nothing_kept_reason(
     clip: &Clip,
     stream: &Stream,
@@ -214,7 +241,7 @@ pub fn nothing_kept_reason(
     if covered {
         entirely_silent(params)
     } else {
-        format!("nothing of {} ms or more to keep", params.min_keep_ms)
+        format!("no sound of {} ms or more to keep", params.min_keep_ms)
     }
 }
 
@@ -522,9 +549,8 @@ mod tests {
         assert_eq!(cut.removed_frames, 0);
         assert!(!cut.changes(&clip(30, 90)));
         assert!(cut.removed(&clip(30, 90)).is_empty());
-        // Only edge fragments under min keep survive (0–0.1 s and 9.88–10 s):
-        // still entirely silent. (Between two silences a fragment is at least
-        // 2 × padding long.)
+        // Only edge fragments of padding are left (0–0.1 s and 9.88–10 s),
+        // without a sound: still entirely silent.
         let cut = cut_clip(&clip(0, 300), &[ms(-20, 10_000)], &params(), FPS30);
         assert!(cut.keeps_nothing(), "{cut:?}");
         assert_eq!(
@@ -566,17 +592,17 @@ mod tests {
             reason(&clip(30, 90), &[ms(0, 2500), ms(2500, 4000)]),
             "entirely silent at \u{2212}35 dB"
         );
-        // 300 ms with a 250 ms silence: 120 ms and 170 ms of padded sound
-        // are left, both under 200 ms.
+        // 300 ms with a 250 ms silence: 120 ms and 170 ms of padded audio
+        // are left, with 50 ms of sound, under 200 ms.
         assert_eq!(
             reason(&clip(0, 9), &[ms(0, 250)]),
-            "nothing of 200 ms or more to keep"
+            "no sound of 200 ms or more to keep"
         );
     }
 
     #[test]
     fn short_fragments_are_dropped_and_removals_merge() {
-        // Speech 3.9–4.3 s padded to 3.78–4.42 (640 ms) survives a 200 ms
+        // Speech 3.9–4.3 s (400 ms, padded to 3.78–4.42) survives a 200 ms
         // min keep, but not a 700 ms one; then both silences become one cut.
         let silences = [ms(0, 3900), ms(4300, 10_000)];
         let cut = cut_clip(&clip(0, 300), &silences, &params(), FPS30);
@@ -595,6 +621,34 @@ mod tests {
             "one removal 1.12–5.88 s"
         );
         assert_eq!(cut.silences, 1);
+    }
+
+    #[test]
+    fn min_keep_counts_sound_not_padding() {
+        // A 21 µs click splits a 4 s silence in two (ffmpeg ends a silence
+        // at one loud sample). Padded, it is a 240 ms fragment, longer than
+        // a 200 ms min keep; its sound is not: one cut, 1.12–4.88 s.
+        let click = [
+            ms(1000, 3000),
+            Interval {
+                start_ns: 3000 * MS + 21_000,
+                end_ns: 5000 * MS,
+            },
+        ];
+        let cut = cut_clip(&clip(0, 300), &click, &params(), FPS30);
+        assert_eq!(cut.kept, vec![[0, 34], [146, 300]]);
+        assert_eq!(cut.silences, 1);
+        // Min keep 0 keeps every sound: the click and its padding stay.
+        let all = AutocutParams {
+            min_keep_ms: 0,
+            ..params()
+        };
+        let cut = cut_clip(&clip(0, 300), &click, &all, FPS30);
+        assert_eq!(cut.kept, vec![[0, 34], [86, 94], [146, 300]]);
+        // A 250 ms word between the silences stays at 200 ms.
+        let word = [ms(1000, 3000), ms(3250, 5000)];
+        let cut = cut_clip(&clip(0, 300), &word, &params(), FPS30);
+        assert_eq!(cut.kept, vec![[0, 34], [86, 102], [146, 300]]);
     }
 
     #[test]
@@ -819,7 +873,7 @@ mod tests {
                 vec![[2000, 15_000]],
                 p.clone(),
             ),
-            // 40 ms of speech between the last two silences pads to 280 ms < 300.
+            // 250 ms and 40 ms of speech between the silences: both under 300.
             (
                 "60 fps min keep",
                 Fps::new(60, 1),

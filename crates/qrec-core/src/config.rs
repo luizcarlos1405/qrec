@@ -311,7 +311,7 @@ pub const KEYS: &[ConfigKey] = &[
     key("autocut.threshold_db", Kind::Float { min: -90.0, max: 0.0 }, "a number from -90 to 0", "Silence threshold in dB."),
     key("autocut.min_silence_ms", MS, "an integer from 0 to 60000", "Only silences at least this long are removed."),
     key("autocut.padding_ms", MS, "an integer from 0 to 60000", "Audio kept on each side of speech."),
-    key("autocut.min_keep_ms", MS, "an integer from 0 to 60000", "Kept fragments shorter than this are dropped."),
+    key("autocut.min_keep_ms", MS, "an integer from 0 to 60000", "Sounds shorter than this between cuts are cut too (padding doesn't count)."),
     key("encoder.preference", Kind::Encoder, "auto, vaapi or x264", "H.264 encoder when a project says auto."),
     key("encoder.vaapi_device", Kind::Device, "a render node such as /dev/dri/renderD129, or auto", "VA-API node when a project names none; auto = the first Intel or AMD node, never NVIDIA."),
     key("ui.scale", Kind::Float { min: 0.5, max: 3.0 }, "a number from 0.5 to 3", "Interface scale."),

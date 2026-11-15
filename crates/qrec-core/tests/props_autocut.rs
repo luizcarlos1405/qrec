@@ -1,5 +1,5 @@
 //! Autocut properties (A§5.7, SPEC §17): kept ⊇ every padded-speech region
-//! of a fragment ≥ `minKeepMs`; fragments stay inside the clip; a clip
+//! with `minKeepMs` of sound or more; fragments stay inside the clip; a clip
 //! without silence is unchanged. Plus: the planner equals an independent
 //! oracle, re-cutting a fragment changes nothing, more padding never keeps
 //! less, the whole command (job, analysis events, one history entry)
@@ -26,7 +26,8 @@ use qrec_core::{Clip, ClipId, Fps, Project, StreamKind, TakeId};
 
 /// The padded speech regions of `range`, computed the other way round from
 /// the planner: speech = the complement of the silences on the whole line,
-/// dilated by `pad`, merged, cut to the range; then the short ones dropped.
+/// dilated by `pad`, merged, cut to the range; then those with less than
+/// `min_keep` of speech inside the range dropped.
 fn oracle_spans(range: Interval, silences: &[Interval], pad: i64, min_keep: i64) -> Vec<Interval> {
     let mut sorted: Vec<(i64, i64)> = silences
         .iter()
@@ -46,7 +47,7 @@ fn oracle_spans(range: Interval, silences: &[Interval], pad: i64, min_keep: i64)
         speech.push((cursor, i64::MAX));
     }
     let mut dilated: Vec<(i64, i64)> = Vec::new();
-    for (x, y) in speech {
+    for &(x, y) in &speech {
         let (x, y) = (x.saturating_sub(pad), y.saturating_add(pad));
         match dilated.last_mut() {
             Some(last) if x <= last.1 => last.1 = last.1.max(y),
@@ -63,9 +64,15 @@ fn oracle_spans(range: Interval, silences: &[Interval], pad: i64, min_keep: i64)
         // No silence reaches the range: nothing is a leftover.
         return inside;
     }
+    let speech_in = |s: &Interval| -> i64 {
+        speech
+            .iter()
+            .map(|&(x, y)| (y.min(s.end_ns) - x.max(s.start_ns)).max(0))
+            .sum()
+    };
     inside
         .into_iter()
-        .filter(|s| s.end_ns - s.start_ns >= min_keep)
+        .filter(|s| speech_in(s) >= min_keep)
         .collect()
 }
 
@@ -171,8 +178,9 @@ proptest! {
         prop_assert_eq!(&cut.kept, &snapped(&expected, &clip, fps));
     }
 
-    /// A§5.7: kept ⊇ every padded-speech region of a fragment ≥ minKeepMs.
-    /// Speech is never clipped: each such region lies inside one kept range.
+    /// A§5.7: kept ⊇ every padded-speech region with minKeepMs of speech or
+    /// more. Speech is never clipped: each such region lies inside one kept
+    /// range.
     #[test]
     fn padded_speech_is_always_kept(
         fps in strategies::arb_fps(),

@@ -87,10 +87,8 @@ expression: table
         - 121
       - - 138
         - 193
-      - - 198
-        - 210
     silences: 3
-    removedFrames: 27
+    removedFrames: 39
 - name: 29.97 middle clip
   fps: 30000/1001
   clip:
@@ -158,12 +156,10 @@ expression: table
     kept:
       - - 0
         - 38
-      - - 52
-        - 83
       - - 532
         - 600
-    silences: 2
-    removedFrames: 463
+    silences: 1
+    removedFrames: 494
 - name: entirely silent
   fps: "30"
   clip:

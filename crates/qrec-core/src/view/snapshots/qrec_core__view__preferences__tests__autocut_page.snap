@@ -53,9 +53,9 @@ expression: autocut
     {
       "text": {
         "label": "Min keep",
-        "caption": "Kept pieces shorter than this are cut too."
+        "caption": "Sounds shorter than this between cuts are cut too."
       },
-      "value": "200",
+      "value": "50",
       "unit": "ms",
       "key": "autocut.min_keep_ms",
       "min": 0.0,

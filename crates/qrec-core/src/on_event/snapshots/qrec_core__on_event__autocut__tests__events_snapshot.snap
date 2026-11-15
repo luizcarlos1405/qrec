@@ -86,7 +86,7 @@ failedWhileRecording:
         dryRun: false
         kind: autocut
         params:
-          minKeepMs: 200
+          minKeepMs: 50
           minSilenceMs: 400
           paddingMs: 120
           thresholdDb: -35
@@ -135,7 +135,7 @@ firstResult:
         dryRun: false
         kind: autocut
         params:
-          minKeepMs: 200
+          minKeepMs: 50
           minSilenceMs: 400
           paddingMs: 120
           thresholdDb: -35
@@ -268,7 +268,7 @@ readyWhileRecording:
         dryRun: false
         kind: autocut
         params:
-          minKeepMs: 200
+          minKeepMs: 50
           minSilenceMs: 400
           paddingMs: 120
           thresholdDb: -35
