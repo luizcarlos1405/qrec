@@ -356,7 +356,8 @@ pub enum JobKind {
     Purge { takes: Vec<TakeId> },
 }
 pub struct AutocutTarget { pub clip: ClipRef, pub track: TrackId, pub key: SilenceKey }
-pub struct AutocutParams { pub threshold_db: f64, pub min_silence_ms: u32, pub padding_ms: u32, pub min_keep_ms: u32 }
+pub struct AutocutParams { pub threshold_db: f64, pub min_silence_ms: u32, pub padding_ms: u32, pub min_keep_ms: u32,
+                           pub edges_only: bool /* serde default */ }
 pub struct SilenceKey(pub String);       // sha256_hex("{file}\n{size}\n{mtime_ns}\n{threshold_db:.2}\n{min_silence_ms}")
 pub enum HostKind { Gui, Headless, Cli }
 pub enum CanvasMode { Live, Program }
@@ -552,7 +553,7 @@ need confirmation, `G` = GUI host only, `R` = allowed while recording (A§5.3).
 | `ClipTrim` | `clip`, `start: Option<TimeArg>`, `end: Option<TimeArg>`, `timeline` | U | `qrec clip trim <clip> [--start T] [--end T] [--timeline]` |
 | `ClipSplit` | `clip: Option<ClipId>`, `at: TimeArg`, `timeline` | U | `qrec clip split <clip> --at T` / `--timeline --at T` |
 | `ClipRemove` | `clips` | U | `qrec clip remove <clip>…` |
-| `Autocut` | `scope: ClipScope`, `overrides: AutocutOverrides`, `dryRun` | U, A | `qrec autocut [--clips …\|--all] [--track] [--threshold-db] [--min-silence-ms] [--padding-ms] [--min-keep-ms] [--dry-run]` |
+| `Autocut` | `scope: ClipScope`, `overrides: AutocutOverrides`, `dryRun` | U, A | `qrec autocut [--clips …\|--all] [--track] [--threshold-db] [--min-silence-ms] [--padding-ms] [--min-keep-ms] [--edges-only[=BOOL]] [--dry-run]` |
 | `Undo` / `Redo` | `steps: u32` | | `qrec undo [N]` / `qrec redo [N]` |
 | `HistoryRestore` | `seq` | `!` | `qrec history restore <seq> --yes` |
 | `HistoryClear` | – | `!` | `qrec history clear --yes` |
@@ -574,8 +575,9 @@ pub struct CanvasSpec { pub width: u32, pub height: u32, pub fps: Fps } // "1920
 pub struct LayerPatch { name, visible, opacity, rect, crop, fit, locked: Option<…> }
 pub struct AudioPatch { label, source, gain_db, muted, sync_offset_ms: Option<…> }
 pub struct AutocutPatch { auto_run_after_take: Option<bool>, track: Nullable<TrackId>,
-                          threshold_db, min_silence_ms, padding_ms, min_keep_ms: Option<…> }
-pub struct AutocutOverrides { track: Option<TrackId>, threshold_db, min_silence_ms, padding_ms, min_keep_ms: Option<…> }
+                          threshold_db, min_silence_ms, padding_ms, min_keep_ms, edges_only: Option<…> }
+pub struct AutocutOverrides { track: Option<TrackId>, threshold_db, min_silence_ms, padding_ms, min_keep_ms,
+                              edges_only: Option<…> }
 pub enum RecordModeArg { Append, Over(Vec<ClipId>), OverSelection }
 pub enum InsertAt { End, Index(usize), After(ClipId), AfterSelection }
 pub enum MoveTo { Index(usize), By(i64), Before(ClipId), After(ClipId) }
@@ -1033,6 +1035,12 @@ Plan (pure, `autocut.rs`), per clip and track:
 6. Nothing kept ⇒ the clip is left unchanged and reported "entirely silent at
    −35 dB" when the silences cover it, else "no sound of 50 ms or more to
    keep" (autocut never deletes a whole clip).
+7. `edgesOnly` ⇒ the kept fragments become their hull `[first.in,
+   last.out)` (`autocut::hull`): the clip keeps one fragment, so only its
+   edges go. The `SilenceKey` doesn't change (same analysis); the plan view
+   says `edgesOnly`, and the labels count edges: "Trims 2 edges (3.1 s)",
+   "Autocut take 3: trimmed 2 edges (3.1 s)", "Nothing to trim: no silence
+   long enough at the clips' edges at −35 dB".
 
 Track: override → `autocut.track` → first `mic` of the take scene → first
 track; a take without it is skipped (warning in the result).
@@ -1055,7 +1063,8 @@ Flow: `Autocut` snapshots params and targets (`AutocutTarget` with a
   file) ⇒ Ok "Nothing to cut: …". Clips skipped before completion ride in
   the job's `cmd` under `skipped`, stripped from the history entry.
 Properties: kept ⊇ every padded-speech region with `minKeepMs` of speech;
-fragments stay inside the clip; a clip without silence is unchanged.
+fragments stay inside the clip; a clip without silence is unchanged; edges
+only keeps exactly the full plan's hull (one fragment at most).
 
 ### A§5.8 Jobs
 
@@ -3272,7 +3281,7 @@ pub struct UserConfig { pub theme: Theme, pub canvas: CanvasDefaults, pub record
                         pub autocut: AutocutDefaults, pub encoder: EncoderDefaults, pub ui: UiDefaults,
                         pub projects: ProjectsDefaults }
 // canvas: width, height, fps ("30" or "30000/1001"), background
-// recording: countdown_secs        autocut: auto_run_after_take, threshold_db, min_silence_ms, padding_ms, min_keep_ms
+// recording: countdown_secs        autocut: auto_run_after_take, threshold_db, min_silence_ms, padding_ms, min_keep_ms, edges_only
 // encoder: preference, vaapi_device    ui: scale, reduced_motion, sounds
 // projects: folder (absolute; `none` unsets it), open_last
 // theme: "swamp-night" | "swamp-day" | "dragons-keep" | "ogre-mode"

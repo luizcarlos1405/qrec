@@ -615,6 +615,7 @@ and doesn't take part in undo.
     "minSilenceMs": 400, // only silences at least this long are removed
     "paddingMs": 120, // kept on each side of speech
     "minKeepMs": 50, // sounds shorter than this between cuts are cut too
+    "edgesOnly": false, // only the silence before the first sound and after the last
   },
 
   "takes": {
@@ -847,14 +848,26 @@ silencedetect=noise=<thresholdDb>dB:d=<minSilence> -vn -f null -` on
    - Drop kept fragments with less than `minKeepMs` of sound. Padding
      doesn't count, so a click that splits a silence in two goes with it.
    - Snap boundaries to frames (rounding outward, so speech is never clipped).
+   - **Trim edges only** (`autocut.edgesOnly`, off by default): the kept
+     fragments become their hull, from where the first starts to where the
+     last ends. Only the dead air before the first sound and after the last
+     goes; the pauses inside stay, and the clip stays one clip (its in and
+     out move, its id stays). Padding, `minKeepMs` (a click or a cough
+     before the first word still goes) and frame snapping work as above,
+     and the analysis is the same (no new detection). It pairs with
+     "Run autocut after every take": each new take lands trimmed.
 3. **Apply.** The clip is replaced by N clips from the same take as **one
    history entry**, for example _"Autocut take 3: removed 4 silences
-   (6.2 s)"_.
+   (6.2 s)"_; with edges only, _"Autocut take 3: trimmed 2 edges
+   (3.1 s)"_.
    - Removed audio and video can always be brought back by extending a clip
      edge, or with undo.
 4. **Preview first (optional).**
    - Shift+C opens autocut settings with a live preview of what would be cut:
      hatched regions with sliders, and the padding kept beside each in blue.
+     A _Trim edges only_ check box under the sliders is part of the same
+     draft: Apply saves it with them, and the summary then reads _"Trims 2
+     edges (3.1 s)"_ (or _"Nothing to trim"_).
    - The CLI equivalent is `qrec autocut --dry-run`, which prints the planned
      segments.
    - With no clips yet, Shift+C still opens the settings, so autocut can be
@@ -1161,7 +1174,9 @@ qrec clip split <clip> --at T          # or: qrec clip split --timeline --at T
 qrec clip remove <clip>…
 
 qrec autocut [--clips <clip>… | --all] [--track A1] [--threshold-db -35] [--min-silence-ms 400]
-             [--padding-ms 120] [--min-keep-ms 200] [--dry-run]
+             [--padding-ms 120] [--min-keep-ms 200] [--edges-only[=false]] [--dry-run]
+qrec autocut settings [--auto-run BOOL] [--track A1|auto] [--threshold-db DB] [--min-silence-ms MS]
+             [--padding-ms MS] [--min-keep-ms MS] [--edges-only BOOL]
 qrec undo [N] | redo [N] | history [--limit 20]
 
 qrec export [--format mp4|webm] [--quality draft|standard|high] [--out PATH]

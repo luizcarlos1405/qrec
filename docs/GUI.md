@@ -3067,6 +3067,10 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     Settings › Autocut's rows show the same (`RowText.tooltip`). "Detect silence on": the project scene's tracks,
     "A1 · Yeti Nano (mic)", then a track the scope's clips are analyzed on
     that the project scene no longer has (a take recorded with it).
+    "Trim edges only" (issue #15, `design/boards/10-autocut-options/02`):
+    a C20 check box under the sliders with its caption "Keeps the pauses
+    inside each clip.", the draft's `edges_only` (its toggle re-runs the
+    dry run; Apply saves it, Cancel drops it).
   - `dry_run(&State, &draft) -> Command`: scope = the selection, or All;
     overrides = the draft. `dry_run_key(&State, &draft) -> DryRunKey`: the
     command and what it doesn't carry but its answer is worked out on (the
@@ -3092,7 +3096,8 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     "00:04:06:11 → 00:04:00:05"); regions `{ n, range: "00:02:41:12 →
     00:02:43:00", size: "48 f · 1.6 s", seek: Frame }` (a click seeks and
     highlights the row R1). Nothing to cut: title "Nothing to cut" and the
-    core's message as one row.
+    core's message as one row. An edges-only plan (`AutocutPlanView.
+    edgesOnly`) reads "Trims 2 edges (3.1 s)" and "Nothing to trim".
   - `preview_spans(&AutocutPlanView, &State) -> Vec<AutocutPreviewSpan>`:
     the clip minus what is kept, in timeline frames before the cut.
   - Header subtitle: "Previewing take 8 · c3e9" (one clip), "Previewing 4
@@ -4516,6 +4521,10 @@ same where not named; `tmp/fix12/notes/`, `tmp/icons-art/measure/`,
   the chosen tab without it). Since 2026-10-18 the page is shot over S02
   as the frame is (Live, the playhead at the end, nothing selected), where
   the case had it over S06's Program and take 5.
+- Settings › Autocut's "Trim edges only" is a switch under "Run autocut
+  after every take", saved at once like the page's other rows (issue #15,
+  `design/boards/10-autocut-options/06`; S12's check box is a draft until
+  Apply).
 - Settings › Recording and › Autocut (not drawn) follow S21's patterns:
   the group header, 60 px rows with a caption, 104 px C29 fields, C28's
   segmented encoder, a 260 px device dropdown (Auto, then sysfs's Intel
