@@ -8,6 +8,10 @@ expression: "preview_spans(&s12_plan(), &state)"
     "track": "A1",
     "from": 4838,
     "to": 4842,
+    "cut": [
+      552,
+      556
+    ],
     "kind": "padding",
     "tag": ""
   },
@@ -16,6 +20,10 @@ expression: "preview_spans(&s12_plan(), &state)"
     "track": "A1",
     "from": 4842,
     "to": 4890,
+    "cut": [
+      556,
+      604
+    ],
     "kind": "cut",
     "tag": "−1.6 s"
   },
@@ -24,6 +32,10 @@ expression: "preview_spans(&s12_plan(), &state)"
     "track": "A1",
     "from": 4890,
     "to": 4894,
+    "cut": [
+      604,
+      608
+    ],
     "kind": "padding",
     "tag": ""
   },
@@ -32,6 +44,10 @@ expression: "preview_spans(&s12_plan(), &state)"
     "track": "A1",
     "from": 5566,
     "to": 5570,
+    "cut": [
+      1280,
+      1284
+    ],
     "kind": "padding",
     "tag": ""
   },
@@ -40,6 +56,10 @@ expression: "preview_spans(&s12_plan(), &state)"
     "track": "A1",
     "from": 5570,
     "to": 5612,
+    "cut": [
+      1284,
+      1326
+    ],
     "kind": "cut",
     "tag": "−1.4 s"
   },
@@ -48,6 +68,10 @@ expression: "preview_spans(&s12_plan(), &state)"
     "track": "A1",
     "from": 5612,
     "to": 5616,
+    "cut": [
+      1326,
+      1330
+    ],
     "kind": "padding",
     "tag": ""
   },
@@ -56,6 +80,10 @@ expression: "preview_spans(&s12_plan(), &state)"
     "track": "A1",
     "from": 6272,
     "to": 6276,
+    "cut": [
+      1986,
+      1990
+    ],
     "kind": "padding",
     "tag": ""
   },
@@ -64,6 +92,10 @@ expression: "preview_spans(&s12_plan(), &state)"
     "track": "A1",
     "from": 6276,
     "to": 6315,
+    "cut": [
+      1990,
+      2029
+    ],
     "kind": "cut",
     "tag": "−1.3 s"
   },
@@ -72,6 +104,10 @@ expression: "preview_spans(&s12_plan(), &state)"
     "track": "A1",
     "from": 6315,
     "to": 6319,
+    "cut": [
+      2029,
+      2033
+    ],
     "kind": "padding",
     "tag": ""
   },
@@ -80,6 +116,10 @@ expression: "preview_spans(&s12_plan(), &state)"
     "track": "A1",
     "from": 6944,
     "to": 6948,
+    "cut": [
+      2658,
+      2662
+    ],
     "kind": "padding",
     "tag": ""
   },
@@ -88,6 +128,10 @@ expression: "preview_spans(&s12_plan(), &state)"
     "track": "A1",
     "from": 6948,
     "to": 7005,
+    "cut": [
+      2662,
+      2719
+    ],
     "kind": "cut",
     "tag": "−1.9 s"
   },
@@ -96,6 +140,10 @@ expression: "preview_spans(&s12_plan(), &state)"
     "track": "A1",
     "from": 7005,
     "to": 7009,
+    "cut": [
+      2719,
+      2723
+    ],
     "kind": "padding",
     "tag": ""
   }

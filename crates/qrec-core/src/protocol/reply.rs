@@ -155,6 +155,13 @@ pub struct AutocutClipView {
     pub removed_frames: Frame,
     /// Number of silences removed.
     pub silences: usize,
+    /// The runs removed, `[in, out)` take frames: what `--keep
+    /// <clip>:<in>-<out>` names to keep one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<[Frame; 2]>,
+    /// The runs it would remove but keeps (a `keep` range overlaps them).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excepted: Vec<[Frame; 2]>,
     /// Named tracks its take couldn't use ("take 3 has no track A2: silence
     /// detected on A1 only").
     #[serde(default, skip_serializing_if = "Option::is_none")]

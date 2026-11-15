@@ -14,8 +14,8 @@ use qrec_core::{AudioRole, ClipId, Color, Crop, EncoderPref, Fit, LayerId, Rect,
 
 pub use crate::values::AutoOr;
 use crate::values::{
-    parse_crop, parse_device_or_auto, parse_index, parse_opacity, parse_rect, parse_seq,
-    parse_track_or_auto,
+    parse_crop, parse_device_or_auto, parse_index, parse_keep, parse_opacity, parse_rect,
+    parse_seq, parse_track_or_auto,
 };
 
 const LONG_ABOUT: &str = "\
@@ -789,6 +789,10 @@ pub struct AutocutArgs {
     pub scope: AutocutScopeArgs,
     #[command(flatten)]
     pub params: AutocutParamArgs,
+    /// Keep the cuts that overlap this range of a clip's take, in frames (repeatable), e.g.
+    /// c3e9:120-168: --dry-run lists each cut that way. The whole cut stays.
+    #[arg(long, value_name = "CLIP:IN-OUT", value_parser = parse_keep)]
+    pub keep: Vec<qrec_core::protocol::AutocutKeep>,
     /// Print the planned cuts without changing anything.
     #[arg(long)]
     pub dry_run: bool,

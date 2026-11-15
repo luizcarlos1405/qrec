@@ -49,6 +49,9 @@ pub struct Scene<'a> {
     pub ghost_waves: Option<GhostWaves>,
     pub silences: &'a [SilenceSpan],
     pub autocut: Option<Arc<AutocutPreview>>,
+    /// The previewed cut (or kept cut) under the pointer: its clip and its
+    /// take frames (issue #15, board 05).
+    pub autocut_hover: Option<(qrec_core::ClipId, [qrec_core::Frame; 2])>,
     pub trim: Option<TrimPreview>,
     /// A move drag and the lifted copy's left x.
     pub moving: Option<(MovePreview, Vec<ClipBox>)>,
@@ -441,6 +444,8 @@ fn silences(s: &gtk::Snapshot, sc: &Scene<'_>) {
                 paint::edges(s, &r, &p.warning);
             }
             HatchKind::Padding => s.append_color(&p.padding_fill, &r),
+            // Only the autocut page's preview keeps cuts.
+            HatchKind::Kept => {}
         }
     }
 }
@@ -449,7 +454,11 @@ fn silences(s: &gtk::Snapshot, sc: &Scene<'_>) {
 /// each region hatched in `warning` at full strength on its lane, with its
 /// warning edges, the same range dimmed (`bg-55`) on the video row and the
 /// other lanes, and its "−1.6 s" tag 22 px above the lane; the padding
-/// kept beside each region in `padding-fill` on the lane.
+/// kept beside each region in `padding-fill` on the lane. A kept cut
+/// (issue #15, board 05) is a dashed `muted` outline with a "kept" tag,
+/// nothing dimmed; the one under the pointer is brighter: a cut gets a
+/// `warning-20` fill, a 2 px outline and a filled tag, a kept one a
+/// `hover` fill and a `text` outline.
 fn autocut(s: &gtk::Snapshot, sc: &Scene<'_>, preview: &AutocutPreview) {
     let p = sc.palette;
     let rows = sc.rows;
@@ -462,17 +471,43 @@ fn autocut(s: &gtk::Snapshot, sc: &Scene<'_>, preview: &AutocutPreview) {
             continue;
         }
         let w = x1 - x0;
-        if span.kind == HatchKind::Padding {
-            s.append_color(&p.padding_fill, &rect(x0, rows.lane_y(lane), w, rows.lane));
-            continue;
-        }
-        s.append_color(&p.bg_55, &rect(x0, 0.0, w, rows.video));
-        for other in (0..sc.lanes.len()).filter(|&i| i != lane) {
-            s.append_color(&p.bg_55, &rect(x0, rows.lane_y(other), w, rows.lane));
-        }
         let r = rect(x0, rows.lane_y(lane), w, rows.lane);
-        paint::hatch(s, &r, &p.warning, 0.0);
-        paint::edges(s, &r, &p.warning);
+        let hovered = sc
+            .autocut_hover
+            .as_ref()
+            .is_some_and(|(clip, cut)| *clip == span.clip && *cut == span.cut);
+        let (tag_fill, tag_ink) = match span.kind {
+            HatchKind::Padding => {
+                s.append_color(&p.padding_fill, &r);
+                continue;
+            }
+            HatchKind::Kept => {
+                if hovered {
+                    s.append_color(&p.hover, &r);
+                }
+                let ink = if hovered { &p.text } else { &p.muted };
+                paint::dashed(s, &r, 1.0, &[4.0, 3.0], ink);
+                let tag_ink = if hovered { &p.video_text } else { &p.muted };
+                (&p.video_scrim, tag_ink)
+            }
+            HatchKind::Cut => {
+                s.append_color(&p.bg_55, &rect(x0, 0.0, w, rows.video));
+                for other in (0..sc.lanes.len()).filter(|&i| i != lane) {
+                    s.append_color(&p.bg_55, &rect(x0, rows.lane_y(other), w, rows.lane));
+                }
+                if hovered {
+                    s.append_color(&p.warning_20, &r);
+                }
+                paint::hatch(s, &r, &p.warning, 0.0);
+                paint::edges(s, &r, &p.warning);
+                if hovered {
+                    paint::dashed(s, &r, 2.0, &[], &p.warning);
+                    (&p.warning, &p.text_on_accent)
+                } else {
+                    (&p.video_scrim, &p.warning_text)
+                }
+            }
+        };
         if !span.tag.is_empty() {
             paint::plate(
                 s,
@@ -482,8 +517,8 @@ fn autocut(s: &gtk::Snapshot, sc: &Scene<'_>, preview: &AutocutPreview) {
                 &span.tag,
                 (x0 + 2.0, rows.lane_y(lane) - 22.0),
                 0.0,
-                &p.video_scrim,
-                &p.warning_text,
+                tag_fill,
+                tag_ink,
             );
         }
     }

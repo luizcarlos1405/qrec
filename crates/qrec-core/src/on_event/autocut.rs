@@ -24,8 +24,8 @@ use serde_json::Value;
 
 use crate::apply::Outcome;
 use crate::autocut::{
-    ClipCut, TrackSilences, db_label, dry_run_label, nothing_kept_reason, plan_clip_on, plural,
-    run_label,
+    ClipCut, TrackSilences, db_label, dry_run_label, nothing_kept_reason, plan_clip_keeping,
+    plural, run_label,
 };
 use crate::ctx::{Ctx, IdGen};
 use crate::error::CoreError;
@@ -289,6 +289,8 @@ pub(crate) fn finish(state: &State, ctx: &Ctx, job: Snapshot) -> Finished {
                     kept: cut.kept.clone(),
                     removed_frames: cut.removed_frames,
                     silences: cut.silences,
+                    removed: cut.removed(clip),
+                    excepted: cut.excepted.clone(),
                     warning: target.warning.clone(),
                 });
                 if cut.changes(clip) {
@@ -308,7 +310,7 @@ pub(crate) fn finish(state: &State, ctx: &Ctx, job: Snapshot) -> Finished {
         skipped,
         edges_only,
     };
-    let note = run_note(&plan);
+    let note = run_note(&plan, true);
 
     let failed = plan
         .skipped
@@ -342,6 +344,8 @@ pub(crate) fn finish(state: &State, ctx: &Ctx, job: Snapshot) -> Finished {
     }
 
     if cuts.is_empty() {
+        // "every cut is kept" says it already.
+        let note = run_note(&plan, false);
         let why = nothing_to_cut(&plan, &job.params);
         let what = if edges_only { "trim" } else { "cut" };
         let message = match job.dry_run {
@@ -479,7 +483,7 @@ fn plan_target<'s>(
         });
     }
     let fps = project.canvas.fps;
-    let cut = plan_clip_on(clip, &tracks, params, fps);
+    let cut = plan_clip_keeping(clip, &tracks, params, fps, &target.keep);
     if cut.keeps_nothing() {
         return Err(nothing_kept_reason(clip, &tracks, params, fps));
     }
@@ -499,6 +503,7 @@ fn unchanged(state: &State, reply: Result<CmdResult, CoreError>, toast: Toast) -
 fn nothing_to_cut(plan: &AutocutPlanView, params: &AutocutParams) -> String {
     match plan.clips.len() {
         0 => "no clip could be analyzed".to_owned(),
+        _ if kept_count(plan) > 0 => "every cut is kept".to_owned(),
         _ if params.edges_only => format!(
             "no silence long enough at the clips' edges at {}",
             db_label(params.threshold_db)
@@ -510,16 +515,27 @@ fn nothing_to_cut(plan: &AutocutPlanView, params: &AutocutParams) -> String {
     }
 }
 
-/// The skipped clips' note, then the tracks takes couldn't use, each once
-/// ("take 3 has no track A2: silence detected on A1 only").
-fn run_note(plan: &AutocutPlanView) -> Option<String> {
-    let mut notes: Vec<String> = skipped_note(&plan.skipped).into_iter().collect();
+/// The cuts kept ("2 cuts kept", unless `with_kept` is off), the skipped
+/// clips' note, then the tracks takes couldn't use, each once ("take 3 has
+/// no track A2: silence detected on A1 only").
+fn run_note(plan: &AutocutPlanView, with_kept: bool) -> Option<String> {
+    let mut notes: Vec<String> = Vec::new();
+    let kept = kept_count(plan);
+    if with_kept && kept > 0 {
+        notes.push(format!("{kept} {} kept", plural(kept, "cut", "cuts")));
+    }
+    notes.extend(skipped_note(&plan.skipped));
     for warning in plan.clips.iter().filter_map(|c| c.warning.as_ref()) {
         if !notes.contains(warning) {
             notes.push(warning.clone());
         }
     }
     (!notes.is_empty()).then(|| notes.join("; "))
+}
+
+/// The previewed cuts the plan keeps (`keep` ranges), over every clip.
+fn kept_count(plan: &AutocutPlanView) -> usize {
+    plan.clips.iter().map(|c| c.excepted.len()).sum()
 }
 
 /// "1 clip skipped (c1a2: entirely silent at −35 dB)"; at most three reasons.
@@ -654,7 +670,7 @@ mod tests {
     use crate::apply::autocut::fixtures::{self, MIC1, MIC2};
     use crate::error::ErrorCode;
     use crate::ids::TakeId;
-    use crate::protocol::command::{AutocutOverrides, ClipScope, Command};
+    use crate::protocol::command::{AutocutKeep, AutocutOverrides, ClipScope, Command};
     use crate::protocol::effect::HistoryOp;
     use crate::state::{AutocutSource, ClipRef, RecordMode, RecordPhase};
     use crate::testkit;
@@ -804,6 +820,101 @@ mod tests {
             ("c001", 20, 244)
         );
         assert_eq!(done.state.history.entries[0].label, result.message);
+    }
+
+    /// Issue #15: `keep` ranges keep the cuts they overlap, in the dry run
+    /// (listed as `excepted`, "2 cuts kept") and in the run; a clip whose
+    /// every cut is kept is left alone.
+    #[test]
+    fn kept_cuts_stay() {
+        let project = fixtures::project();
+        let ctx = fixtures::ctx(&project);
+        let state = testkit::state(project);
+        let keep = vec![
+            AutocutKeep {
+                clip: ClipId::from_raw("c001"),
+                in_: 94,
+                out: 131,
+            },
+            AutocutKeep {
+                clip: ClipId::from_raw("c002"),
+                in_: 40,
+                out: 45,
+            },
+        ];
+        let run = |state: &State, dry_run: bool| {
+            let cmd = Command::Autocut {
+                scope: ClipScope::All,
+                overrides: AutocutOverrides {
+                    keep: keep.clone(),
+                    ..AutocutOverrides::default()
+                },
+                dry_run,
+            };
+            let out = crate::apply::apply(state, &ctx, cmd).unwrap();
+            let first = detected(&out.state, &ctx, MIC1);
+            detected(&first.state, &ctx, MIC2)
+        };
+        let dry = run(&state, true);
+        let (_, reply) = reply_of(&dry).unwrap();
+        let result = reply.as_ref().unwrap();
+        assert!(
+            result
+                .message
+                .starts_with("Dry run: autocut take 1 would remove 2 silences ("),
+            "{}",
+            result.message
+        );
+        assert!(
+            result.message.ends_with("; 2 cuts kept"),
+            "{}",
+            result.message
+        );
+        let plan = view(result);
+        assert_eq!(plan.clips[0].excepted, vec![[94, 131]]);
+        assert_eq!(plan.clips[0].removed, vec![[0, 20], [244, 300]]);
+        assert_eq!(plan.clips[0].kept, vec![[20, 244]]);
+        assert_eq!(plan.clips[1].excepted, vec![[34, 50]], "the whole cut");
+        assert!(plan.clips[1].removed.is_empty());
+
+        let done = run(&state, false);
+        let clips = &done.state.project.timeline.clips;
+        assert_eq!(clips.len(), 2, "c001 stays one clip, c002 is untouched");
+        assert_eq!((clips[0].in_, clips[0].out), (20, 244));
+        assert_eq!(clips[1], state.project.timeline.clips[1]);
+    }
+
+    /// `keep` must name a clip on the timeline, with a range that isn't empty.
+    #[test]
+    fn keep_ranges_are_checked() {
+        let project = fixtures::project();
+        let ctx = fixtures::ctx(&project);
+        let state = testkit::state(project);
+        let run = |clip: &str, in_, out| {
+            let cmd = Command::Autocut {
+                scope: ClipScope::All,
+                overrides: AutocutOverrides {
+                    keep: vec![AutocutKeep {
+                        clip: ClipId::from_raw(clip),
+                        in_,
+                        out,
+                    }],
+                    ..AutocutOverrides::default()
+                },
+                dry_run: true,
+            };
+            crate::apply::apply(&state, &ctx, cmd).map(|_| ())
+        };
+        let err = run("c9a9", 0, 10).unwrap_err();
+        assert_eq!(err.code, crate::error::ErrorCode::NotFound);
+        assert_eq!(err.message, "no clip c9a9 on the timeline");
+        let err = run("c001", 10, 10).unwrap_err();
+        assert_eq!(err.code, crate::error::ErrorCode::Usage);
+        assert!(err.message.contains("c001:10-10"), "{}", err.message);
+        assert!(
+            run("c001", 5000, 5010).is_ok(),
+            "outside the clip keeps nothing"
+        );
     }
 
     #[test]
@@ -1143,6 +1254,7 @@ mod tests {
                 key: fixtures::key(&ctx, MIC2, &p),
             }],
             warning: None,
+            keep: Vec::new(),
         };
         state.runtime.jobs.insert(
             JobId(9),

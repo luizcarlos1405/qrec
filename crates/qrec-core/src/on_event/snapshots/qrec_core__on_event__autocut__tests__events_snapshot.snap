@@ -28,6 +28,9 @@ appliedAfterPlacement:
                       - 34
                     - - 50
                       - 150
+                  removed:
+                    - - 34
+                      - 50
                   removedFrames: 16
                   silences: 1
                   tracks:
@@ -210,6 +213,13 @@ lastResult:
                       - 94
                     - - 131
                       - 244
+                  removed:
+                    - - 0
+                      - 20
+                    - - 94
+                      - 131
+                    - - 244
+                      - 300
                   removedFrames: 113
                   silences: 3
                   tracks:
@@ -220,6 +230,9 @@ lastResult:
                       - 34
                     - - 50
                       - 150
+                  removed:
+                    - - 34
+                      - 50
                   removedFrames: 16
                   silences: 1
                   tracks:

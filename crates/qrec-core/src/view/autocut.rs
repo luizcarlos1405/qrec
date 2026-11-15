@@ -9,13 +9,16 @@
 //! - A dry run's plan becomes the summary (the title, the before → after
 //!   rows, the region list) and the hatches the timeline draws: each clip
 //!   minus what it keeps, in timeline frames before the cut.
+//! - A previewed cut can be kept (issue #15): a click on its hatch or its
+//!   row's box toggles it ([`toggle_keep`]). The kept ones are the draft's
+//!   `keep`, sent with each dry run and with Apply's cut, never saved.
 
 use serde::{Deserialize, Serialize};
 
 use crate::autocut::{ClipCut, db_label};
-use crate::ids::{Frame, TakeId, TrackId};
+use crate::ids::{ClipId, Frame, TakeId, TrackId};
 use crate::model::{AudioTrack, Clip, Project};
-use crate::protocol::command::{AutocutOverrides, AutocutPatch, ClipScope, Command};
+use crate::protocol::command::{AutocutKeep, AutocutOverrides, AutocutPatch, ClipScope, Command};
 use crate::protocol::reply::AutocutPlanView;
 use crate::state::State;
 use crate::time::{duration_label, frame_ns};
@@ -76,6 +79,10 @@ pub struct AutocutDraft {
     /// "Trim edges only".
     #[serde(default)]
     pub edges_only: bool,
+    /// The previewed cuts kept (a click on a hatch or a row's box): sent
+    /// with each dry run and with Apply's cut; not a setting.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keep: Vec<AutocutKeep>,
 }
 
 impl From<&Project> for AutocutDraft {
@@ -89,6 +96,7 @@ impl From<&Project> for AutocutDraft {
             padding_ms: a.padding_ms,
             min_keep_ms: a.min_keep_ms,
             edges_only: a.edges_only,
+            keep: Vec::new(),
         }
     }
 }
@@ -381,6 +389,35 @@ pub fn overrides(draft: &AutocutDraft) -> AutocutOverrides {
         padding_ms: Some(draft.padding_ms),
         min_keep_ms: Some(draft.min_keep_ms),
         edges_only: Some(draft.edges_only),
+        keep: draft.keep.clone(),
+    }
+}
+
+/// The tooltip of a previewed cut under the pointer: what a click does.
+pub fn span_tip(kept: bool) -> &'static str {
+    if kept {
+        "Click to cut this silence"
+    } else {
+        "Click to keep this silence"
+    }
+}
+
+/// `keep` with the cut `range` (`[in, out)` take frames of `clip`)
+/// toggled: the ranges overlapping it go (it is cut again), or it joins
+/// them (it is kept). What a click on a hatch or a region's box does.
+pub fn toggle_keep(keep: &[AutocutKeep], clip: &ClipId, range: [Frame; 2]) -> Vec<AutocutKeep> {
+    let [a, b] = range;
+    let overlaps = |k: &AutocutKeep| &k.clip == clip && k.in_ < b && a < k.out;
+    if keep.iter().any(overlaps) {
+        keep.iter().filter(|k| !overlaps(k)).cloned().collect()
+    } else {
+        let mut next = keep.to_vec();
+        next.push(AutocutKeep {
+            clip: clip.clone(),
+            in_: a,
+            out: b,
+        });
+        next
     }
 }
 
@@ -455,7 +492,10 @@ pub fn apply(state: &State, draft: &AutocutDraft) -> Vec<Command> {
     if previews(state) {
         commands.push(Command::Autocut {
             scope: scope(state),
-            overrides: AutocutOverrides::default(),
+            overrides: AutocutOverrides {
+                keep: draft.keep.clone(),
+                ..AutocutOverrides::default()
+            },
             dry_run: false,
         });
     }
@@ -481,6 +521,7 @@ pub fn apply_label(state: &State) -> &'static str {
 pub fn empty_summary() -> AutocutSummary {
     AutocutSummary {
         title: NOTHING_YET.to_owned(),
+        kept: String::new(),
         rows: vec![(String::new(), RECORD_FIRST.to_owned())],
         regions: Vec::new(),
     }
@@ -503,34 +544,52 @@ pub struct AutocutSummary {
     /// "Removes 4 silences (6.2 s)", "Trims 2 edges (3.1 s)"; "Nothing to
     /// cut", "Nothing to trim".
     pub title: String,
+    /// " · 1 kept" after the title when previewed cuts are kept; empty
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kept: String,
     /// ("Take 8", "00:01:43:15 → 00:01:37:09") per take, then
     /// ("Timeline", "00:04:06:11 → 00:04:00:05").
     pub rows: Vec<(String, String)>,
     pub regions: Vec<RegionRow>,
 }
 
-/// One region of the list: a click seeks to it.
+/// One region of the list: a click seeks to it; its box (checked = cut)
+/// toggles it ([`toggle_keep`] with `clip` and `cut`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegionRow {
     pub n: usize,
     /// "00:02:41:12 → 00:02:43:00".
     pub range: String,
-    /// "48 f · 1.6 s".
+    /// "48 f · 1.6 s"; "kept" when kept.
     pub size: String,
     pub seek: Frame,
+    /// The clip the cut is in, and the cut in its take's frames.
+    pub clip: ClipId,
+    pub cut: [Frame; 2],
+    /// A previewed cut kept: its box unchecked, the row dimmed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub kept: bool,
 }
 
-/// One removed run of a clip, on the timeline before the cut.
+/// The region list's word for a kept cut.
+pub const KEPT: &str = "kept";
+
+/// One removed (or kept) run of a clip, on the timeline before the cut.
 struct Removed {
     take: TakeId,
+    clip: ClipId,
+    /// In the take's frames.
+    cut: [Frame; 2],
     from: Frame,
     to: Frame,
+    kept: bool,
 }
 
 /// The plan's cuts in timeline order: every removed run of every clip the
-/// plan changes (clips gone from the timeline are left out), and the
-/// silences those clips lose.
+/// plan changes, and every run it keeps (clips gone from the timeline are
+/// left out), and the silences those clips lose.
 fn removed_runs(plan: &AutocutPlanView, state: &State) -> (Vec<Removed>, usize) {
     let clips = &state.project.timeline.clips;
     let mut planned: Vec<(usize, &crate::protocol::reply::AutocutClipView)> = plan
@@ -543,25 +602,40 @@ fn removed_runs(plan: &AutocutPlanView, state: &State) -> (Vec<Removed>, usize) 
     let mut silences = 0;
     for (index, view) in planned {
         let clip = &clips[index];
-        let cut = ClipCut {
-            kept: view.kept.clone(),
-            silences: view.silences,
-            removed_frames: view.removed_frames,
-        };
-        if !cut.changes(clip) {
-            continue;
-        }
-        silences += view.silences;
+        let cut = clip_cut(view);
         let start = position_of(clips, index);
-        for [a, b] in cut.removed(clip) {
+        let mut push = |[a, b]: [Frame; 2], kept: bool| {
             runs.push(Removed {
                 take: clip.take.clone(),
+                clip: clip.id.clone(),
+                cut: [a, b],
                 from: start + (a - clip.in_),
                 to: start + (b - clip.in_),
-            });
+                kept,
+            })
+        };
+        for &run in &view.excepted {
+            push(run, true);
+        }
+        if cut.changes(clip) {
+            silences += view.silences;
+            for run in cut.removed(clip) {
+                push(run, false);
+            }
         }
     }
+    runs.sort_by_key(|r| r.from);
     (runs, silences)
+}
+
+/// A clip's cut as the plan gives it.
+fn clip_cut(view: &crate::protocol::reply::AutocutClipView) -> ClipCut {
+    ClipCut {
+        kept: view.kept.clone(),
+        silences: view.silences,
+        removed_frames: view.removed_frames,
+        excepted: view.excepted.clone(),
+    }
 }
 
 /// The summary of a dry run's plan.
@@ -578,7 +652,35 @@ pub fn summary_with(
 ) -> AutocutSummary {
     let fps = state.project.canvas.fps;
     let tc = |f: Frame| format::timecode(f, fps);
-    let (runs, silences) = removed_runs(plan, state);
+    let (all, silences) = removed_runs(plan, state);
+    let kept_count = all.iter().filter(|r| r.kept).count();
+    let kept = if kept_count > 0 {
+        format!(" \u{b7} {kept_count} {KEPT}")
+    } else {
+        String::new()
+    };
+    let regions: Vec<RegionRow> = all
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let frames = r.to - r.from;
+            let ns = frame_ns(r.to as i64, fps) - frame_ns(r.from as i64, fps);
+            RegionRow {
+                n: i + 1,
+                range: format!("{} \u{2192} {}", tc(r.from), tc(r.to)),
+                size: if r.kept {
+                    KEPT.to_owned()
+                } else {
+                    format!("{frames} f \u{b7} {}", duration_label(ns))
+                },
+                seek: r.from,
+                clip: r.clip.clone(),
+                cut: r.cut,
+                kept: r.kept,
+            }
+        })
+        .collect();
+    let runs: Vec<&Removed> = all.iter().filter(|r| !r.kept).collect();
     if runs.is_empty() {
         let why = message
             .map(nothing_to_cut_reason)
@@ -590,8 +692,9 @@ pub fn summary_with(
                 NOTHING_TO_CUT
             }
             .to_owned(),
+            kept,
             rows: vec![(String::new(), why)],
-            regions: Vec::new(),
+            regions,
         };
     }
     let removed_ns: i64 = runs
@@ -662,22 +765,9 @@ pub fn summary_with(
             format!("{}{more}", skipped.join(", ")),
         ));
     }
-    let regions = runs
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let frames = r.to - r.from;
-            let ns = frame_ns(r.to as i64, fps) - frame_ns(r.from as i64, fps);
-            RegionRow {
-                n: i + 1,
-                range: format!("{} \u{2192} {}", tc(r.from), tc(r.to)),
-                size: format!("{frames} f \u{b7} {}", duration_label(ns)),
-                seek: r.from,
-            }
-        })
-        .collect();
     AutocutSummary {
         title,
+        kept,
         rows,
         regions,
     }
@@ -707,6 +797,8 @@ fn nothing_to_cut_reason(message: &str) -> String {
 fn default_reason(plan: &AutocutPlanView, state: &State) -> String {
     if plan.clips.is_empty() {
         "No clip could be analyzed".to_owned()
+    } else if plan.clips.iter().any(|c| !c.excepted.is_empty()) {
+        "Every cut is kept".to_owned()
     } else if plan.edges_only {
         format!(
             "No silence long enough at the clips' edges at {}",
@@ -722,7 +814,8 @@ fn default_reason(plan: &AutocutPlanView, state: &State) -> String {
 
 /// What the timeline hatches for a dry run, in timeline frames before the
 /// cut: each clip minus what it keeps (`HatchKind::Cut`, tagged "−1.6 s"),
-/// and the project's padding beside each cut (`HatchKind::Padding`).
+/// the project's padding beside each cut (`HatchKind::Padding`), and the
+/// cuts kept (`HatchKind::Kept`, tagged "kept").
 pub fn preview_spans(plan: &AutocutPlanView, state: &State) -> Vec<AutocutPreviewSpan> {
     preview_spans_for(plan, state, state.project.autocut.padding_ms)
 }
@@ -746,25 +839,21 @@ pub fn preview_spans_for(
     let mut spans = Vec::new();
     for (index, view) in planned {
         let clip = &clips[index];
-        let cut = ClipCut {
-            kept: view.kept.clone(),
-            silences: view.silences,
-            removed_frames: view.removed_frames,
-        };
-        if !cut.changes(clip) {
-            continue;
-        }
+        let cut = clip_cut(view);
         let start = position_of(clips, index);
-        let mut runs: Vec<([Frame; 2], HatchKind)> = cut
-            .removed(clip)
-            .into_iter()
-            .map(|r| (r, HatchKind::Cut))
-            .chain(
+        let mut runs: Vec<([Frame; 2], HatchKind)> = view
+            .excepted
+            .iter()
+            .map(|&r| (r, HatchKind::Kept))
+            .collect();
+        if cut.changes(clip) {
+            runs.extend(cut.removed(clip).into_iter().map(|r| (r, HatchKind::Cut)));
+            runs.extend(
                 cut.padding(clip, padding_ms, fps)
                     .into_iter()
                     .map(|r| (r, HatchKind::Padding)),
-            )
-            .collect();
+            );
+        }
         runs.sort_by_key(|([a, _], _)| *a);
         for (n, lane) in view.tracks.iter().enumerate() {
             for &([a, b], kind) in &runs {
@@ -773,6 +862,7 @@ pub fn preview_spans_for(
                         let ns = frame_ns(b as i64, fps) - frame_ns(a as i64, fps);
                         format!("{MINUS}{}", duration_label(ns))
                     }
+                    HatchKind::Kept if n == 0 => KEPT.to_owned(),
                     _ => String::new(),
                 };
                 spans.push(AutocutPreviewSpan {
@@ -780,6 +870,7 @@ pub fn preview_spans_for(
                     track: lane.clone(),
                     from: start + (a - clip.in_),
                     to: start + (b - clip.in_),
+                    cut: [a, b],
                     kind,
                     tag,
                 });
@@ -925,10 +1016,133 @@ mod tests {
                 ],
                 removed_frames: 186,
                 silences: 4,
+                excepted: Vec::new(),
+                removed: Vec::new(),
             }],
             skipped: vec![],
             edges_only: false,
         }
+    }
+
+    /// Board 01 (issue #15): S12 with silence 2 kept. The summary counts
+    /// three cuts and says "· 1 kept"; the kept region stays in the list,
+    /// unchecked ("kept"); the timeline shows it as a kept span.
+    #[test]
+    fn s12_with_a_kept_cut() {
+        let state = s12();
+        let mut plan = s12_plan();
+        let clip = &mut plan.clips[0];
+        clip.kept = vec![[0, 556], [604, 1990], [2029, 2662], [2719, 3105]];
+        clip.excepted = vec![[1284, 1326]];
+        clip.silences = 3;
+        clip.removed_frames = 186 - 42;
+        let summary = summary(&plan, &state);
+        assert_eq!(summary.title, "Removes 3 silences (4.8 s)");
+        assert_eq!(summary.kept, " \u{b7} 1 kept");
+        assert_eq!(
+            summary.rows[0],
+            ("Take 8".to_owned(), "00:01:43:15 → 00:01:38:21".to_owned())
+        );
+        assert_eq!(
+            summary.rows[1],
+            (
+                "Timeline".to_owned(),
+                "00:04:06:11 → 00:04:01:17".to_owned()
+            )
+        );
+        let rows: Vec<(usize, &str, bool)> = summary
+            .regions
+            .iter()
+            .map(|r| (r.n, r.size.as_str(), r.kept))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (1, "48 f · 1.6 s", false),
+                (2, "kept", true),
+                (3, "39 f · 1.3 s", false),
+                (4, "57 f · 1.9 s", false),
+            ]
+        );
+        assert_eq!(summary.regions[1].cut, [1284, 1326]);
+        assert_eq!(summary.regions[1].clip, id("c3e9"));
+
+        let spans = preview_spans_for(&plan, &state, 0);
+        let kept: Vec<_> = spans.iter().filter(|s| s.kind == HatchKind::Kept).collect();
+        assert_eq!(kept.len(), 1);
+        assert_eq!((kept[0].cut, kept[0].tag.as_str()), ([1284, 1326], "kept"));
+        assert_eq!(spans.iter().filter(|s| s.kind == HatchKind::Cut).count(), 3);
+
+        // Every cut kept: nothing to cut, the regions still listed to undo it.
+        let mut all = s12_plan();
+        all.clips[0].excepted = s12_plan().clips[0]
+            .kept
+            .windows(2)
+            .map(|w| [w[0][1], w[1][0]])
+            .collect();
+        all.clips[0].kept = vec![[0, 3105]];
+        all.clips[0].silences = 0;
+        all.clips[0].removed_frames = 0;
+        let summary = summary_with(
+            &all,
+            &state,
+            Some("Dry run: nothing to cut: every cut is kept"),
+        );
+        assert_eq!(summary.title, "Nothing to cut");
+        assert_eq!(summary.kept, " \u{b7} 4 kept");
+        assert_eq!(summary.regions.len(), 4);
+        assert!(summary.regions.iter().all(|r| r.kept));
+        assert_eq!(
+            summary.rows,
+            [(String::new(), "Every cut is kept".to_owned())]
+        );
+    }
+
+    #[test]
+    fn toggling_a_cut_keeps_it_or_cuts_it_again() {
+        let c = id("c3e9");
+        let keep = toggle_keep(&[], &c, [1284, 1326]);
+        assert_eq!(
+            keep,
+            [AutocutKeep {
+                clip: c.clone(),
+                in_: 1284,
+                out: 1326
+            }]
+        );
+        // A range from an older plan overlapping the cut: the cut is kept,
+        // so toggling it cuts it again.
+        let stale = vec![AutocutKeep {
+            clip: c.clone(),
+            in_: 1300,
+            out: 1340,
+        }];
+        assert!(toggle_keep(&stale, &c, [1284, 1326]).is_empty());
+        // Another clip's range or another cut stays.
+        let other = AutocutKeep {
+            clip: id("c2d0"),
+            in_: 1284,
+            out: 1326,
+        };
+        assert_eq!(
+            toggle_keep(std::slice::from_ref(&other), &c, [1284, 1326]).len(),
+            2
+        );
+        assert_eq!(toggle_keep(&keep, &c, [556, 604]).len(), 2);
+        // The draft sends them with the dry run and with Apply's cut, and
+        // never saves them.
+        let state = s12();
+        let draft = AutocutDraft {
+            keep: keep.clone(),
+            ..AutocutDraft::from(&state.project)
+        };
+        assert_eq!(overrides(&draft).keep, keep);
+        assert_eq!(changed(&state, &draft), AutocutPatch::default());
+        let commands = apply(&state, &draft);
+        assert!(matches!(
+            commands.as_slice(),
+            [Command::Autocut { overrides, dry_run: false, .. }] if overrides.keep == keep
+        ));
     }
 
     #[test]
@@ -991,6 +1205,8 @@ mod tests {
                 kept: vec![[66, 3078]],
                 removed_frames: 93,
                 silences: 2,
+                excepted: Vec::new(),
+                removed: Vec::new(),
             }],
             skipped: vec![],
             edges_only: true,
@@ -1016,6 +1232,8 @@ mod tests {
                 kept: vec![[0, 3105]],
                 removed_frames: 0,
                 silences: 0,
+                excepted: Vec::new(),
+                removed: Vec::new(),
             }],
             skipped: vec![],
             edges_only: true,
@@ -1046,6 +1264,8 @@ mod tests {
                 kept: vec![[0, 3105]],
                 removed_frames: 0,
                 silences: 0,
+                excepted: Vec::new(),
+                removed: Vec::new(),
             }],
             skipped: vec![],
             edges_only: false,
@@ -1097,6 +1317,8 @@ mod tests {
                 kept: vec![[12, 120], [158, 288], [303, 1104]],
                 removed_frames: 53,
                 silences: 2,
+                excepted: Vec::new(),
+                removed: Vec::new(),
             },
         );
         plan.clips.push(AutocutClipView {
@@ -1106,6 +1328,8 @@ mod tests {
             kept: vec![[0, 410]],
             removed_frames: 0,
             silences: 0,
+            excepted: Vec::new(),
+            removed: Vec::new(),
         });
         plan.skipped.push(AutocutSkipView {
             clip: id("c1b6"),
@@ -1368,6 +1592,8 @@ mod tests {
                 kept: vec![[0, 40], [60, 100]],
                 removed_frames: 20,
                 silences: 1,
+                excepted: Vec::new(),
+                removed: Vec::new(),
             }],
             skipped: vec![],
             edges_only: false,
@@ -1470,6 +1696,8 @@ mod tests {
                 kept: vec![[0, 40], [60, 100]],
                 removed_frames: 20,
                 silences: 1,
+                excepted: Vec::new(),
+                removed: Vec::new(),
             }],
             skipped: vec![],
             edges_only: false,

@@ -353,8 +353,10 @@ popover.qrec-value-tooltip > contents {
   padding: 16px 16px 16px 16px;
 }
 
+/* Boards 01–04 (issue #15): 12 px between the knobs, 16 px between the
+   page's groups. */
 .qrec-panel .autocut-block {
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .qrec-panel .autocut-block > .field-caption {
@@ -468,7 +470,14 @@ popover.autocut-track-popover .menu-caption {
 /* The heading 8 px under the knobs' end labels, its rows 3 px under it
    (S12: the heading sat a pixel or two low, WP10's shot review). */
 .qrec-panel .autocut-summary {
-  margin-top: 8px;
+  margin-top: 4px;
+}
+
+/* " · 1 kept" after the title (board 01): muted, not bold. */
+.qrec-panel .summary-kept {
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 22px;
 }
 
 .qrec-panel .autocut-summary > .summary-rows {
@@ -521,8 +530,24 @@ popover.autocut-track-popover .menu-caption {
   min-width: 21px;
 }
 
+/* The box at the row's start: checked = cut (issue #15, board 05). */
+.qrec-panel .region-row .region-check {
+  margin-right: 10px;
+}
+
+/* A kept cut: unchecked, its range and number muted, "kept" in italics. */
+.qrec-panel .region-row.kept .region-range,
+.qrec-panel .region-row.kept .region-n {
+  color: var(--qrec-muted);
+}
+
+.qrec-panel .region-row.kept .region-size {
+  font-family: var(--qrec-font-ui), "Atkinson Hyperlegible", Cantarell, sans-serif;
+  font-style: italic;
+}
+
 .qrec-panel .autocut-switch-row {
-  margin-top: 24px;
+  margin-top: 16px;
   min-height: 22px;
 }
 
@@ -686,4 +711,8 @@ popover.scene-save-pop .scene-where {
 
 popover.scene-save-pop .scene-pop-foot {
   margin-top: 16px;
+}
+
+.panel-medium .region-row .region-check {
+  margin-right: 6px;
 }

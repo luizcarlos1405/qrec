@@ -5,7 +5,8 @@
 
 use std::str::FromStr;
 
-use qrec_core::{Crop, Rect, TrackId};
+use qrec_core::protocol::AutocutKeep;
+use qrec_core::{ClipId, Crop, Frame, Rect, TrackId};
 
 /// `auto` (stored as `null`: let Qrec choose) or an explicit value.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,6 +93,28 @@ pub(crate) fn parse_track_or_auto(s: &str) -> Result<AutoOr<TrackId>, String> {
     TrackId::from_str(s)
         .map(AutoOr::Value)
         .map_err(|e| format!("{} or auto", e.message))
+}
+
+/// `<clip>:<in>-<out>`: a range of a clip's take, in frames (`c3e9:120-168`),
+/// as `qrec autocut --dry-run` lists its cuts.
+pub(crate) fn parse_keep(s: &str) -> Result<AutocutKeep, String> {
+    const SHAPE: &str = "<clip>:<in>-<out> in take frames, e.g. c3e9:120-168";
+    let (clip, range) = s
+        .split_once(':')
+        .ok_or_else(|| format!("{s:?} isn't {SHAPE}"))?;
+    let clip = ClipId::from_str(clip).map_err(|e| format!("{}; expected {SHAPE}", e.message))?;
+    let (a, b) = range
+        .split_once('-')
+        .ok_or_else(|| format!("{s:?} isn't {SHAPE}"))?;
+    let frame = |v: &str| {
+        v.parse::<Frame>()
+            .map_err(|_| format!("{v:?} is not a frame number; expected {SHAPE}"))
+    };
+    let (in_, out) = (frame(a)?, frame(b)?);
+    if in_ >= out {
+        return Err(format!("{s:?} is empty: its end must come after its start"));
+    }
+    Ok(AutocutKeep { clip, in_, out })
 }
 
 /// A render node path (`/dev/dri/renderD129`) or `auto`.

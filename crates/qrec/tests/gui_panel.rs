@@ -2002,9 +2002,10 @@ fn s12_the_autocut_page() {
         let (dx, dy) = nested.opts.pixel_px(x, y);
         gui_support::rgb_pixels(&shot, [dx, dy, 1, 1])[0]
     };
-    // Issue #15's "Trim edges only" (under the sliders) moves the summary
-    // and the regions 61 px down from S12's frame.
-    let row = px(1300.0, 711.0);
+    // Issue #15's "Trim edges only" (under the sliders) and the boards'
+    // tighter spacing (12 px between the knobs, 16 between the groups)
+    // move the summary and the regions 33 px down from S12's frame.
+    let row = px(1300.0, 683.0);
     assert!(
         row.iter()
             .zip([0x2E, 0x3E, 0x1B])
@@ -2016,21 +2017,21 @@ fn s12_the_autocut_page() {
         gui_support::token_rgb("swamp-night", "accent"),
         "c3e9's stroke inside a region"
     );
-    // The summary's heading on S12's baseline, 61 px lower for "Trim edges
-    // only": its title's ink from y 624 (S12's 563: its glyphs a pixel
-    // shorter than the frame's, from 562; it sat a pixel lower, from 564),
-    // its rows' from 648 (S12's 587). The footer's Esc cap is a medium one, its `keycap` fill 17 px
+    // The summary's heading on S12's baseline, 33 px lower (issue #15): its
+    // title's ink from y 596 (S12's 563: its glyphs a pixel shorter than
+    // the frame's, from 562; it sat a pixel lower, from 564), its rows'
+    // from 620 (S12's 587). The footer's Esc cap is a medium one, its `keycap` fill 17 px
     // tall (20 with the stroke; the small one's was 13). WP10's shot
     // review.
-    let surface = px(1300.0, 613.0);
-    let heading = ink_top(&nested, &shot, [1228.0, 611.0, 154.0, 30.0], surface);
+    let surface = px(1300.0, 585.0);
+    let heading = ink_top(&nested, &shot, [1228.0, 583.0, 154.0, 30.0], surface);
     assert!(
-        (heading - 624.0).abs() <= 0.75,
+        (heading - 596.0).abs() <= 0.75,
         "the summary's heading from y {heading}"
     );
-    let rows = ink_top(&nested, &shot, [1300.0, 641.0, 190.0, 20.0], surface);
+    let rows = ink_top(&nested, &shot, [1300.0, 613.0, 190.0, 20.0], surface);
     assert!(
-        (rows - 648.0).abs() <= 1.0,
+        (rows - 620.0).abs() <= 1.0,
         "the summary's rows from y {rows}"
     );
     let caps = gui_support::keycap_fills(&nested.opts, &shot, [1340.0, 915.0, 100.0, 40.0]);
@@ -2165,6 +2166,108 @@ fn trim_edges_only_is_part_of_the_draft() {
         clip_count(&nested, &project),
         10,
         "edges only splits nothing"
+    );
+    assert_clean(nested.window(0));
+}
+
+/// Issue #15, boards 01 and 05: a previewed cut can be kept. A region's
+/// box and a click on its hatch toggle it ("· 1 kept", the row "kept"),
+/// with no seek or selection; Cancel drops it; Apply keeps it.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_previewed_cut_is_kept() {
+    let mut nested = Nested::start(AREA, "autocut-keep", Options::default());
+    let preset = ui(|u| {
+        u.canvas_mode = CanvasMode::Program;
+        u.selection = vec![clip("c3e9")];
+        u.playhead = 100;
+    });
+    let project = fixture(&nested, DesignVariant::Base, &preset);
+    open(&mut nested, &project, levels(DESIGN_LEVELS));
+    let before = history_cursor(&nested, &project);
+    let keep = |nested: &mut Nested| nested.window(0).local()["autocutKeep"].clone();
+    let open_page = |nested: &mut Nested| {
+        nested.keys(&["-M", "shift", "-k", "c", "-m", "shift"]);
+        wait_for_label(nested.window(0), "Removes 4 silences");
+    };
+    open_page(&mut nested);
+    // Region 2's box: unchecked, its cut kept.
+    let (x, y) = center(region(nested.window(0), "autocut-region-2-cut"));
+    nested.pointer().click(x, y);
+    let labels = wait_for_label(nested.window(0), "Removes 3 silences");
+    assert_has(&labels, &["(4.8 s)", " · 1 kept", autocut::KEPT]);
+    assert_eq!(
+        keep(&mut nested),
+        json!([{"clip": "c3e9", "in": 1284, "out": 1326}])
+    );
+    // Checked again: cut again.
+    let (x, y) = center(region(nested.window(0), "autocut-region-2-cut"));
+    nested.pointer().click(x, y);
+    wait_for_label(nested.window(0), "Removes 4 silences");
+    assert_eq!(keep(&mut nested), json!([]));
+    // Silence 3's hatch on lane A1 (timeline frames 6276–6315 at fit zoom):
+    // kept, and the playhead and the selection stay.
+    let view = qrec_core::view::timeline::Viewport::fit(1040.0, 7391).unwrap();
+    let hatch_x = 176.0 + view.x_of(6295.5);
+    let lane = region(nested.window(0), "lane-A1");
+    let lane_y = lane[1] + lane[3] / 2.0;
+    nested.pointer().move_to(hatch_x, lane_y);
+    nested.window(0).wait_idle();
+    nested.pointer().click(hatch_x, lane_y);
+    let labels = wait_for_label(nested.window(0), "Removes 3 silences");
+    assert_has(&labels, &[" · 1 kept"]);
+    assert_eq!(
+        keep(&mut nested),
+        json!([{"clip": "c3e9", "in": 1990, "out": 2029}])
+    );
+    let status = nested.cli_json(&project, &["status"]);
+    assert_eq!(status["data"]["ui"]["playhead"], 100, "no seek: {status}");
+    assert_eq!(
+        status["data"]["ui"]["selection"],
+        json!(["c3e9"]),
+        "no selection: {status}"
+    );
+    let spans = nested.window(0).local()["autocutPreview"]["spans"].clone();
+    let kept: Vec<&Value> = spans
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["kind"] == "kept")
+        .collect();
+    assert_eq!(kept.len(), 1, "{spans}");
+    assert_eq!(
+        (kept[0]["from"].as_u64(), kept[0]["tag"].as_str()),
+        (Some(6276), Some("kept"))
+    );
+    nested.screenshot("kept-hover");
+    // Cancel: nothing sent, the kept cut forgotten.
+    let (x, y) = center(region(nested.window(0), "autocut-cancel"));
+    nested.pointer().click(x, y);
+    wait_for_label(nested.window(0), "Onion layers");
+    assert_eq!(keep(&mut nested), json!([]));
+    assert_eq!(
+        history_cursor(&nested, &project),
+        before,
+        "Cancel sends nothing"
+    );
+    // Reopened, nothing kept; region 2 kept, Apply cuts the other three.
+    open_page(&mut nested);
+    let (x, y) = center(region(nested.window(0), "autocut-region-2-cut"));
+    nested.pointer().click(x, y);
+    wait_for_label(nested.window(0), "Removes 3 silences");
+    let (x, y) = center(region(nested.window(0), "autocut-apply"));
+    nested.pointer().click(x, y);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while clip_count(&nested, &project) != 13 {
+        assert!(Instant::now() < deadline, "the cut never landed");
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(history_cursor(&nested, &project), before + 1);
+    let status = nested.cli_json(&project, &["status"]);
+    assert_eq!(
+        status["data"]["project"]["autocut"].get("keep"),
+        None,
+        "kept cuts aren't a setting: {status}"
     );
     assert_clean(nested.window(0));
 }

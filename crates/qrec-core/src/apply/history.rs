@@ -798,6 +798,7 @@ mod tests {
                             key: SilenceKey("k".into()),
                         }],
                         warning: None,
+                        keep: Vec::new(),
                     }],
                     params: AutocutParams {
                         threshold_db: -35.0,

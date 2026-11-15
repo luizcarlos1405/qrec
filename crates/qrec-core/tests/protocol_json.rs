@@ -292,6 +292,7 @@ fn all_commands() -> Vec<Command> {
                 padding_ms: Some(120),
                 min_keep_ms: Some(200),
                 edges_only: None,
+                keep: Vec::new(),
             },
             dry_run: true,
         },
@@ -1140,6 +1141,7 @@ fn state_and_outcome_round_trip() {
                         key: SilenceKey("k".into()),
                     }],
                     warning: None,
+                    keep: Vec::new(),
                 }],
                 params: AutocutParams {
                     threshold_db: -35.0,
@@ -1273,6 +1275,8 @@ fn views_and_plans_round_trip() {
             kept: vec![[0, 120], [180, 410]],
             removed_frames: 60,
             silences: 1,
+            excepted: Vec::new(),
+            removed: Vec::new(),
         }],
         skipped: vec![AutocutSkipView {
             clip: clip("c8a1"),

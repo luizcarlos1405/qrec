@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use qrec_core::model::{Crop, Rect};
-use qrec_core::protocol::command::SceneTarget;
+use qrec_core::protocol::command::{AutocutKeep, SceneTarget};
 use qrec_core::view::blocking::BlockKind;
 use qrec_core::view::timeline::Viewport;
 use qrec_core::view::{
@@ -43,6 +43,11 @@ pub struct LocalUi {
     pub panel_page: PanelPageKind,
     /// The autocut page's preview (WP5 writes, WP3 draws).
     pub autocut_preview: Option<Arc<AutocutPreview>>,
+    /// The previewed cuts the autocut page keeps (issue #15): a click on a
+    /// hatch (WP3) or on a region's box (WP5) toggles one
+    /// (`view::autocut::toggle_keep`); the page follows it into its draft,
+    /// and empties it when it opens and closes.
+    pub autocut_keep: Vec<AutocutKeep>,
     /// A take playing in the Program picture from the bin (WP7 writes, WP4
     /// plays, D-17).
     pub take_preview: Option<TakePreview>,
@@ -92,6 +97,7 @@ impl Default for LocalUi {
             overlays: Vec::new(),
             panel_page: PanelPageKind::default(),
             autocut_preview: None,
+            autocut_keep: Vec::new(),
             take_preview: None,
             trim_frame: None,
             layer_drag: None,

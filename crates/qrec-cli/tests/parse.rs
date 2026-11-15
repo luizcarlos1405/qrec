@@ -421,6 +421,7 @@ fn hyphen_values_parse_as_values() {
                 ..Default::default()
             },
             dry_run: false,
+            keep: Vec::new(),
         })
     );
     for (line, edges_only) in [
@@ -435,6 +436,22 @@ fn hyphen_values_parse_as_values() {
         };
         assert_eq!(args.params.edges_only, edges_only, "{line}");
     }
+    // Issue #15: --keep repeats, each a clip and a range of its take.
+    let Cmd::Autocut(args) = cmd("qrec autocut --keep c3e9:120-168 --keep c2d0:0-30 --dry-run")
+    else {
+        panic!("autocut")
+    };
+    let kept: Vec<String> = args.keep.iter().map(|k| k.arg()).collect();
+    assert_eq!(kept, ["c3e9:120-168", "c2d0:0-30"]);
+    for bad in [
+        "qrec autocut --keep c3e9",
+        "qrec autocut --keep c3e9:120",
+        "qrec autocut --keep c3e9:168-120",
+        "qrec autocut --keep c3e9:a-b",
+        "qrec autocut --keep :1-2",
+    ] {
+        assert!(parse(bad).is_err(), "{bad} should not parse");
+    }
     assert_eq!(
         cmd("qrec autocut settings --edges-only false"),
         Cmd::Autocut(AutocutArgs {
@@ -445,6 +462,7 @@ fn hyphen_values_parse_as_values() {
             scope: AutocutScopeArgs::default(),
             params: AutocutParamArgs::default(),
             dry_run: false,
+            keep: Vec::new(),
         })
     );
     assert_eq!(
@@ -457,6 +475,7 @@ fn hyphen_values_parse_as_values() {
             scope: AutocutScopeArgs::default(),
             params: AutocutParamArgs::default(),
             dry_run: false,
+            keep: Vec::new(),
         })
     );
     assert_eq!(
@@ -802,6 +821,7 @@ fn parsed_values_are_typed() {
             scope: AutocutScopeArgs::default(),
             params: AutocutParamArgs::default(),
             dry_run: false,
+            keep: Vec::new(),
         })
     );
     // Several tracks: repeated, or with commas.
@@ -819,6 +839,7 @@ fn parsed_values_are_typed() {
                 scope: AutocutScopeArgs::default(),
                 params: AutocutParamArgs::default(),
                 dry_run: false,
+                keep: Vec::new(),
             }),
             "{line}"
         );
@@ -833,6 +854,7 @@ fn parsed_values_are_typed() {
                 ..Default::default()
             },
             dry_run: true,
+            keep: Vec::new(),
         })
     );
     assert_eq!(

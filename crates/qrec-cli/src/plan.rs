@@ -784,6 +784,7 @@ impl Builder {
                     padding_ms: p.padding_ms,
                     min_keep_ms: p.min_keep_ms,
                     edges_only: p.edges_only,
+                    keep: args.keep.clone(),
                 },
                 dry_run: args.dry_run,
             },

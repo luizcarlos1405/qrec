@@ -955,6 +955,7 @@ fn analyzing_and_dimmed_clips() {
                         key: SilenceKey("k".into()),
                     }],
                     warning: None,
+                    keep: Vec::new(),
                 }],
                 params: AutocutParams {
                     threshold_db: -35.0,

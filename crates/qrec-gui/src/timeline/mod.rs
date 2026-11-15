@@ -142,6 +142,9 @@ struct Model {
     pointer: Option<(f64, f64)>,
     /// The clip whose tooltip is up.
     tip_clip: Option<ClipId>,
+    /// The autocut page's cut (or kept cut) under the pointer: its clip, its
+    /// take frames, and whether it is kept (issue #15).
+    autocut_hover: Option<(ClipId, [Frame; 2], bool)>,
     /// The last trim snap target (a new one flashes).
     snapped: Option<f64>,
     /// The canvas's cached render node and what it shows: its generation,
@@ -371,6 +374,7 @@ impl Inner {
                     flash: None,
                     pointer: None,
                     tip_clip: None,
+                    autocut_hover: None,
                     snapped: None,
                     cache: None,
                     generation: 0,
@@ -902,6 +906,12 @@ impl Inner {
                 }
             });
         }
+        // The autocut page closed under the pointer: its cut is no longer
+        // there to click.
+        if local.autocut_preview.is_none() && self.m.borrow_mut().autocut_hover.take().is_some() {
+            self.tips.hide();
+            self.canvas.set_cursor_from_name(None);
+        }
         // The autocut page's preview (WP5) and the playing player redraw.
         self.bump();
         self.canvas.queue_draw();
@@ -1206,6 +1216,24 @@ impl Inner {
         self.cancel_hover_tip();
         self.tips.hide();
         let s = self.scale();
+        // While the autocut page previews, a click on a cut keeps it, and on
+        // a kept cut cuts it again (issue #15): no selection, no seek.
+        if area == Area::Rows
+            && button == Button::Left
+            && let Some((clip, cut, kept)) = self.autocut_span_at(x / s, y / s)
+        {
+            self.ctx.store.update_local(move |l| {
+                l.autocut_keep = qrec_core::view::autocut::toggle_keep(&l.autocut_keep, &clip, cut);
+            });
+            // The tooltip says what the next click does.
+            if let Some((_, _, now_kept)) = self.m.borrow_mut().autocut_hover.as_mut() {
+                *now_kept = !kept;
+            }
+            self.show_autocut_tip();
+            self.bump();
+            self.canvas.queue_draw();
+            return true;
+        }
         let used = self
             .with_cx(|cx, m, pending| {
                 let Model { g, vm, .. } = m;
@@ -1280,14 +1308,85 @@ impl Inner {
             g.decide_motion(cx, pending, vm, Area::Rows, (x, y));
         });
         self.m.borrow_mut().pointer = Some((x, y));
+        let span = self.autocut_span_at(x, y);
+        let changed = {
+            let mut m = self.m.borrow_mut();
+            let changed = m.autocut_hover.as_ref().map(|(c, cut, _)| (c, cut))
+                != span.as_ref().map(|(c, cut, _)| (c, cut));
+            m.autocut_hover = span.clone();
+            changed
+        };
+        if changed {
+            self.bump();
+            self.canvas.queue_draw();
+        }
         self.update_cursor(x, y);
-        self.schedule_hover_tip();
+        if span.is_some() {
+            self.cancel_hover_tip();
+            self.m.borrow_mut().tip_clip = None;
+            self.show_autocut_tip();
+        } else {
+            if changed {
+                self.tips.hide();
+            }
+            self.schedule_hover_tip();
+        }
+    }
+
+    /// The autocut page's cut (or kept cut) at (`x`, `y`), canvas px at
+    /// 100 %: its clip, its take frames, and whether it is kept. A cut a
+    /// few px wide at fit zoom answers over 8 px.
+    fn autocut_span_at(&self, x: f64, y: f64) -> Option<(ClipId, [Frame; 2], bool)> {
+        const MIN_HIT: f64 = 8.0;
+        let preview = self.ctx.store.local().autocut_preview.clone()?;
+        self.with_cx(|cx, m, _| {
+            preview
+                .spans
+                .iter()
+                .filter(|span| span.kind != tl::HatchKind::Padding)
+                .find(|span| {
+                    let Some(lane) = m.lanes.iter().position(|l| l.track == span.track) else {
+                        return false;
+                    };
+                    let (x0, x1) = (cx.view.x_of_frame(span.from), cx.view.x_of_frame(span.to));
+                    let grow = ((MIN_HIT - (x1 - x0)) / 2.0).max(0.0);
+                    let top = cx.rows.lane_y(lane);
+                    (x0 - grow..x1 + grow).contains(&x) && (top..top + cx.rows.lane).contains(&y)
+                })
+                .map(|span| {
+                    (
+                        span.clip.clone(),
+                        span.cut,
+                        span.kind == tl::HatchKind::Kept,
+                    )
+                })
+        })
+        .flatten()
+    }
+
+    /// "Click to keep this silence" (or to cut it again) by the pointer.
+    fn show_autocut_tip(&self) {
+        let (kept, pointer) = {
+            let m = self.m.borrow();
+            match (&m.autocut_hover, m.pointer) {
+                (Some((_, _, kept)), Some(pointer)) => (*kept, pointer),
+                _ => return,
+            }
+        };
+        let text = qrec_core::view::autocut::span_tip(kept);
+        let at = self.to_layer(pointer);
+        self.tips
+            .show(&[vec![(text.to_owned(), tips::Ink::Plain)]], at);
     }
 
     fn leave(&self) {
         let mut pending = Pending::default();
         self.m.borrow_mut().g.leave(&mut pending);
         self.m.borrow_mut().pointer = None;
+        if self.m.borrow_mut().autocut_hover.take().is_some() {
+            self.bump();
+            self.canvas.queue_draw();
+        }
         self.apply(pending);
         self.cancel_hover_tip();
         if self.m.borrow().g.drag().is_none() {
@@ -1416,6 +1515,10 @@ impl Inner {
     }
 
     fn update_cursor(&self, x: f64, y: f64) {
+        if self.m.borrow().autocut_hover.is_some() {
+            self.canvas.set_cursor_from_name(Some("pointer"));
+            return;
+        }
         let name = self
             .with_cx(|cx, _, _| match cx.hit(x, y) {
                 tl::Hit::TrimStart(_) | tl::Hit::TrimEnd(_)
@@ -1914,6 +2017,10 @@ impl Inner {
             ghost_waves,
             silences: &silences,
             autocut: local.autocut_preview.clone(),
+            autocut_hover: m
+                .autocut_hover
+                .as_ref()
+                .map(|(c, cut, _)| (c.clone(), *cut)),
             trim,
             moving,
             drop_caret: m.drop.as_ref().map(|(_, x)| *x),

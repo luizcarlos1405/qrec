@@ -179,8 +179,8 @@ pub struct AutocutPreview {
     pub analyzing: bool,
 }
 
-/// One silence autocut would remove, or the padding it keeps beside one,
-/// in timeline frames before the cut.
+/// One silence autocut would remove, the padding it keeps beside one, or a
+/// cut kept, in timeline frames before the cut.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutocutPreviewSpan {
@@ -188,8 +188,11 @@ pub struct AutocutPreviewSpan {
     pub track: TrackId,
     pub from: Frame,
     pub to: Frame,
+    /// The same range in the clip's take frames: what a click on a cut or
+    /// a kept cut toggles (`view::autocut::toggle_keep`).
+    pub cut: [Frame; 2],
     pub kind: timeline::HatchKind,
-    /// "−1.6 s" on a cut; empty on padding.
+    /// "−1.6 s" on a cut, "kept" on a kept one; empty on padding.
     pub tag: String,
 }
 

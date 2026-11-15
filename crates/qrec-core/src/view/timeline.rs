@@ -1152,6 +1152,9 @@ pub enum HatchKind {
     Cut,
     /// The silence it keeps beside a cut (`paddingMs`): `padding-fill`.
     Padding,
+    /// A cut the autocut page keeps (issue #15): a dashed outline, no
+    /// stripes. Only in the page's preview.
+    Kept,
 }
 
 /// A hatch on a lane, in timeline frames.

@@ -822,6 +822,30 @@ pub struct AutocutOverrides {
     pub min_keep_ms: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edges_only: Option<bool>,
+    /// Previewed cuts to keep this run (issue #15): every removed run that
+    /// overlaps one is kept whole (A§5.7). Never part of the settings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keep: Vec<AutocutKeep>,
+}
+
+/// A range of `clip`'s take, `[in, out)` frames, that autocut keeps: the
+/// cuts it would remove there stay (`qrec autocut --keep c3e9:120-168`).
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutocutKeep {
+    pub clip: ClipId,
+    #[serde(rename = "in")]
+    pub in_: Frame,
+    pub out: Frame,
+}
+
+impl AutocutKeep {
+    /// `c3e9:120-168`, as `--keep` takes it.
+    pub fn arg(&self) -> String {
+        format!("{}:{}-{}", self.clip, self.in_, self.out)
+    }
 }
 
 /// Where a recording goes.

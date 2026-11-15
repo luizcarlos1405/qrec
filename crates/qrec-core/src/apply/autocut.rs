@@ -25,7 +25,7 @@ use crate::ids::{ClipId, ReqId, TrackId};
 use crate::media_argv::silence_argv;
 use crate::model::{AutocutSettings, Clip, Project, Take};
 use crate::on_event::autocut::{self as events, Snapshot};
-use crate::protocol::command::{AutocutOverrides, ClipScope, Command};
+use crate::protocol::command::{AutocutKeep, AutocutOverrides, ClipScope, Command};
 use crate::protocol::effect::{Effect, LogLevel};
 use crate::protocol::reply::AutocutSkipView;
 use crate::state::{
@@ -60,6 +60,7 @@ pub fn autocut(
         let takes = clips.iter().filter_map(|c| base.project.take(&c.take));
         ensure_track_known(&base.project, track, takes)?;
     }
+    check_keep(&base.project, &overrides.keep)?;
     let cmd = Command::Autocut {
         scope,
         overrides: overrides.clone(),
@@ -71,6 +72,7 @@ pub fn autocut(
         clips,
         params,
         tracks: overrides.tracks,
+        keep: overrides.keep,
         dry_run,
         req: ctx.req.clone(),
     };
@@ -121,6 +123,7 @@ pub fn start_auto_run(state: &State, ctx: &Ctx, clip: &ClipId) -> Outcome {
         clips: vec![target],
         params,
         tracks: Vec::new(),
+        keep: Vec::new(),
         dry_run: false,
         req: None,
     };
@@ -144,6 +147,8 @@ struct Request {
     params: AutocutParams,
     /// The override tracks (empty = the settings').
     tracks: Vec<TrackId>,
+    /// The previewed cuts to keep (`overrides.keep`).
+    keep: Vec<AutocutKeep>,
     dry_run: bool,
     req: Option<ReqId>,
 }
@@ -212,6 +217,12 @@ fn start(state: &State, ctx: &Ctx, request: Request) -> Started {
             clip: ClipRef::of(clip),
             tracks,
             warning: sources.warning,
+            keep: request
+                .keep
+                .iter()
+                .filter(|k| k.clip == clip.id)
+                .map(|k| [k.in_, k.out])
+                .collect(),
         });
     }
 
@@ -302,6 +313,27 @@ fn check_params(params: &AutocutParams) -> Result<(), CoreError> {
         if ms > MAX_MS {
             return Err(CoreError::usage(format!(
                 "the autocut {what} must be at most {MAX_MS} ms (got {ms} ms)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Every `keep` range names a clip on the timeline and isn't empty. One
+/// outside the clip, or on a clip the run doesn't cut, keeps nothing.
+fn check_keep(project: &Project, keep: &[AutocutKeep]) -> Result<(), CoreError> {
+    for k in keep {
+        if project.clip(&k.clip).is_none() {
+            return Err(
+                CoreError::not_found(format!("no clip {} on the timeline", k.clip)).with_hint(
+                    "--keep takes <clip>:<in>-<out>, as qrec autocut --dry-run lists them",
+                ),
+            );
+        }
+        if k.in_ >= k.out {
+            return Err(CoreError::usage(format!(
+                "the kept range {} is empty: its end must come after its start",
+                k.arg()
             )));
         }
     }
@@ -862,6 +894,7 @@ mod tests {
             padding_ms: Some(50),
             min_keep_ms: Some(0),
             edges_only: None,
+            keep: Vec::new(),
         };
         let scope = ClipScope::Clips(vec![ClipId::from_raw("c001")]);
         let out = autocut(&state, &ctx, scope.clone(), overrides.clone(), false).unwrap();
@@ -1171,6 +1204,7 @@ mod tests {
                         key: fixtures::key(&ctx, MIC2, &p),
                     }],
                     warning: None,
+                    keep: Vec::new(),
                 }],
                 params: p.clone(),
                 dry_run: false,

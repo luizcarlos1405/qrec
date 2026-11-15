@@ -12,6 +12,11 @@
 //! - Apply sends `AutocutSettings{patch}` with the changed fields (if any),
 //!   then `Autocut{dry_run: false}`, and closes the page; the cut's answer
 //!   toasts "Autocut take 8: removed 4 silences (6.2 s)" with Undo (S25).
+//! - A previewed cut can be kept (issue #15): each region row's box
+//!   (checked = cut) and a click on its hatch on the timeline toggle it in
+//!   `LocalUi.autocut_keep`, which the draft follows (`keep`): a new dry
+//!   run goes after the same debounce; Apply's cut keeps them. The page
+//!   empties it when it opens and closes.
 //! - Cancel, the back button and `Esc` close it and send nothing.
 //! - The switch "Run autocut after every take" is saved at once.
 //! - `Enter` applies (the page's Apply is the window's default widget
@@ -57,6 +62,15 @@ struct KnobView {
     _tooltip: ValueTooltip,
 }
 
+/// One row of the region list, and what it shows.
+struct RegionView {
+    row: gtk::ListBoxRow,
+    /// Checked = cut; unchecked = kept.
+    check: gtk::CheckButton,
+    size: gtk::Label,
+    region: RegionRow,
+}
+
 /// The page. Cheap to clone; main thread only.
 #[derive(Clone)]
 pub struct AutocutPage {
@@ -83,7 +97,9 @@ struct Inner {
     summary_mono: gtk::Label,
     summary_rows: gtk::Grid,
     regions: gtk::ListBox,
-    region_rows: RefCell<Vec<(gtk::ListBoxRow, RegionRow)>>,
+    region_rows: RefCell<Vec<RegionView>>,
+    /// " · 1 kept" after the summary's title (issue #15, board 01).
+    summary_kept: gtk::Label,
     selected_region: Cell<Option<usize>>,
     switch: gtk::Switch,
     apply: gtk::Button,
@@ -383,9 +399,13 @@ impl AutocutPage {
         summary_title.set_valign(gtk::Align::Baseline);
         let summary_mono = label("", &["summary-mono"]);
         summary_mono.set_valign(gtk::Align::Baseline);
+        let summary_kept = label("", &["summary-kept", "muted"]);
+        summary_kept.set_valign(gtk::Align::Baseline);
+        summary_kept.set_widget_name("autocut-summary-kept");
         title_row.append(&spinner);
         title_row.append(&summary_title);
         title_row.append(&summary_mono);
+        title_row.append(&summary_kept);
         let summary_rows = gtk::Grid::new();
         summary_rows.add_css_class("summary-rows");
         summary_rows.set_column_spacing(12);
@@ -471,6 +491,7 @@ impl AutocutPage {
                 summary_rows,
                 regions,
                 region_rows: RefCell::new(Vec::new()),
+                summary_kept,
                 selected_region: Cell::new(None),
                 switch,
                 apply,
@@ -584,7 +605,9 @@ impl AutocutPage {
             .store
             .subscribe_local(move |local| {
                 if let Some(inner) = weak.upgrade() {
-                    AutocutPage { inner }.follow_sheet(local);
+                    let page = AutocutPage { inner };
+                    page.follow_keep(local);
+                    page.follow_sheet(local);
                 }
             })
             .detach();
@@ -618,6 +641,37 @@ impl AutocutPage {
                 });
             }
         }
+    }
+
+    /// `LocalUi.autocut_keep` changed (a hatch clicked, a region's box): the
+    /// draft keeps those cuts, and the dry run follows.
+    fn follow_keep(&self, local: &LocalUi) {
+        let inner = &self.inner;
+        if !inner.open.get() || inner.draft.borrow().keep == local.autocut_keep {
+            return;
+        }
+        let mut draft = inner.draft.borrow().clone();
+        draft.keep = local.autocut_keep.clone();
+        self.set_draft(draft);
+    }
+
+    /// A region's box toggled: keep its cut, or cut it again.
+    fn region_toggled(&self, i: usize) {
+        let inner = &self.inner;
+        if inner.setting.get() || !inner.open.get() {
+            return;
+        }
+        let Some((clip, cut)) = inner
+            .region_rows
+            .borrow()
+            .get(i)
+            .map(|r| (r.region.clip.clone(), r.region.cut))
+        else {
+            return;
+        };
+        inner.ctx.store.update_local(move |l| {
+            l.autocut_keep = autocut::toggle_keep(&l.autocut_keep, &clip, cut);
+        });
     }
 
     /// The window narrowed under the open page: the sheet shows it (unless
@@ -672,6 +726,7 @@ impl AutocutPage {
         inner.pushed_sheet.set(push);
         inner.ctx.store.update_local(move |l| {
             l.panel_page = PanelPageKind::Autocut;
+            l.autocut_keep.clear();
             if push && !l.overlays.contains(&Overlay::LayersSheet) {
                 l.overlays.push(Overlay::LayersSheet);
             }
@@ -700,6 +755,7 @@ impl AutocutPage {
         inner.ctx.store.update_local(move |l| {
             l.panel_page = PanelPageKind::Layers;
             l.autocut_preview = None;
+            l.autocut_keep.clear();
             if pushed && l.layout.width == LayoutWidth::Narrow {
                 l.close_overlays(|o| *o == Overlay::LayersSheet);
             }
@@ -909,8 +965,8 @@ impl AutocutPage {
             .borrow()
             .iter()
             .enumerate()
-            .find(|(_, (r, _))| r == row)
-            .map(|(i, (_, region))| (i, region.seek));
+            .find(|(_, r)| r.row == *row)
+            .map(|(i, r)| (i, r.region.seek));
         let Some((i, frame)) = hit else { return };
         inner.selected_region.set(Some(i));
         inner.ctx.store.dispatch(Command::Seek {
@@ -922,11 +978,11 @@ impl AutocutPage {
     fn mark_region(&self) {
         let inner = &self.inner;
         let selected = inner.selected_region.get();
-        for (i, (row, _)) in inner.region_rows.borrow().iter().enumerate() {
+        for (i, r) in inner.region_rows.borrow().iter().enumerate() {
             if selected == Some(i) {
-                row.add_css_class("selected");
+                r.row.add_css_class("selected");
             } else {
-                row.remove_css_class("selected");
+                r.row.remove_css_class("selected");
             }
         }
     }
@@ -1067,6 +1123,10 @@ impl AutocutPage {
         let analyzing = inner.runs.borrow().analyzing();
         inner.spinner.set_visible(analyzing);
         let summary = inner.summary.borrow().clone();
+        inner.summary_kept.set_text(match (&summary, analyzing) {
+            (Some(s), false) => &s.kept,
+            _ => "",
+        });
         match (&summary, analyzing) {
             (_, true) => {
                 inner.summary_title.set_text(autocut::ANALYZING);
@@ -1116,19 +1176,40 @@ impl AutocutPage {
             }
         }
         let regions = summary.map(|s| s.regions).unwrap_or_default();
+        // The same cuts (only kept or not changed): the rows stay, so a box
+        // keeps the keyboard focus it was toggled with.
         let same = {
             let rows = inner.region_rows.borrow();
-            rows.len() == regions.len() && rows.iter().zip(&regions).all(|((_, a), b)| a == b)
+            rows.len() == regions.len()
+                && rows.iter().zip(&regions).all(|(a, b)| {
+                    let a = &a.region;
+                    (a.n, &a.range, a.seek, &a.clip, a.cut)
+                        == (b.n, &b.range, b.seek, &b.clip, b.cut)
+                })
         };
-        if !same {
-            for (row, _) in inner.region_rows.borrow_mut().drain(..) {
-                inner.regions.remove(&row);
+        if same {
+            inner.setting.set(true);
+            for (view, region) in inner.region_rows.borrow_mut().iter_mut().zip(regions) {
+                show_kept(view, &region);
+                view.region = region;
+            }
+            inner.setting.set(false);
+        } else {
+            for view in inner.region_rows.borrow_mut().drain(..) {
+                inner.regions.remove(&view.row);
             }
             let mut rows = Vec::new();
-            for region in regions {
-                let row = region_row(&region);
-                inner.regions.append(&row);
-                rows.push((row, region));
+            for (i, region) in regions.into_iter().enumerate() {
+                let view = region_row(region);
+                let weak = Rc::downgrade(inner);
+                view.check
+                    .connect_toggled(guarded!("autocut: keep a region", move |_| {
+                        if let Some(inner) = weak.upgrade() {
+                            AutocutPage { inner }.region_toggled(i);
+                        }
+                    }));
+                inner.regions.append(&view.row);
+                rows.push(view);
             }
             *inner.region_rows.borrow_mut() = rows;
         }
@@ -1145,6 +1226,7 @@ fn nothing(why: &str) -> AutocutSummary {
         title: autocut::NOTHING_TO_CUT.to_owned(),
         rows: vec![(String::new(), why.to_owned())],
         regions: Vec::new(),
+        kept: String::new(),
     }
 }
 
@@ -1167,14 +1249,20 @@ fn summary_value(value: &str) -> gtk::Widget {
     row.upcast()
 }
 
-/// A region row (32 px, `mono-sm`): its number, its range, its size.
-fn region_row(region: &RegionRow) -> gtk::ListBoxRow {
+/// A region row (32 px, `mono-sm`): its box (checked = cut, issue #15),
+/// its number, its range, its size ("kept" when kept, the row dimmed).
+fn region_row(region: RegionRow) -> RegionView {
     let row = gtk::ListBoxRow::new();
     row.add_css_class("region-row");
     row.add_css_class("r1");
     row.add_css_class("row-32");
     row.set_widget_name(&format!("autocut-region-{}", region.n));
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let check = gtk::CheckButton::new();
+    check.add_css_class("region-check");
+    check.set_widget_name(&format!("autocut-region-{}-cut", region.n));
+    check.set_valign(gtk::Align::Center);
+    check.set_focus_on_click(false);
     // The number and the size read `muted` (R1 turns them `text` on the
     // marked row).
     let n = label(&region.n.to_string(), &["t-mono-sm", "muted", "region-n"]);
@@ -1185,15 +1273,41 @@ fn region_row(region: &RegionRow) -> gtk::ListBoxRow {
     let size = label(&region.size, &["t-mono-sm", "muted", "region-size"]);
     size.set_xalign(1.0);
     size.set_ellipsize(gtk::pango::EllipsizeMode::Start);
+    content.append(&check);
     content.append(&n);
     content.append(&range);
     content.append(&size);
     row.set_child(Some(&content));
-    row.update_property(&[gtk::accessible::Property::Label(&format!(
-        "Silence {}: {}, {}",
-        region.n, region.range, region.size
-    ))]);
-    row
+    let mut view = RegionView {
+        row,
+        check,
+        size,
+        region: region.clone(),
+    };
+    show_kept(&mut view, &region);
+    view
+}
+
+/// A row as cut (its box checked) or kept (unchecked, dimmed, "kept").
+fn show_kept(view: &mut RegionView, region: &RegionRow) {
+    view.check.set_active(!region.kept);
+    view.size.set_text(&region.size);
+    if region.kept {
+        view.row.add_css_class("kept");
+    } else {
+        view.row.remove_css_class("kept");
+    }
+    let what = if region.kept { "kept" } else { "cut" };
+    view.check
+        .update_property(&[gtk::accessible::Property::Label(&format!(
+            "Cut silence {}",
+            region.n
+        ))]);
+    view.row
+        .update_property(&[gtk::accessible::Property::Label(&format!(
+            "Silence {}: {}, {}, {what}",
+            region.n, region.range, region.size
+        ))]);
 }
 
 /// A footer button with its key cap ("Cancel" `Esc`, "Apply autocut"

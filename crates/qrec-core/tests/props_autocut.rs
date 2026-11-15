@@ -12,8 +12,8 @@ use proptest::prelude::*;
 
 use qrec_core::apply::history::{redo_checked, undo_checked};
 use qrec_core::autocut::{
-    ClipCut, TrackSilences, analysis_sources, cut_clip, intersect_silences, kept_spans,
-    plan_clip_on,
+    ClipCut, TrackSilences, analysis_sources, cut_clip, cut_clip_keeping, intersect_silences,
+    kept_spans, plan_clip_on,
 };
 use qrec_core::ctx::{Ctx, FileFact};
 use qrec_core::history::ops::unchecked;
@@ -247,7 +247,7 @@ proptest! {
         params in arb_params(),
         outside in arb_silences(),
     ) {
-        let whole = ClipCut { kept: vec![[clip.in_, clip.out]], silences: 0, removed_frames: 0 };
+        let whole = ClipCut { kept: vec![[clip.in_, clip.out]], silences: 0, removed_frames: 0, excepted: Vec::new(), };
         prop_assert_eq!(cut_clip(&clip, &[], &params, fps), whole.clone());
 
         // Move every silence out of the clip's reach: ending at most `pad`
@@ -332,6 +332,60 @@ proptest! {
             prop_assert_eq!(edges.kept[0], [first[0], last[1]]);
             prop_assert!(edges.silences <= 2);
             prop_assert_eq!(edges.removed_frames, (first[0] - clip.in_) + (clip.out - last[1]));
+        }
+    }
+
+    /// A previewed cut kept (issue #15): no frame of a cut a `keep` range
+    /// overlaps is removed, those cuts are exactly the ones the plan
+    /// without `keep` removes and a range overlaps, and keeping never
+    /// removes more than not keeping. Edges only or not.
+    #[test]
+    fn an_excepted_frame_is_never_removed(
+        fps in strategies::arb_fps(),
+        clip in arb_clip(),
+        silences in arb_silences(),
+        params in arb_params(),
+        edges_only in any::<bool>(),
+        picks in prop::collection::vec((any::<prop::sample::Index>(), 0u64..3, 0u64..3), 0..4),
+        stray in prop::collection::vec((0u64..4000, 1u64..40), 0..3),
+    ) {
+        let params = AutocutParams { edges_only, ..params };
+        let without = cut_clip(&clip, &silences, &params, fps);
+        let removed = without.removed(&clip);
+        // Ranges inside, around or beside some cuts, and anywhere.
+        let mut keep: Vec<[u64; 2]> = Vec::new();
+        if !removed.is_empty() {
+            for (i, grow_a, grow_b) in &picks {
+                let [a, b] = removed[i.index(removed.len())];
+                keep.push([a.saturating_sub(*grow_a), b + grow_b]);
+            }
+        }
+        keep.extend(stray.iter().map(|&(a, len)| [a, a + len]));
+        let with = cut_clip_keeping(&clip, &silences, &params, fps, &keep);
+        let wanted: Vec<[u64; 2]> = if without.keeps_nothing() {
+            Vec::new()
+        } else {
+            removed
+                .iter()
+                .copied()
+                .filter(|&[a, b]| keep.iter().any(|&[x, y]| x < b && a < y))
+                .collect()
+        };
+        prop_assert_eq!(&with.excepted, &wanted);
+        let now_removed = with.removed(&clip);
+        for &[a, b] in &with.excepted {
+            prop_assert!(
+                now_removed.iter().all(|&[x, y]| y <= a || b <= x),
+                "kept {:?} but removes {:?}", [a, b], now_removed
+            );
+        }
+        prop_assert!(with.removed_frames <= without.removed_frames);
+        prop_assert_eq!(with.keeps_nothing(), without.keeps_nothing());
+        for [x, y] in now_removed {
+            prop_assert!(
+                removed.iter().any(|&[a, b]| a <= x && y <= b),
+                "{:?} wasn't removed without keep: {:?}", [x, y], removed
+            );
         }
     }
 }

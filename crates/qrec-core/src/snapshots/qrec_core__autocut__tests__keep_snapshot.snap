@@ -1,0 +1,243 @@
+---
+source: crates/qrec-core/src/autocut.rs
+expression: table
+---
+- name: one cut kept
+  silences_ms:
+    - - 0
+      - 512
+    - - 2005
+      - 3008
+    - - 3605
+      - 5013
+    - - 6016
+      - 7000
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 120
+    minKeepMs: 200
+    edgesOnly: false
+  without:
+    kept:
+      - - 11
+        - 64
+      - - 86
+        - 112
+      - - 146
+        - 185
+    silences: 4
+    removedFrames: 92
+  keep:
+    - - 64
+      - 86
+  with:
+    kept:
+      - - 11
+        - 112
+      - - 146
+        - 185
+    silences: 3
+    removedFrames: 70
+    excepted:
+      - - 64
+        - 86
+- name: every cut kept
+  silences_ms:
+    - - 0
+      - 512
+    - - 2005
+      - 3008
+    - - 3605
+      - 5013
+    - - 6016
+      - 7000
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 120
+    minKeepMs: 200
+    edgesOnly: false
+  without:
+    kept:
+      - - 11
+        - 64
+      - - 86
+        - 112
+      - - 146
+        - 185
+    silences: 4
+    removedFrames: 92
+  keep:
+    - - 0
+      - 11
+    - - 64
+      - 86
+    - - 112
+      - 146
+    - - 185
+      - 210
+  with:
+    kept:
+      - - 0
+        - 210
+    silences: 0
+    removedFrames: 0
+    excepted:
+      - - 0
+        - 11
+      - - 64
+        - 86
+      - - 112
+        - 146
+      - - 185
+        - 210
+- name: a click kept with its cut
+  silences_ms:
+    - - 0
+      - 500
+    - - 1000
+      - 2000
+    - - 2030
+      - 3000
+    - - 5000
+      - 7000
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 120
+    minKeepMs: 200
+    edgesOnly: false
+  without:
+    kept:
+      - - 11
+        - 34
+      - - 86
+        - 154
+    silences: 3
+    removedFrames: 119
+  keep:
+    - - 35
+      - 40
+  with:
+    kept:
+      - - 11
+        - 154
+    silences: 2
+    removedFrames: 67
+    excepted:
+      - - 34
+        - 86
+- name: "edges only, the start kept"
+  silences_ms:
+    - - 0
+      - 512
+    - - 2005
+      - 3008
+    - - 3605
+      - 5013
+    - - 6016
+      - 7000
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 120
+    minKeepMs: 200
+    edgesOnly: true
+  without:
+    kept:
+      - - 11
+        - 185
+    silences: 2
+    removedFrames: 36
+  keep:
+    - - 0
+      - 11
+  with:
+    kept:
+      - - 0
+        - 185
+    silences: 1
+    removedFrames: 25
+    excepted:
+      - - 0
+        - 11
+- name: a stale range keeps the cut it overlaps
+  silences_ms:
+    - - 0
+      - 512
+    - - 2005
+      - 3008
+    - - 3605
+      - 5013
+    - - 6016
+      - 7000
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 120
+    minKeepMs: 200
+    edgesOnly: false
+  without:
+    kept:
+      - - 11
+        - 64
+      - - 86
+        - 112
+      - - 146
+        - 185
+    silences: 4
+    removedFrames: 92
+  keep:
+    - - 60
+      - 70
+  with:
+    kept:
+      - - 11
+        - 112
+      - - 146
+        - 185
+    silences: 3
+    removedFrames: 70
+    excepted:
+      - - 64
+        - 86
+- name: a range over no cut changes nothing
+  silences_ms:
+    - - 0
+      - 512
+    - - 2005
+      - 3008
+    - - 3605
+      - 5013
+    - - 6016
+      - 7000
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 120
+    minKeepMs: 200
+    edgesOnly: false
+  without:
+    kept:
+      - - 11
+        - 64
+      - - 86
+        - 112
+      - - 146
+        - 185
+    silences: 4
+    removedFrames: 92
+  keep:
+    - - 100
+      - 105
+  with:
+    kept:
+      - - 11
+        - 64
+      - - 86
+        - 112
+      - - 146
+        - 185
+    silences: 4
+    removedFrames: 92

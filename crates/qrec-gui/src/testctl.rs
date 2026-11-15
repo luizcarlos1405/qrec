@@ -699,6 +699,7 @@ fn local(app: &App) -> Value {
         "playingRate": local.playing_rate,
         "panelPage": local.panel_page,
         "autocutPreview": local.autocut_preview.as_deref(),
+        "autocutKeep": &local.autocut_keep,
         "binSelection": local.bin_selection.iter().map(|t| t.as_str().to_owned()).collect::<Vec<_>>(),
         "takePreview": local.take_preview.as_ref().map(|p| json!({"take": p.take.as_str(), "playing": p.playing})),
         "binRowsAlive": crate::bin_drawer::rows_alive(),

@@ -1546,6 +1546,67 @@ fn autocut_edges_only_trims_the_ends() {
     assert_eq!(rows[0]["out"].as_u64(), Some(end));
 }
 
+/// Issue #15: `--keep` keeps the cut it overlaps. The dry run lists each
+/// cut as `--keep` names it; keeping the pause leaves one clip with its
+/// ends trimmed, and qrec.json doesn't record the kept range.
+#[test]
+fn autocut_keeps_a_cut_named_with_keep() {
+    let env = TestEnv::new();
+    // 4 s at 30 fps; sound 0.5-1.5 s and 2.5-3.5 s: silences at both ends
+    // and a 1 s pause between.
+    let spec =
+        MediaSpec::video(320, 180, 30, 120).with_audio(48_000, 1, &[(500, 1500), (2500, 3500)]);
+    let dir = project_with(&env, "keep", &[spec]);
+
+    let dry = qrec(&env, &dir, &["autocut", "--dry-run", "--json"]);
+    dry.ok();
+    let clip = &dry.reply()["data"]["result"]["clips"][0];
+    let removed = clip["removed"].as_array().unwrap().clone();
+    assert_eq!(removed.len(), 3, "{clip}");
+    let pause = (
+        removed[1][0].as_u64().unwrap(),
+        removed[1][1].as_u64().unwrap(),
+    );
+    assert!(
+        (40..=50).contains(&pause.0) && (70..=80).contains(&pause.1),
+        "{clip}"
+    );
+
+    // Humans see the cuts as --keep takes them.
+    let human = qrec(&env, &dir, &["autocut", "--dry-run"]);
+    human.ok();
+    let named = format!("c001:{}-{}", pause.0, pause.1);
+    assert!(human.stdout.contains(&named), "{}", human.stdout);
+
+    // Any range overlapping the pause keeps all of it.
+    let keep = format!("c001:{}-{}", pause.0 + 2, pause.0 + 4);
+    let kept = qrec(
+        &env,
+        &dir,
+        &["autocut", "--keep", &keep, "--dry-run", "--json"],
+    );
+    kept.ok();
+    let plan = &kept.reply()["data"]["result"]["clips"][0];
+    assert_eq!(plan["silences"], 2, "{plan}");
+    assert_eq!(plan["excepted"], json!([[pause.0, pause.1]]), "{plan}");
+    let message = kept.reply()["data"]["message"].as_str().unwrap().to_owned();
+    assert!(message.ends_with("; 1 cut kept"), "{message}");
+
+    let before = fs::read_to_string(dir.join("qrec.json")).unwrap();
+    let apply = qrec(&env, &dir, &["autocut", "--keep", &keep, "--json"]);
+    apply.ok();
+    assert!(created(&apply).is_empty(), "the pause stays: one clip");
+    let rows = qrec(&env, &dir, &["clip", "list", "--json"]).reply()["data"].clone();
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    let after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("qrec.json")).unwrap()).unwrap();
+    let before: serde_json::Value = serde_json::from_str(&before).unwrap();
+    assert_eq!(after["autocut"], before["autocut"], "keep is no setting");
+
+    let missing = qrec(&env, &dir, &["autocut", "--keep", "c9z9:0-10", "--dry-run"]);
+    assert_eq!(missing.code, Some(7), "{}", missing.stderr);
+}
+
 #[test]
 fn export_end_to_end_never_overwrites() {
     let env = TestEnv::new();

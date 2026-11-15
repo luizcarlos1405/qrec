@@ -595,6 +595,10 @@ pub struct AutocutTarget {
     /// detected on A1 only").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
+    /// Ranges of the clip (`[in, out)` take frames) to keep: the command's
+    /// `overrides.keep` for this clip (A§5.7).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keep: Vec<[Frame; 2]>,
 }
 
 /// One track of an [`AutocutTarget`] and the analysis of its audio file.

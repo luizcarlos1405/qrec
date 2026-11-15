@@ -9,8 +9,8 @@ use std::fmt::Write as _;
 use qrec_core::keymap::{KeyChord, Keymap};
 use qrec_core::platform::AppImage;
 use qrec_core::protocol::{
-    AutocutPlanView, ClipRow, HelloInfo, HistoryRow, RecordStartedView, StatusView,
-    TakeFinalizedView, TakeRow,
+    AutocutClipView, AutocutPlanView, ClipRow, HelloInfo, HistoryRow, RecordStartedView,
+    StatusView, TakeFinalizedView, TakeRow,
 };
 use qrec_core::state::{Job, JobKind, RecordMode, RecordPhase};
 use qrec_core::time::duration_label;
@@ -544,6 +544,24 @@ pub(crate) fn autocut_plan(plan: &AutocutPlanView, dry_run: bool) -> Vec<String>
     }
     for skip in &plan.skipped {
         lines.push(format!("skipped {}: {}", skip.clip, skip.reason));
+    }
+    // Each cut as `--keep` names it, then the ones kept (issue #15).
+    let named = |runs: fn(&AutocutClipView) -> &Vec<[u64; 2]>| -> Vec<String> {
+        plan.clips
+            .iter()
+            .flat_map(|c| {
+                runs(c)
+                    .iter()
+                    .map(move |[a, b]| format!("{}:{a}-{b}", c.clip))
+            })
+            .collect()
+    };
+    let (cuts, kept) = (named(|c| &c.removed), named(|c| &c.excepted));
+    if dry_run && !cuts.is_empty() {
+        lines.push(format!("Cuts (keep one with --keep): {}", cuts.join(" ")));
+    }
+    if !kept.is_empty() {
+        lines.push(format!("Kept: {}", kept.join(" ")));
     }
     if dry_run {
         let silences: usize = plan.clips.iter().map(|c| c.silences).sum();
@@ -1238,6 +1256,8 @@ mod tests {
                 kept: vec![[0, 120], [180, 400]],
                 removed_frames: 60,
                 silences: 1,
+                excepted: vec![[400, 430]],
+                removed: vec![[120, 180]],
             }],
             skipped: vec![AutocutSkipView {
                 clip: "c8a1".parse().unwrap(),
@@ -1251,10 +1271,16 @@ mod tests {
                 "CLIP  TRACKS  SILENCES  REMOVED  KEPT (take frames)",
                 "c7f3  A1+A2          1      60f  0-120 180-400",
                 "skipped c8a1: entirely silent at -35 dB",
+                "Cuts (keep one with --keep): c7f3:120-180",
+                "Kept: c7f3:400-430",
                 "Would remove 1 silence (60f). Run without --dry-run to cut.",
             ]
         );
-        assert_eq!(autocut_plan(&plan, false).len(), 3);
+        assert_eq!(
+            autocut_plan(&plan, false).len(),
+            4,
+            "the kept cuts stay listed"
+        );
         let empty = AutocutPlanView {
             clips: vec![],
             skipped: vec![],
@@ -1269,6 +1295,8 @@ mod tests {
                 kept: vec![[12, 380]],
                 removed_frames: 32,
                 silences: 2,
+                excepted: Vec::new(),
+                removed: Vec::new(),
             }],
             skipped: vec![],
             edges_only: true,

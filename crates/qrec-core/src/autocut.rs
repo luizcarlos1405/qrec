@@ -15,7 +15,14 @@
 //!    silent at −35 dB": autocut never deletes a whole clip;
 //! 7. `edgesOnly` ⇒ the kept fragments become their hull, from where the
 //!    first starts to where the last ends: only the silence before the
-//!    first sound and after the last goes, and the clip stays one clip.
+//!    first sound and after the last goes, and the clip stays one clip;
+//! 8. `keep` ranges (a previewed cut kept, issue #15): every removed run of
+//!    steps 1–7 that overlaps one is kept whole. Its time no longer counts
+//!    as silence and the clip is planned again, so the fragments on both
+//!    sides join it (a short neighbor `minKeepMs` dropped comes back with
+//!    it); the kept runs are then added to what is kept, so no frame of
+//!    theirs is ever removed. A range that overlaps no run changes nothing
+//!    ([`cut_clip_keeping`]).
 //!
 //! Two precisions over A§5.7 (both pinned by `tests/props_autocut.rs`):
 //! - Overlapping or touching silences are merged before step 2. ffmpeg never
@@ -64,6 +71,11 @@ pub struct ClipCut {
     /// Silences removed: the runs of frames the cut takes out of the clip.
     pub silences: usize,
     pub removed_frames: Frame,
+    /// The runs the cut would remove but keeps, because a `keep` range
+    /// overlaps them (step 8): `[in, out)` take frames, sorted. They are
+    /// part of `kept` and count in neither `silences` nor `removed_frames`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excepted: Vec<[Frame; 2]>,
 }
 
 impl ClipCut {
@@ -182,11 +194,24 @@ pub fn plan_clip_on(
     params: &AutocutParams,
     fps: Fps,
 ) -> ClipCut {
-    cut_clip(
+    plan_clip_keeping(clip, tracks, params, fps, &[])
+}
+
+/// [`plan_clip_on`] keeping the removed runs that overlap `keep` (`[in,
+/// out)` take frames; step 8).
+pub fn plan_clip_keeping(
+    clip: &Clip,
+    tracks: &[TrackSilences<'_>],
+    params: &AutocutParams,
+    fps: Fps,
+    keep: &[[Frame; 2]],
+) -> ClipCut {
+    cut_clip_keeping(
         clip,
         &combined_silences(tracks, params.min_silence_ms),
         params,
         fps,
+        keep,
     )
 }
 
@@ -265,22 +290,115 @@ pub fn cut_clip(clip: &Clip, silences: &[Interval], params: &AutocutParams, fps:
     if params.edges_only {
         kept = hull(&kept);
     }
-    if kept.is_empty() {
-        return ClipCut {
-            kept,
-            silences: 0,
-            removed_frames: 0,
-        };
+    counted(clip, kept, Vec::new())
+}
+
+/// Steps 2–8: [`cut_clip`], then every removed run that overlaps a `keep`
+/// range (`[in, out)` take frames) is kept whole. Those runs stop counting
+/// as silence and the clip is planned again, so the fragments beside them
+/// join them; then they are added to the kept fragments, so none of their
+/// frames is removed whatever `minKeepMs` and the frame snapping do.
+pub fn cut_clip_keeping(
+    clip: &Clip,
+    silences: &[Interval],
+    params: &AutocutParams,
+    fps: Fps,
+    keep: &[[Frame; 2]],
+) -> ClipCut {
+    let base = cut_clip(clip, silences, params, fps);
+    if keep.is_empty() || base.keeps_nothing() {
+        return base;
     }
+    let excepted: Vec<[Frame; 2]> = base
+        .removed(clip)
+        .into_iter()
+        .filter(|&[a, b]| keep.iter().any(|&[k0, k1]| k0 < k1 && k0 < b && a < k1))
+        .collect();
+    if excepted.is_empty() {
+        return base;
+    }
+    let sound: Vec<Interval> = excepted
+        .iter()
+        .map(|&[a, b]| Interval {
+            start_ns: frame_ns(as_i64(a), fps),
+            end_ns: frame_ns(as_i64(b), fps),
+        })
+        .collect();
+    let rest = subtract(&union(silences), &sound);
+    let again = cut_clip(clip, &rest, params, fps);
+    let mut kept = merge_frames(again.kept.iter().chain(&excepted).copied());
+    if params.edges_only {
+        kept = hull(&kept);
+    }
+    counted(clip, kept, excepted)
+}
+
+/// The cut that keeps `kept` (none = nothing worth keeping), with its
+/// removed runs counted.
+fn counted(clip: &Clip, kept: Vec<[Frame; 2]>, excepted: Vec<[Frame; 2]>) -> ClipCut {
     let mut cut = ClipCut {
         kept,
         silences: 0,
         removed_frames: 0,
+        excepted,
     };
+    if cut.kept.is_empty() {
+        cut.excepted.clear();
+        return cut;
+    }
     let removed = cut.removed(clip);
     cut.silences = removed.len();
     cut.removed_frames = removed.iter().map(|&[a, b]| b - a).sum();
     cut
+}
+
+/// Frame runs sorted, with the overlapping and touching ones merged.
+fn merge_frames(runs: impl Iterator<Item = [Frame; 2]>) -> Vec<[Frame; 2]> {
+    let mut sorted: Vec<[Frame; 2]> = runs.filter(|[a, b]| a < b).collect();
+    sorted.sort();
+    let mut merged: Vec<[Frame; 2]> = Vec::with_capacity(sorted.len());
+    for [a, b] in sorted {
+        match merged.last_mut() {
+            Some(last) if a <= last[1] => last[1] = last[1].max(b),
+            _ => merged.push([a, b]),
+        }
+    }
+    merged
+}
+
+/// `a` (sorted, disjoint) without the parts inside any of `holes`.
+fn subtract(a: &[Interval], holes: &[Interval]) -> Vec<Interval> {
+    let mut out = Vec::with_capacity(a.len());
+    for &piece in a {
+        let mut rest = vec![piece];
+        for hole in holes {
+            rest = rest
+                .into_iter()
+                .flat_map(|p| {
+                    let mut parts = Vec::with_capacity(2);
+                    if hole.end_ns <= p.start_ns || p.end_ns <= hole.start_ns {
+                        parts.push(p);
+                    } else {
+                        if p.start_ns < hole.start_ns {
+                            parts.push(Interval {
+                                start_ns: p.start_ns,
+                                end_ns: hole.start_ns,
+                            });
+                        }
+                        if hole.end_ns < p.end_ns {
+                            parts.push(Interval {
+                                start_ns: hole.end_ns,
+                                end_ns: p.end_ns,
+                            });
+                        }
+                    }
+                    parts
+                })
+                .collect();
+        }
+        out.extend(rest);
+    }
+    out
 }
 
 /// Steps 2–4 in take-time nanoseconds: the parts of `range` outside every
@@ -753,7 +871,8 @@ mod tests {
                 ClipCut {
                     kept: vec![[0, 300]],
                     silences: 0,
-                    removed_frames: 0
+                    removed_frames: 0,
+                    excepted: Vec::new(),
                 },
                 "{silences:?}"
             );
@@ -787,6 +906,7 @@ mod tests {
             kept: vec![[0, 1]],
             silences: 0,
             removed_frames: 0,
+            excepted: Vec::new(),
         };
         assert_eq!(cut_clip(&clip(0, 1), &[], &params(), FPS30), whole);
         assert_eq!(
@@ -1287,6 +1407,101 @@ mod tests {
                     cut: cut_clip(&clip(a, b), &silences, &params, fps),
                     silences_ms,
                     params,
+                }
+            })
+            .collect();
+        insta::assert_yaml_snapshot!(table);
+    }
+
+    /// Issue #15: previewed cuts kept (step 8), pinned as a whole: the
+    /// plan without them, the `keep` ranges, and the plan with them.
+    #[test]
+    fn keep_snapshot() {
+        #[derive(Serialize)]
+        struct Case {
+            name: &'static str,
+            silences_ms: Vec<[i64; 2]>,
+            params: AutocutParams,
+            without: ClipCut,
+            keep: Vec<[Frame; 2]>,
+            with: ClipCut,
+        }
+        let p = params();
+        let speech = vec![[0, 512], [2005, 3008], [3605, 5013], [6016, 7000]];
+        let edges = AutocutParams {
+            edges_only: true,
+            ..p.clone()
+        };
+        // Which runs of the plan without `keep` to keep, or ranges as given.
+        enum Keep {
+            Runs(&'static [usize]),
+            Ranges(Vec<[Frame; 2]>),
+        }
+        let cases = [
+            // As the page sends it: a range exactly one cut long.
+            ("one cut kept", speech.clone(), p.clone(), Keep::Runs(&[1])),
+            (
+                "every cut kept",
+                speech.clone(),
+                p.clone(),
+                Keep::Runs(&[0, 1, 2, 3]),
+            ),
+            // A 30 ms click between two silences: under Min keep, it goes
+            // with them as one cut, and comes back with it.
+            (
+                "a click kept with its cut",
+                vec![[0, 500], [1000, 2000], [2030, 3000], [5000, 7000]],
+                p.clone(),
+                Keep::Ranges(vec![[35, 40]]),
+            ),
+            // Edges only: keeping the start leaves that edge untrimmed.
+            (
+                "edges only, the start kept",
+                speech.clone(),
+                edges,
+                Keep::Runs(&[0]),
+            ),
+            // From an older plan: overlapping part of a cut keeps all of it.
+            (
+                "a stale range keeps the cut it overlaps",
+                speech.clone(),
+                p.clone(),
+                Keep::Ranges(vec![[60, 70]]),
+            ),
+            (
+                "a range over no cut changes nothing",
+                speech.clone(),
+                p.clone(),
+                Keep::Ranges(vec![[100, 105]]),
+            ),
+        ];
+        let table: Vec<Case> = cases
+            .into_iter()
+            .map(|(name, silences_ms, params, keep)| {
+                let silences: Vec<Interval> = silences_ms.iter().map(|&[s, e]| ms(s, e)).collect();
+                let c = clip(0, 210);
+                let without = cut_clip(&c, &silences, &params, FPS30);
+                let keep = match keep {
+                    Keep::Runs(runs) => {
+                        let removed = without.removed(&c);
+                        runs.iter().map(|&i| removed[i]).collect()
+                    }
+                    Keep::Ranges(ranges) => ranges,
+                };
+                let with = cut_clip_keeping(&c, &silences, &params, FPS30, &keep);
+                for &[a, b] in &with.excepted {
+                    assert!(
+                        with.removed(&c).iter().all(|&[x, y]| y <= a || b <= x),
+                        "{name}: a kept cut is removed"
+                    );
+                }
+                Case {
+                    name,
+                    silences_ms,
+                    params,
+                    without,
+                    keep,
+                    with,
                 }
             })
             .collect();

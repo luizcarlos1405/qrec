@@ -206,10 +206,11 @@ qrec undo                               # qrec redo, qrec history --json
 Autocut silences. Preview first; applying is one undoable step:
 
 ```sh
-qrec autocut --dry-run --json   # data.result: {clips: [{clip, kept, removedFrames, silences}], skipped}
+qrec autocut --dry-run --json   # data.result: {clips: [{clip, kept, removed, removedFrames, silences}], skipped}
 qrec autocut                    # every clip; --clips c7f3,c8a1 for some
 qrec autocut --track A1 --threshold-db -40 --padding-ms 150
 qrec autocut --edges-only        # only each clip's leading and trailing silence
+qrec autocut --keep c7f3:120-168 # keep that cut (a range from `removed`); repeatable
 ```
 
 Export and stills (canvas size and fps):
