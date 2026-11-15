@@ -2378,6 +2378,48 @@ fn the_autocut_preview_follows_the_timeline() {
     assert_clean(nested.window(0));
 }
 
+/// The knobs say what they do (the owner asked, 2026-11-14): resting the
+/// pointer on Min keep's field shows its tooltip, a `raised` box beside
+/// the pointer, after GTK's hover delay.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_autocut_knobs_say_what_they_do() {
+    let mut nested = Nested::start(AREA, "knob-tooltips", Options::default());
+    let preset = ui(|u| {
+        u.canvas_mode = CanvasMode::Program;
+        u.selection = vec![clip("c3e9")];
+        u.playhead = 4842;
+    });
+    let project = fixture(&nested, DesignVariant::Base, &preset);
+    open(&mut nested, &project, levels(DESIGN_LEVELS));
+    nested.keys(&["-M", "shift", "-k", "c", "-m", "shift"]);
+    wait_for_label(nested.window(0), "Removes 4 silences");
+    let field = region(nested.window(0), "knob-field-3");
+    let (x, y) = center(field);
+    let s = nested.opts.scale;
+    let px = |v: f64| (v * s).round().max(0.0) as u32;
+    // Around the pointer: GTK puts the tooltip under it, or over it.
+    let around = [px(x - 260.0), px(y - 120.0), px(520.0), px(240.0)];
+    let raised = gui_support::token_rgb("swamp-night", "raised");
+    let before = gui_support::count_near(&nested.screenshot("knob-rest"), around, raised, 2);
+    nested.pointer().move_to(x, y);
+    thread::sleep(Duration::from_millis(1500));
+    nested.window(0).wait_idle();
+    let shot = nested.screenshot("knob-tooltip");
+    let after = gui_support::count_near(&shot, around, raised, 2);
+    crop(
+        &nested,
+        &shot,
+        [x - 260.0, y - 120.0, 520.0, 240.0],
+        "tooltip",
+    );
+    assert!(
+        after > before + 2000,
+        "no tooltip over Min keep's field: {before} → {after} raised px"
+    );
+    assert_clean(nested.window(0));
+}
+
 // ------------------------------------------------------- 1300 wide (Medium)
 
 /// The panel docked at 320 (G§3.15 Medium): the inspector's crop fields

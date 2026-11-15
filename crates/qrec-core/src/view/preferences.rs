@@ -33,12 +33,15 @@ pub struct GroupHeader {
     pub description: Option<String>,
 }
 
-/// A row's text: its label over its caption.
+/// A row's text: its label over its caption, and what the row shows on
+/// hover (the autocut knobs' meaning).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RowText {
     pub label: String,
     pub caption: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tooltip: Option<String>,
 }
 
 /// S21: theme, interface size, reduce motion, the squelch.
@@ -169,6 +172,7 @@ pub fn appearance_page(config: &UserConfig, config_path: &str) -> AppearancePage
         scale: RowText {
             label: "Interface size".to_owned(),
             caption: Some("Scales text, controls and the timeline together.".to_owned()),
+            tooltip: None,
         },
         scales: SCALES
             .iter()
@@ -239,6 +243,7 @@ pub fn recording_page(config: &UserConfig, config_path: &str) -> RecordingPage {
             text: RowText {
                 label: "Countdown".to_owned(),
                 caption: Some("Seconds before each take starts; 0 starts at once.".to_owned()),
+                tooltip: None,
             },
             value: config.recording.countdown_secs.to_string(),
             unit: "s".to_owned(),
@@ -256,6 +261,7 @@ pub fn recording_page(config: &UserConfig, config_path: &str) -> RecordingPage {
         preference: RowText {
             label: "H.264 encoder".to_owned(),
             caption: Some("VA-API encodes on the GPU, x264 on the CPU.".to_owned()),
+            tooltip: None,
         },
         preferences: [
             (EncoderPref::Auto, "Auto", "auto"),
@@ -274,6 +280,7 @@ pub fn recording_page(config: &UserConfig, config_path: &str) -> RecordingPage {
             caption: Some(
                 "Auto picks the first Intel or AMD render node, never NVIDIA.".to_owned(),
             ),
+            tooltip: None,
         },
         vaapi_device: config.encoder.vaapi_device.clone(),
         device_auto: "Auto".to_owned(),
@@ -305,6 +312,7 @@ pub fn autocut_page(config: &UserConfig, config_path: &str) -> AutocutPage {
             text: RowText {
                 label: knob.label().to_owned(),
                 caption: Some(caption.to_owned()),
+                tooltip: Some(knob.help().to_owned()),
             },
             value: shown_number(value),
             unit: knob.unit().to_owned(),

@@ -56,6 +56,7 @@ impl AutocutPage {
             &RowText {
                 label: view.auto_run.label.clone(),
                 caption: view.auto_run.caption.clone(),
+                tooltip: None,
             },
             &auto_run,
         ));

@@ -211,7 +211,10 @@ impl AutocutPage {
             scale.set_hexpand(true);
             scale.set_valign(gtk::Align::Start);
             scale.set_focus_on_click(false);
-            scale.update_property(&[gtk::accessible::Property::Label(knob.label())]);
+            scale.update_property(&[
+                gtk::accessible::Property::Label(knob.label()),
+                gtk::accessible::Property::Description(knob.help()),
+            ]);
             // Five ticks; the range's ends labelled under the track's ends
             // (S12: "−60" flush left, "−10" flush right).
             for i in 0..5 {
@@ -240,6 +243,9 @@ impl AutocutPage {
             field.set_unit_aliases(&knob.units()[1..]);
             field.widget().add_css_class("knob-field");
             field
+                .text_widget()
+                .update_property(&[gtk::accessible::Property::Description(knob.help())]);
+            field
                 .widget()
                 .set_widget_name(&format!("knob-field-{}", knobs.len()));
             field.widget().set_valign(gtk::Align::Start);
@@ -254,6 +260,20 @@ impl AutocutPage {
                 // The draft follows the slider as it moves: nothing to send.
                 |_| false,
             );
+            // What the knob does, over its caption, slider and field; not
+            // while the slider moves (its value tooltip shows then).
+            block.set_has_tooltip(true);
+            let moving = tooltip.clone();
+            block.connect_query_tooltip(guarded!(
+                "autocut: a knob's tooltip",
+                move |_, _, _, _, tip| {
+                    if moving.changing() {
+                        return false;
+                    }
+                    tip.set_text(Some(knob.help()));
+                    true
+                }
+            ));
             knobs.push(KnobView {
                 knob,
                 scale,

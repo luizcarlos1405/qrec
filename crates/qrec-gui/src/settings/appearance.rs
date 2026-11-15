@@ -99,6 +99,7 @@ impl AppearancePage {
             &qrec_core::view::preferences::RowText {
                 label: view.reduced_motion.label.clone(),
                 caption: view.reduced_motion.caption.clone(),
+                tooltip: None,
             },
             &motion,
         ));
@@ -115,6 +116,7 @@ impl AppearancePage {
             &qrec_core::view::preferences::RowText {
                 label: view.sounds.label.clone(),
                 caption: view.sounds.caption.clone(),
+                tooltip: None,
             },
             &squelch,
         ));

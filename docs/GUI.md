@@ -3059,7 +3059,11 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
 - **Autocut page** (`view::autocut`, S12, D-15):
   - `AutocutDraft::from(&Project)`. Ranges: threshold −60…−10 dB step 1;
     min silence 100…2000 ms step 50; padding 0…500 ms step 10; min keep
-    0…1000 ms step 10. "Detect silence on": the project scene's tracks,
+    0…1000 ms step 10. Each knob's tooltip says what it does exactly
+    (`Knob::help`; the owner asked, 2026-11-14): over its caption, slider
+    and field, not while the slider moves (its C26 value tooltip shows
+    then), and as the slider's and field's accessible description;
+    Settings › Autocut's rows show the same (`RowText.tooltip`). "Detect silence on": the project scene's tracks,
     "A1 · Yeti Nano (mic)", then a track the scope's clips are analyzed on
     that the project scene no longer has (a take recorded with it).
   - `dry_run(&State, &draft) -> Command`: scope = the selection, or All;

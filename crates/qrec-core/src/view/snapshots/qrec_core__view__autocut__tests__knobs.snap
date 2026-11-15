@@ -9,6 +9,7 @@ expression: "serde_json::json!({\"knobs\": knobs, \"tracks\": track_items(&state
         "−60",
         "−10"
       ],
+      "help": "Audio quieter than this counts as silence. Raise it (toward 0 dB) if background noise hides your pauses; lower it if quiet words get cut.",
       "label": "Threshold",
       "text": "−35",
       "unit": "dB"
@@ -18,6 +19,7 @@ expression: "serde_json::json!({\"knobs\": knobs, \"tracks\": track_items(&state
         "100",
         "2000"
       ],
+      "help": "Only quiet stretches at least this long can be cut. Shorter pauses, like the ones between words, always stay.",
       "label": "Min silence",
       "text": "400",
       "unit": "ms"
@@ -27,6 +29,7 @@ expression: "serde_json::json!({\"knobs\": knobs, \"tracks\": track_items(&state
         "0",
         "500"
       ],
+      "help": "Silence kept on each side of every cut, next to the sound, so words don't start or end abruptly. The timeline shows it in blue.",
       "label": "Padding",
       "text": "120",
       "unit": "ms"
@@ -36,6 +39,7 @@ expression: "serde_json::json!({\"knobs\": knobs, \"tracks\": track_items(&state
         "0",
         "1000"
       ],
+      "help": "The shortest sound worth keeping. A shorter one left between silences, like a click or a breath, is cut with them; padding doesn't count.",
       "label": "Min keep",
       "text": "200",
       "unit": "ms"

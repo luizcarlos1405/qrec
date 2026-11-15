@@ -17,7 +17,8 @@ expression: autocut
     {
       "text": {
         "label": "Threshold",
-        "caption": "Anything quieter is silence."
+        "caption": "Anything quieter is silence.",
+        "tooltip": "Audio quieter than this counts as silence. Raise it (toward 0 dB) if background noise hides your pauses; lower it if quiet words get cut."
       },
       "value": "−35",
       "unit": "dB",
@@ -29,7 +30,8 @@ expression: autocut
     {
       "text": {
         "label": "Min silence",
-        "caption": "Only silences at least this long are cut."
+        "caption": "Only silences at least this long are cut.",
+        "tooltip": "Only quiet stretches at least this long can be cut. Shorter pauses, like the ones between words, always stay."
       },
       "value": "400",
       "unit": "ms",
@@ -41,7 +43,8 @@ expression: autocut
     {
       "text": {
         "label": "Padding",
-        "caption": "Audio kept on each side of speech."
+        "caption": "Audio kept on each side of speech.",
+        "tooltip": "Silence kept on each side of every cut, next to the sound, so words don't start or end abruptly. The timeline shows it in blue."
       },
       "value": "80",
       "unit": "ms",
@@ -53,7 +56,8 @@ expression: autocut
     {
       "text": {
         "label": "Min keep",
-        "caption": "Sounds shorter than this between cuts are cut too."
+        "caption": "Sounds shorter than this between cuts are cut too.",
+        "tooltip": "The shortest sound worth keeping. A shorter one left between silences, like a click or a breath, is cut with them; padding doesn't count."
       },
       "value": "50",
       "unit": "ms",

@@ -98,6 +98,30 @@ impl Knob {
         }
     }
 
+    /// What the knob does, exactly: its tooltip on the autocut page and in
+    /// Settings › Autocut (the owner asked for them, 2026-11-14).
+    pub fn help(self) -> &'static str {
+        match self {
+            Knob::Threshold => {
+                "Audio quieter than this counts as silence. Raise it (toward 0 dB) if \
+                 background noise hides your pauses; lower it if quiet words get cut."
+            }
+            Knob::MinSilence => {
+                "Only quiet stretches at least this long can be cut. Shorter pauses, \
+                 like the ones between words, always stay."
+            }
+            Knob::Padding => {
+                "Silence kept on each side of every cut, next to the sound, so words \
+                 don't start or end abruptly. The timeline shows it in blue."
+            }
+            Knob::MinKeep => {
+                "The shortest sound worth keeping. A shorter one left between \
+                 silences, like a click or a breath, is cut with them; padding \
+                 doesn't count."
+            }
+        }
+    }
+
     /// The unit in the value field.
     pub fn unit(self) -> &'static str {
         self.units()[0]
@@ -981,6 +1005,7 @@ mod tests {
                     "unit": k.unit(),
                     "text": k.text(&draft),
                     "ends": k.end_labels(),
+                    "help": k.help(),
                 })
             })
             .collect();

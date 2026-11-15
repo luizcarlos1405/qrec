@@ -144,6 +144,8 @@ pub(crate) fn row(text: &RowText, control: &impl IsA<gtk::Widget>) -> gtk::Box {
         words.append(&caption);
     }
     row.append(&words);
+    // Over the whole row, the field too (the autocut knobs' meaning).
+    row.set_tooltip_text(text.tooltip.as_deref());
     let control = control.as_ref();
     control.set_halign(gtk::Align::End);
     control.set_valign(gtk::Align::Center);
