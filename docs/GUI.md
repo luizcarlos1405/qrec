@@ -1386,8 +1386,14 @@ time; A§8.7 rules for every child).
 - **Silence overlay** (WP3): `view::timeline::silence_spans(state, files:
   &BTreeMap<String, FileFact>, cached: &BTreeMap<SilenceKey,
   Vec<Interval>>)` → hatches on the autocut track's lane, at the
-  project's current threshold and min silence, from `runtime.silence` plus
-  the `CachedSilence` answers. The file facts (`facts::file_fact`) are
+  project's current autocut settings, from `runtime.silence` plus
+  the `CachedSilence` answers: what autocut would cut of each clip
+  (`autocut::plan_clip`, `HatchKind::Cut`) and the padding it keeps
+  beside each cut (`ClipCut::padding`, `HatchKind::Padding`). A clip
+  autocut would leave as it is gets none, so after a cut the lane is
+  clean and a hatch always means `c` removes it (owner's call,
+  2026-11-14: the padding of a silence that was already cut used to stay
+  hatched, and `c` then found nothing). The file facts (`facts::file_fact`) are
   stat'ed on a worker. The timeline asks for each cached analysis once per
   `SilenceKey` its answer carries (`timeline::control::silence_requests`:
   the file's version, the threshold and the min silence), again whenever
@@ -1591,7 +1597,7 @@ time; A§8.7 rules for every child).
 - **Generated tokens.** From `design/tokens/qrec-tokens.json`, committed
   (the Nix build source excludes `design/`):
   - `resources/theme/tokens/{swamp-night,swamp-day,dragons-keep,ogre-mode}.css`:
-    `:root { --qrec-<token>: …; }` with 75 colors, 15 numbers in px and 3
+    `:root { --qrec-<token>: …; }` with 76 colors, 15 numbers in px and 3
     font names;
   - `src/theme/palette.rs`: `Palette` with one `gdk::RGBA` field per color
     token plus `take: [RGBA; 8]` and `take_tint: [RGBA; 8]`, one per theme.
@@ -2645,9 +2651,12 @@ As built (WP6, round 3):
   - hatches: silence spans on the autocut track's lane; autocut preview
     spans at full strength, the same ranges dimmed with `bg-55` on the
     other rows, and a `warning-text` tag ("−1.6 s") 20 px above. As built
-    (WP3): the spans are the analysis intervals rounded to frames, made
-    once per state; the autocut preview hatches in `warning`, the known
-    silences in `hatch-stripe`; at frame level the waveform is the 1 ms
+    (WP3): the spans are the planned cuts in frames, made once per state;
+    the autocut preview hatches in `warning`, the lane's cuts in
+    `hatch-stripe`, and both draw the padding beside each cut as a flat
+    `padding-fill` (no edges, no dim, no tag); while the autocut page's
+    preview shows, the lane's own spans don't (its draft may differ from
+    the settings); at frame level the waveform is the 1 ms
     min/max envelope (S09 draws a sample curve), and waveforms are color
     rects, not path fills (frame time on 300 clips).
 - **Ruler**: label interval L = the smallest of 1f, 2f, 5f, 10f, 15f, 1s,
@@ -3109,7 +3118,9 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
   S12 that wide). The timeline draws `LocalUi.autocut_preview` (WP3's
   canvas): each region hatched in `warning` with its edges on its lane,
   the same range dimmed (`bg-55`) on the video row and the other lanes,
-  its tag 22 px above the lane; the toolbar's settings icon runs
+  its tag 22 px above the lane, and the draft's padding beside it in
+  `padding-fill` (`preview_spans_for(plan, state, track, padding_ms)`):
+  moving Padding shows what it keeps; the toolbar's settings icon runs
   `autocut.page` (`autocut.preview`, G§3.8 step 10).
 
 **Saved scenes** (SPEC §5.6, `panel::scenes`, boards

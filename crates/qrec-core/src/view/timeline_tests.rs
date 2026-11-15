@@ -687,7 +687,8 @@ fn lane_segments_map_file_time() {
     assert_eq!(c2d0.color, format::take_color(&TakeId::numbered(5)));
 }
 
-/// S08's two silences of c2d0, from the analysis cache.
+/// S08's two silences of c2d0, from the analysis cache: what autocut cuts
+/// of each, with the padding it keeps beside it.
 #[test]
 fn silence_spans_from_the_cache() {
     let state = zoomed(1.6, 1950);
@@ -707,21 +708,26 @@ fn silence_spans_from_the_cache() {
     let cached = BTreeMap::from([(key.clone(), vec![ms(4_000, 5_267), ms(9_600, 10_100)])]);
     let spans = silence_spans(&state, &facts, &cached);
     let view = Viewport::from_state(&state, W).unwrap();
-    let xs: Vec<(f64, f64)> = spans
-        .iter()
-        .map(|s| {
-            (
-                view.x_of_frame(s.from) + HEADER_WIDTH,
-                view.x_of_frame(s.to) + HEADER_WIDTH,
-            )
-        })
-        .collect();
+    let x = |f: Frame| view.x_of_frame(f) + HEADER_WIDTH;
+    // Take frames 120–158 and 288–303 (c2d0 starts at 2084, take frame
+    // 12): 120 ms of padding (4 frames) stays on each side of each cut.
     assert_eq!(
-        spans.iter().map(|s| (s.from, s.to)).collect::<Vec<_>>(),
-        [(2192, 2230), (2360, 2375)]
+        spans
+            .iter()
+            .map(|s| (s.from, s.to, s.kind))
+            .collect::<Vec<_>>(),
+        [
+            (2192, 2196, HatchKind::Padding),
+            (2196, 2226, HatchKind::Cut),
+            (2226, 2230, HatchKind::Padding),
+            (2360, 2364, HatchKind::Padding),
+            (2364, 2371, HatchKind::Cut),
+            (2371, 2375, HatchKind::Padding),
+        ]
     );
-    assert!((xs[0].0 - 563.2).abs() < 1e-6 && (xs[0].1 - 624.0).abs() < 1e-6);
-    assert!((xs[1].0 - 832.0).abs() < 1e-6 && (xs[1].1 - 856.0).abs() < 1e-6);
+    // S08's silences, 563.2–624 and 832–856 px, padding included.
+    assert!((x(2192) - 563.2).abs() < 1e-6 && (x(2230) - 624.0).abs() < 1e-6);
+    assert!((x(2360) - 832.0).abs() < 1e-6 && (x(2375) - 856.0).abs() < 1e-6);
     assert!(
         spans
             .iter()
@@ -730,9 +736,46 @@ fn silence_spans_from_the_cache() {
     // The runtime's analyses count too; a stale key shows nothing.
     let mut live = state.clone();
     live.runtime.silence.insert(key, vec![ms(4_000, 5_267)]);
-    assert_eq!(silence_spans(&live, &facts, &BTreeMap::new()).len(), 1);
+    assert_eq!(silence_spans(&live, &facts, &BTreeMap::new()).len(), 3);
     let stale = BTreeMap::from([(fact.path.clone(), FileFact { bytes: 1, ..fact })]);
     assert!(silence_spans(&state, &stale, &cached).is_empty());
+}
+
+/// After the cut, c2d0's fragments keep only padding: the lane is clean
+/// (a hatch means `c` removes it), though the silences are still there.
+#[test]
+fn a_cut_leaves_no_hatch() {
+    let mut state = zoomed(1.6, 1950);
+    let fact = FileFact {
+        path: "takes/take-0005/A1-mic.mka".into(),
+        bytes: 1234,
+        mtime_ns: 99,
+    };
+    let key = SilenceKey::compute(&fact.path, fact.bytes, fact.mtime_ns, -35.0, 400);
+    let facts = BTreeMap::from([(fact.path.clone(), fact)]);
+    let ms = |a: i64, b: i64| Interval {
+        start_ns: a * NS_PER_MS,
+        end_ns: b * NS_PER_MS,
+    };
+    let cached = BTreeMap::from([(key, vec![ms(4_000, 5_267), ms(9_600, 10_100)])]);
+    let clips = &mut state.project.timeline.clips;
+    let at = clips.iter().position(|c| c.id == id("c2d0")).unwrap();
+    let c2d0 = clips[at].clone();
+    let piece = |name: &str, in_: Frame, out: Frame| Clip {
+        id: id(name),
+        in_,
+        out,
+        ..c2d0.clone()
+    };
+    clips.splice(
+        at..=at,
+        [
+            piece("c2d0", 12, 124),
+            piece("cf01", 154, 292),
+            piece("cf02", 299, 1104),
+        ],
+    );
+    assert!(silence_spans(&state, &facts, &cached).is_empty());
 }
 
 // ------------------------------------------------------------- thumbnails

@@ -35,10 +35,13 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{Frame, TakeId, TrackId};
+use crate::model::AutocutSettings;
 use crate::model::{AudioRole, AudioTrack, Clip, Fps, Project, Scene, Stream, StreamKind, Take};
 use crate::protocol::event::Interval;
 use crate::state::AutocutParams;
-use crate::time::{NS_PER_MS, duration_label, frame_ns, ns_to_frame_ceil, ns_to_frame_floor};
+use crate::time::{
+    NS_PER_MS, duration_label, frame_ns, ns_to_frame_ceil, ns_to_frame_floor, ns_to_frame_round,
+};
 
 /// The entry points other owners call: autocut after a take (`autoRunAfterTake`)
 /// and jobs that finished analyzing while a recording ran.
@@ -89,12 +92,52 @@ impl ClipCut {
         gaps
     }
 
+    /// The padding the cut keeps beside each removed run: `padding_ms`
+    /// before its start and after its end (rounded to frames), as `[in,
+    /// out)` take frames inside the clip, sorted; none on a side where the
+    /// run reaches the clip's edge. The silence there stays: what the
+    /// timeline shows in `padding-fill` next to the hatch (S08, S12).
+    pub fn padding(&self, clip: &Clip, padding_ms: u32, fps: Fps) -> Vec<[Frame; 2]> {
+        let pad = i64::from(padding_ms) * NS_PER_MS;
+        let mut runs = Vec::new();
+        if pad == 0 {
+            return runs;
+        }
+        for [a, b] in self.removed(clip) {
+            if a > clip.in_ {
+                let from = ns_to_frame_round(frame_ns(as_i64(a), fps).saturating_sub(pad), fps);
+                let from = as_frame(from).max(clip.in_);
+                if from < a {
+                    runs.push([from, a]);
+                }
+            }
+            if b < clip.out {
+                let to = ns_to_frame_round(frame_ns(as_i64(b), fps).saturating_add(pad), fps);
+                let to = as_frame(to).min(clip.out);
+                if b < to {
+                    runs.push([b, to]);
+                }
+            }
+        }
+        runs
+    }
+
     /// The removed media time (each run as `frame_ns(out) − frame_ns(in)`).
     pub fn removed_ns(&self, clip: &Clip, fps: Fps) -> i64 {
         self.removed(clip)
             .iter()
             .map(|&[a, b]| frame_ns(as_i64(b), fps) - frame_ns(as_i64(a), fps))
             .sum()
+    }
+}
+
+/// The parameters a project's autocut settings plan with.
+pub fn params_of(settings: &AutocutSettings) -> AutocutParams {
+    AutocutParams {
+        threshold_db: settings.threshold_db,
+        min_silence_ms: settings.min_silence_ms,
+        padding_ms: settings.padding_ms,
+        min_keep_ms: settings.min_keep_ms,
     }
 }
 
@@ -649,6 +692,39 @@ mod tests {
         let word = [ms(1000, 3000), ms(3250, 5000)];
         let cut = cut_clip(&clip(0, 300), &word, &params(), FPS30);
         assert_eq!(cut.kept, vec![[0, 34], [86, 102], [146, 300]]);
+    }
+
+    #[test]
+    fn padding_sits_beside_each_cut_inside_the_clip() {
+        // Removal 1.12–1.88 s → frames [34, 56): 120 ms (3.6 → 4 frames)
+        // of kept silence on each side.
+        let one = cut_clip(&clip(0, 300), &[ms(1000, 2000)], &params(), FPS30);
+        assert_eq!(
+            one.padding(&clip(0, 300), 120, FPS30),
+            vec![[30, 34], [56, 60]]
+        );
+        // A silence across the clip's start: the cut reaches the edge, so
+        // only its end has padding; none at all without padding.
+        let head = cut_clip(&clip(90, 150), &[ms(2000, 3500)], &params(), FPS30);
+        assert_eq!(head.removed(&clip(90, 150)), vec![[90, 101]]);
+        assert_eq!(head.padding(&clip(90, 150), 120, FPS30), vec![[101, 105]]);
+        assert!(head.padding(&clip(90, 150), 0, FPS30).is_empty());
+        // Two silences merged across a click: padding at the outer ends only.
+        let click = [
+            ms(1000, 3000),
+            Interval {
+                start_ns: 3000 * MS + 21_000,
+                end_ns: 5000 * MS,
+            },
+        ];
+        let merged = cut_clip(&clip(0, 300), &click, &params(), FPS30);
+        assert_eq!(
+            merged.padding(&clip(0, 300), 120, FPS30),
+            vec![[30, 34], [146, 150]]
+        );
+        // A clip left alone has none.
+        let whole = cut_clip(&clip(0, 300), &[], &params(), FPS30);
+        assert!(whole.padding(&clip(0, 300), 120, FPS30).is_empty());
     }
 
     #[test]

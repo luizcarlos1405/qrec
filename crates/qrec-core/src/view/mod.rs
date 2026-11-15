@@ -179,7 +179,8 @@ pub struct AutocutPreview {
     pub analyzing: bool,
 }
 
-/// One silence autocut would remove, in timeline frames before the cut.
+/// One silence autocut would remove, or the padding it keeps beside one,
+/// in timeline frames before the cut.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutocutPreviewSpan {
@@ -187,7 +188,8 @@ pub struct AutocutPreviewSpan {
     pub track: TrackId,
     pub from: Frame,
     pub to: Frame,
-    /// "−1.6 s".
+    pub kind: timeline::HatchKind,
+    /// "−1.6 s" on a cut; empty on padding.
     pub tag: String,
 }
 

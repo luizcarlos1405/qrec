@@ -203,6 +203,12 @@
       "dragons-keep": "#F28C2899",
       "ogre-mode": "#D98A2B99"
     },
+    "padding-fill": {
+      "swamp-night": "#448CE159",
+      "swamp-day": "#01498459",
+      "dragons-keep": "#4989D259",
+      "ogre-mode": "#4B90D559"
+    },
     "wave": {
       "swamp-night": "#9BA582",
       "swamp-day": "#635F41",

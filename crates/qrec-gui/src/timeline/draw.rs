@@ -12,8 +12,8 @@ use gtk::prelude::*;
 use qrec_core::view::AutocutPreview;
 use qrec_core::view::ruler::{self, TickKind};
 use qrec_core::view::timeline::{
-    self as tl, ClipBox, ClipLabel, Ghost, Lane, LaneSegment, MovePreview, Rows, STRIPE_PX,
-    SilenceSpan, TagAnchor, ThumbImage, TrimEdge, TrimPreview, Viewport, WAVE_HALF_PX,
+    self as tl, ClipBox, ClipLabel, Ghost, HatchKind, Lane, LaneSegment, MovePreview, Rows,
+    STRIPE_PX, SilenceSpan, TagAnchor, ThumbImage, TrimEdge, TrimPreview, Viewport, WAVE_HALF_PX,
 };
 use qrec_core::{Frame, State};
 use qrec_shell::media::preview::PeakLevels;
@@ -417,9 +417,14 @@ pub fn amplitudes(levels: &PeakLevels, seg: &LaneSegment, x0: f64, x1: f64) -> V
     out
 }
 
-/// The silences on the autocut track's lane (S08): the hatch with its
-/// warning edges.
+/// The autocut track's lane (S08): what autocut would cut, hatched with
+/// its warning edges, and the padding it keeps beside each cut in
+/// `padding-fill`. The autocut page's preview replaces them while it shows
+/// (its draft may differ from the project's settings).
 fn silences(s: &gtk::Snapshot, sc: &Scene<'_>) {
+    if sc.autocut.is_some() {
+        return;
+    }
     let p = sc.palette;
     for span in sc.silences {
         let Some(i) = sc.lane_index(&span.track) else {
@@ -430,15 +435,21 @@ fn silences(s: &gtk::Snapshot, sc: &Scene<'_>) {
             continue;
         }
         let r = rect(x0, sc.rows.lane_y(i), x1 - x0, sc.rows.lane);
-        paint::hatch(s, &r, &p.hatch_stripe, 0.0);
-        paint::edges(s, &r, &p.warning);
+        match span.kind {
+            HatchKind::Cut => {
+                paint::hatch(s, &r, &p.hatch_stripe, 0.0);
+                paint::edges(s, &r, &p.warning);
+            }
+            HatchKind::Padding => s.append_color(&p.padding_fill, &r),
+        }
     }
 }
 
 /// The autocut page's preview (S12, `LocalUi.autocut_preview`, WP5's):
 /// each region hatched in `warning` at full strength on its lane, with its
 /// warning edges, the same range dimmed (`bg-55`) on the video row and the
-/// other lanes, and its "−1.6 s" tag 22 px above the lane.
+/// other lanes, and its "−1.6 s" tag 22 px above the lane; the padding
+/// kept beside each region in `padding-fill` on the lane.
 fn autocut(s: &gtk::Snapshot, sc: &Scene<'_>, preview: &AutocutPreview) {
     let p = sc.palette;
     let rows = sc.rows;
@@ -451,6 +462,10 @@ fn autocut(s: &gtk::Snapshot, sc: &Scene<'_>, preview: &AutocutPreview) {
             continue;
         }
         let w = x1 - x0;
+        if span.kind == HatchKind::Padding {
+            s.append_color(&p.padding_fill, &rect(x0, rows.lane_y(lane), w, rows.lane));
+            continue;
+        }
         s.append_color(&p.bg_55, &rect(x0, 0.0, w, rows.video));
         for other in (0..sc.lanes.len()).filter(|&i| i != lane) {
             s.append_color(&p.bg_55, &rect(x0, rows.lane_y(other), w, rows.lane));

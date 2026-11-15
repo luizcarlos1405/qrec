@@ -35,6 +35,7 @@ colors:
   caret: "#8FC43A"
   ghost-fill: "#E5483B29"
   hatch-stripe: "#D98A2B99"
+  padding-fill: "#448CE159"
   wave: "#9BA582"
   wave-dim: "#9BA58259"
   meter-green: "#8FC43A"
@@ -111,6 +112,7 @@ colors:
   day-caret: "#446E04"
   day-ghost-fill: "#CF3B3C29"
   day-hatch-stripe: "#B8661A99"
+  day-padding-fill: "#01498459"
   day-wave: "#635F41"
   day-wave-dim: "#635F4159"
   day-meter-green: "#446E04"
@@ -187,6 +189,7 @@ colors:
   keep-caret: "#E0457B"
   keep-ghost-fill: "#FF3B3029"
   keep-hatch-stripe: "#F28C2899"
+  keep-padding-fill: "#4989D259"
   keep-wave: "#A49AA5"
   keep-wave-dim: "#A49AA559"
   keep-meter-green: "#62C26C"
@@ -263,6 +266,7 @@ colors:
   ogre-caret: "#B5D334"
   ogre-ghost-fill: "#E8432F29"
   ogre-hatch-stripe: "#D98A2B99"
+  ogre-padding-fill: "#4B90D559"
   ogre-wave: "#D0C79C"
   ogre-wave-dim: "#D0C79C59"
   ogre-meter-green: "#B5D334"
@@ -673,6 +677,7 @@ Derived tokens are computed from the base tokens, never picked by eye. Alpha tok
 | `caret` | Drag-move insertion caret | = accent | `#8FC43A` | `#446E04` | `#E0457B` | `#B5D334` |
 | `ghost-fill` | Recording ghost clip fill (stroke uses record, dashed) | record @ 16% | `#E5483B29` | `#CF3B3C29` | `#FF3B3029` | `#E8432F29` |
 | `hatch-stripe` | Silence-region hatch stripes (edges use warning, solid 1 px) | warning @ 60% | `#D98A2B99` | `#B8661A99` | `#F28C2899` | `#D98A2B99` |
+| `padding-fill` | The padding autocut keeps beside a cut: a flat fill, no edges, next to the hatch | take-fairy @ 35% | `#448CE159` | `#01498459` | `#4989D259` | `#4B90D559` |
 | `wave` | Waveform fill | = muted | `#9BA582` | `#635F41` | `#A49AA5` | `#D0C79C` |
 | `wave-dim` | Waveform of a muted or non-soloed lane | muted @ 35% | `#9BA58259` | `#635F4159` | `#A49AA559` | `#D0C79C59` |
 | `meter-green` | Level meter, -60 to -18 dBFS | = accent (Keep: own green) | `#8FC43A` | `#446E04` | `#62C26C` | `#B5D334` |

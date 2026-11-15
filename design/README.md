@@ -86,7 +86,7 @@ npx htmlboard@0.10.0 design/boards --root . -p 3060   # from the repo root, then
 
 | File | What it holds |
 | --- | --- |
-| [`tokens/qrec-tokens.json`](tokens/qrec-tokens.json) | The source: 75 colors with their four theme values, 15 numbers (spacing and radii, in px) and 3 font families |
+| [`tokens/qrec-tokens.json`](tokens/qrec-tokens.json) | The source: 76 colors with their four theme values, 15 numbers (spacing and radii, in px) and 3 font families |
 | [`boards/themes.css`](boards/themes.css) | Generated from it: the four themes as `--qrec-<token>` custom properties, Swamp Night on `:root` |
 
 The JSON was generated from the pen.dev variables on 2026-10-14 and is edited by hand since 2026-11-10. Every color, spacing and radius value matches the frontmatter of [DESIGN.md](../DESIGN.md). The type scale, font fallbacks, shadow geometry, the 0.45 disabled opacity and the motion timings aren't variables; they stay in DESIGN.md.

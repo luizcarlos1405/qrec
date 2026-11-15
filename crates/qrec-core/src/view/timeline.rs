@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::autocut::{analysis_source, to_take_time};
+use crate::autocut::{analysis_source, params_of, plan_clip};
 use crate::ctx::FileFact;
 use crate::export_plan::shown_frame;
 use crate::ids::{ClipId, Frame, TakeId, TrackId};
@@ -33,7 +33,7 @@ use crate::model::{AudioRole, AudioTrack, Clip, Fps, Layer, Stream, StreamKind, 
 use crate::protocol::command::{Command, InsertAt, MoveTo, Nullable, UiPatch};
 use crate::protocol::event::Interval;
 use crate::state::{JobKind, RecordMode, RecordPhase, SilenceKey, State, UiState};
-use crate::time::{NS_PER_MS, NS_PER_SEC, TimeArg, ns_to_frame_floor, ns_to_frame_round};
+use crate::time::{NS_PER_MS, NS_PER_SEC, TimeArg, ns_to_frame_floor};
 use crate::timeline::{position_of, total_frames};
 use crate::view::{HintItem, format};
 
@@ -1144,7 +1144,17 @@ pub fn thumb_tiles(state: &State, viewport: &Viewport, clip_box: &ClipBox) -> Ve
 
 // ------------------------------------------------------------- hatches
 
-/// A known silence on a lane, in timeline frames.
+/// What a hatch on an autocut lane shows (S08, S12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HatchKind {
+    /// What autocut cuts: `hatch-stripe` stripes with `warning` edges.
+    Cut,
+    /// The silence it keeps beside a cut (`paddingMs`): `padding-fill`.
+    Padding,
+}
+
+/// A hatch on a lane, in timeline frames.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SilenceSpan {
@@ -1152,6 +1162,7 @@ pub struct SilenceSpan {
     pub track: TrackId,
     pub from: Frame,
     pub to: Frame,
+    pub kind: HatchKind,
 }
 
 /// The audio files whose silences the overlay can show: the analysis
@@ -1173,10 +1184,12 @@ pub fn silence_files(state: &State) -> Vec<String> {
     files.into_iter().collect()
 }
 
-/// The silences to hatch on the autocut track's lane (S08), at the
-/// project's threshold and minimum silence: from `runtime.silence` and the
-/// cached analyses, keyed with the files' facts. Each is the analysis
-/// interval in timeline frames (rounded), within its clip.
+/// The hatches of the autocut track's lane (S08): what autocut would cut
+/// at the project's settings and the padding it keeps beside each cut,
+/// planned (`autocut::plan_clip`) from `runtime.silence` and the cached
+/// analyses, keyed with the files' facts; per clip in time order. A clip
+/// autocut would leave as it is shows none, so after a cut the lane is
+/// clean and a hatch always means `c` removes it.
 pub fn silence_spans(
     state: &State,
     files: &BTreeMap<String, FileFact>,
@@ -1185,6 +1198,7 @@ pub fn silence_spans(
     let project = &state.project;
     let fps = project.canvas.fps;
     let settings = &project.autocut;
+    let params = params_of(settings);
     let mut spans = Vec::new();
     let mut start: Frame = 0;
     for clip in &project.timeline.clips {
@@ -1212,19 +1226,23 @@ pub fn silence_spans(
         let Some(found) = state.runtime.silence.get(&key).or_else(|| cached.get(&key)) else {
             continue;
         };
-        for silence in to_take_time(found, stream, track) {
-            let from = ns_to_frame_round(silence.start_ns, fps).max(clip.in_ as i64) as Frame;
-            let to = ns_to_frame_round(silence.end_ns, fps).min(clip.out as i64);
-            if to <= from as i64 {
-                continue;
-            }
-            spans.push(SilenceSpan {
-                clip: clip.id.clone(),
-                track: track.id.clone(),
-                from: pos + (from - clip.in_),
-                to: pos + (to as Frame - clip.in_),
-            });
+        let cut = plan_clip(clip, stream, track, found, &params, fps);
+        if !cut.changes(clip) {
+            continue;
         }
+        let cuts = cut.removed(clip).into_iter().map(|r| (r, HatchKind::Cut));
+        let pads = cut.padding(clip, params.padding_ms, fps);
+        let mut runs: Vec<([Frame; 2], HatchKind)> = cuts
+            .chain(pads.into_iter().map(|r| (r, HatchKind::Padding)))
+            .collect();
+        runs.sort_by_key(|([a, _], _)| *a);
+        spans.extend(runs.into_iter().map(|([a, b], kind)| SilenceSpan {
+            clip: clip.id.clone(),
+            track: track.id.clone(),
+            from: pos + (a - clip.in_),
+            to: pos + (b - clip.in_),
+            kind,
+        }));
     }
     spans
 }

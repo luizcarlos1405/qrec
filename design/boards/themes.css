@@ -25,6 +25,7 @@
   --qrec-muted: #9BA582;
   --qrec-muted-20: #9BA58233;
   --qrec-muted-40: #9BA58266;
+  --qrec-padding-fill: #448CE159;
   --qrec-playhead: #E3B23C;
   --qrec-pressed: #E8E6C81F;
   --qrec-project-canvas: #000000;
@@ -122,6 +123,7 @@
   --qrec-muted: #635F41;
   --qrec-muted-20: #635F4133;
   --qrec-muted-40: #635F4166;
+  --qrec-padding-fill: #01498459;
   --qrec-playhead: #A77710;
   --qrec-pressed: #2A2A181F;
   --qrec-project-canvas: #000000;
@@ -201,6 +203,7 @@
   --qrec-muted: #A49AA5;
   --qrec-muted-20: #A49AA533;
   --qrec-muted-40: #A49AA566;
+  --qrec-padding-fill: #4989D259;
   --qrec-playhead: #F28C28;
   --qrec-pressed: #EDE6E81F;
   --qrec-project-canvas: #000000;
@@ -280,6 +283,7 @@
   --qrec-muted: #D0C79C;
   --qrec-muted-20: #D0C79C33;
   --qrec-muted-40: #D0C79C66;
+  --qrec-padding-fill: #4B90D559;
   --qrec-playhead: #E7C86A;
   --qrec-pressed: #F4EDD01F;
   --qrec-project-canvas: #000000;

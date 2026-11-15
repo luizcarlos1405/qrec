@@ -761,8 +761,10 @@ pxPerFrame`, with no minimum width distortion. A clip that is too narrow
     that color.
   - One waveform lane per audio track, linked to the clips, each with mute
     and solo.
-  - Silence regions detected by autocut appear hatched in the lane of the
-    track autocut uses.
+  - What autocut would cut appears hatched in the lane of the track
+    autocut uses, with the padding it keeps beside each cut in blue. A
+    clip autocut would leave as it is shows neither, so after a cut the
+    lane is clean.
 - **Navigation:**
   - Wheel scrolls horizontally, and middle-drag pans.
   - Clicking the ruler seeks, and dragging it scrubs (with audio scrub).
@@ -852,7 +854,7 @@ silencedetect=noise=<thresholdDb>dB:d=<minSilence> -vn -f null -` on
      edge, or with undo.
 4. **Preview first (optional).**
    - Shift+C opens autocut settings with a live preview of what would be cut:
-     hatched regions with sliders.
+     hatched regions with sliders, and the padding kept beside each in blue.
    - The CLI equivalent is `qrec autocut --dry-run`, which prints the planned
      segments.
 5. **Clicks at cuts.** Preview and export apply a 5 ms audio fade at every

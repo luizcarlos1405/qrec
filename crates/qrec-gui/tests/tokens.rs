@@ -336,7 +336,7 @@ fn the_generated_files_match_the_tokens() {
     };
     let tokens = read_tokens(&json);
     assert_eq!(tokens.themes.len(), 4, "four themes (SPEC §15.2)");
-    assert_eq!(tokens.colors.len(), 75, "75 color tokens (G§3.14)");
+    assert_eq!(tokens.colors.len(), 76, "76 color tokens (G§3.14)");
     assert_eq!(tokens.numbers.len(), 15, "15 numbers (G§3.14)");
     assert_eq!(tokens.strings.len(), 3, "3 font names (G§3.14)");
     let mut stale = Vec::new();

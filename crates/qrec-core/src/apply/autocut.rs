@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 use serde_json::{Value, json};
 
 use crate::apply::Outcome;
-use crate::autocut::{analysis_source, db_label};
+use crate::autocut::{analysis_source, db_label, params_of};
 use crate::ctx::Ctx;
 use crate::error::CoreError;
 use crate::ids::{ClipId, ReqId, TrackId};
@@ -274,15 +274,6 @@ fn effective_params(
     };
     check_params(&params)?;
     Ok(params)
-}
-
-fn params_of(settings: &AutocutSettings) -> AutocutParams {
-    AutocutParams {
-        threshold_db: settings.threshold_db,
-        min_silence_ms: settings.min_silence_ms,
-        padding_ms: settings.padding_ms,
-        min_keep_ms: settings.min_keep_ms,
-    }
 }
 
 fn check_params(params: &AutocutParams) -> Result<(), CoreError> {

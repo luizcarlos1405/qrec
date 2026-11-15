@@ -27,6 +27,7 @@ use gui_support::{Gui, Launch, Nested, OUTPUT, Options, assert_regions, poll, wa
 use qrec_core::state::{CanvasMode, UiState};
 use qrec_core::view::autocut;
 use qrec_core::view::panel::{ACCESS_DENIED, INSPECTOR_EMPTY, MISSING_IN_TAKE};
+use qrec_core::view::timeline::HatchKind;
 use qrec_core::{ClipId, LayerId};
 use qrec_shell::testkit::design::{DesignVariant, design_fixture, write_ui};
 use qrec_shell::testkit::{TestEnv, run_tool};
@@ -2294,7 +2295,8 @@ fn the_autocut_page_goes_with_the_narrow_sheet() {
     assert_clean(nested.window(0));
 }
 
-/// The autocut preview's spans (from, to) as `local` reports them.
+/// The autocut preview's cuts (from, to) as `local` reports them (not the
+/// padding beside them).
 fn preview_spans(gui: &Gui) -> Vec<(u64, u64)> {
     let local = gui.local();
     local["autocutPreview"]["spans"]
@@ -2302,6 +2304,7 @@ fn preview_spans(gui: &Gui) -> Vec<(u64, u64)> {
         .map(|spans| {
             spans
                 .iter()
+                .filter(|s| s["kind"] == "cut")
                 .filter_map(|s| Some((s["from"].as_u64()?, s["to"].as_u64()?)))
                 .collect()
         })
@@ -2573,7 +2576,11 @@ fn the_fixtures_dry_run_reads_like_s12() {
     );
     let spans = autocut::preview_spans(&plan, &state);
     assert_eq!(
-        spans.iter().map(|s| (s.from, s.to)).collect::<Vec<_>>(),
+        spans
+            .iter()
+            .filter(|s| s.kind == HatchKind::Cut)
+            .map(|s| (s.from, s.to))
+            .collect::<Vec<_>>(),
         [(4842, 4890), (5570, 5612), (6276, 6315), (6948, 7005)]
     );
 }

@@ -22,6 +22,7 @@ use crate::time::{duration_label, frame_ns};
 use crate::timeline::{position_of, total_frames};
 use crate::view::AutocutPreviewSpan;
 use crate::view::format::{self, MINUS};
+use crate::view::timeline::HatchKind;
 
 /// The sliders' ranges: (min, max, step).
 pub const THRESHOLD_DB: (f64, f64, f64) = (-60.0, -10.0, 1.0);
@@ -557,21 +558,24 @@ fn default_reason(plan: &AutocutPlanView, state: &State) -> String {
     }
 }
 
-/// What the timeline hatches for a dry run: each clip minus what it keeps,
-/// in timeline frames before the cut.
+/// What the timeline hatches for a dry run, in timeline frames before the
+/// cut: each clip minus what it keeps (`HatchKind::Cut`, tagged "−1.6 s"),
+/// and the project's padding beside each cut (`HatchKind::Padding`).
 pub fn preview_spans(plan: &AutocutPlanView, state: &State) -> Vec<AutocutPreviewSpan> {
-    let track = state.project.autocut.track.clone();
-    preview_spans_for(plan, state, track.as_ref())
+    let settings = &state.project.autocut;
+    preview_spans_for(plan, state, settings.track.as_ref(), settings.padding_ms)
 }
 
 /// [`preview_spans`] on the lane of the track the dry run analyzes for
 /// each clip's take: `track` (the draft's), else the setting, else the
 /// take scene's first mic, else its first track
-/// ([`choose_track`](crate::autocut::choose_track)).
+/// ([`choose_track`](crate::autocut::choose_track)); with the padding the
+/// dry run kept, `padding_ms` (the draft's).
 pub fn preview_spans_for(
     plan: &AutocutPlanView,
     state: &State,
     track: Option<&TrackId>,
+    padding_ms: u32,
 ) -> Vec<AutocutPreviewSpan> {
     let fps = state.project.canvas.fps;
     let clips = &state.project.timeline.clips;
@@ -600,14 +604,32 @@ pub fn preview_spans_for(
             continue;
         };
         let start = position_of(clips, index);
-        for [a, b] in cut.removed(clip) {
-            let ns = frame_ns(b as i64, fps) - frame_ns(a as i64, fps);
+        let mut runs: Vec<([Frame; 2], HatchKind)> = cut
+            .removed(clip)
+            .into_iter()
+            .map(|r| (r, HatchKind::Cut))
+            .chain(
+                cut.padding(clip, padding_ms, fps)
+                    .into_iter()
+                    .map(|r| (r, HatchKind::Padding)),
+            )
+            .collect();
+        runs.sort_by_key(|([a, _], _)| *a);
+        for ([a, b], kind) in runs {
+            let tag = match kind {
+                HatchKind::Cut => {
+                    let ns = frame_ns(b as i64, fps) - frame_ns(a as i64, fps);
+                    format!("{MINUS}{}", duration_label(ns))
+                }
+                HatchKind::Padding => String::new(),
+            };
             spans.push(AutocutPreviewSpan {
                 clip: clip.id.clone(),
                 track: lane.clone(),
                 from: start + (a - clip.in_),
                 to: start + (b - clip.in_),
-                tag: format!("{MINUS}{}", duration_label(ns)),
+                kind,
+                tag,
             });
         }
     }
@@ -875,7 +897,7 @@ mod tests {
         assert_eq!(subtitle(&state), "Previewing all 10 clips");
         state.ui.selection = vec![id("c2d0"), id("c2d1"), id("c3e9"), id("c1b6")];
         assert_eq!(subtitle(&state), "Previewing 4 clips");
-        let spans = preview_spans_for(&plan, &state, Some(&TrackId::numbered(2)));
+        let spans = preview_spans_for(&plan, &state, Some(&TrackId::numbered(2)), 0);
         assert_eq!(spans.len(), 6);
         assert!(spans.iter().all(|s| s.track == TrackId::numbered(2)));
         // c2d0 starts at frame 2084 (00:01:09:14): its first span is
@@ -1060,7 +1082,7 @@ mod tests {
                         .collect();
                     assert_eq!(Some(scissors), analyzed.clone().map(|t| vec![t]), "{case}");
                     for draft in [&draft, &unset] {
-                        let spans = preview_spans_for(&plan, &state, draft.track.as_ref());
+                        let spans = preview_spans_for(&plan, &state, draft.track.as_ref(), 0);
                         assert_eq!(spans.len(), 1, "the hatch: {case}");
                         assert_eq!(Some(&spans[0].track), analyzed.as_ref(), "{case}");
                     }
@@ -1122,7 +1144,7 @@ mod tests {
                 .map(|l| l.track)
                 .collect();
             assert_eq!(scissors, vec![a2.clone()], "the scissors in {mode:?}");
-            let spans = preview_spans_for(&plan, &state, draft.track.as_ref());
+            let spans = preview_spans_for(&plan, &state, draft.track.as_ref(), 0);
             assert_eq!(
                 spans.iter().map(|s| &s.track).collect::<Vec<_>>(),
                 [&a2],
@@ -1174,7 +1196,7 @@ mod tests {
             ],
             skipped: vec![],
         };
-        let spans = preview_spans_for(&both, &state, None);
+        let spans = preview_spans_for(&both, &state, None, 0);
         assert_eq!(
             spans.iter().map(|s| &s.track).collect::<Vec<_>>(),
             [&a2, &a1]

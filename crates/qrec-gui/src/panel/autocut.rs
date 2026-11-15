@@ -727,7 +727,12 @@ impl AutocutPage {
                                 &state,
                                 result.as_ref().map(|r| r.message.as_str()),
                             ),
-                            autocut::preview_spans_for(&plan, &state, draft.track.as_ref()),
+                            autocut::preview_spans_for(
+                                &plan,
+                                &state,
+                                draft.track.as_ref(),
+                                draft.padding_ms,
+                            ),
                         ),
                         None => (
                             nothing(&format::capitalized(
