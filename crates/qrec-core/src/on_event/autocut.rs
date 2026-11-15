@@ -2,7 +2,9 @@
 //!
 //! `SilenceDetected` stores the intervals in `runtime.silence` and drops the
 //! key from the job's `pending`; `SilenceFailed` moves the clips of that key
-//! to the skipped list. When nothing is pending the job completes:
+//! to the skipped list; `SilenceProgress` only moves the job's `analysis`
+//! on (how far ffmpeg has read each file: the autocut page's percent). When
+//! nothing is pending the job completes:
 //! - while a recording runs (`record != Idle`) a real run is only marked
 //!   `ready`; the record owner applies it right after placing the take with
 //!   [`apply_ready_autocuts`] (dry runs apply nothing and complete at once);
@@ -102,6 +104,30 @@ pub fn silence_failed(
     resolve(next, ctx, job, &key, effects)
 }
 
+/// ffmpeg has read `key`'s file up to `out_time_ns` (issue #15): the job's
+/// `analysis` moves on, for the autocut page's percent. Nothing else
+/// changes: no reply, no `Progress` (the requester's stays per clip).
+pub fn silence_progress(state: &State, job: JobId, key: SilenceKey, out_time_ns: u64) -> Outcome {
+    if !is_pending(state, job, &key) {
+        return ignored(state, "SilenceProgress", job, &key);
+    }
+    let mut next = state.clone();
+    let advanced = match next.runtime.jobs.get_mut(&job) {
+        Some(Job {
+            kind: JobKind::Autocut { analysis, .. },
+            ..
+        }) => analysis
+            .get_mut(&key)
+            .is_some_and(|read| read.advance(out_time_ns)),
+        _ => false,
+    };
+    if !advanced {
+        // A file of unknown length, or no news: the same state.
+        return Outcome::unchanged(state);
+    }
+    Outcome::new(next, Vec::new(), None)
+}
+
 /// Applies every autocut job that finished analyzing while a recording ran
 /// (`ready`), oldest first, each as its own history entry, and replies to
 /// their requesters. The record owner calls it right after placing a take —
@@ -170,12 +196,16 @@ fn resolve(
         pending,
         dry_run,
         ready,
+        analysis,
         ..
     } = &mut job.kind
     else {
         return Outcome::new(next, effects, None);
     };
     pending.remove(key);
+    if let Some(read) = analysis.get_mut(key) {
+        read.finish();
+    }
     let analyzed = pending.is_empty();
     let completes = analyzed && (idle || *dry_run);
     if analyzed && !completes {
@@ -734,6 +764,43 @@ mod tests {
     }
 
     #[test]
+    fn progress_moves_the_analysis_on() {
+        let (state, ctx) = analyzing(true);
+        let p = fixtures::params();
+        let (k1, k2) = (fixtures::key(&ctx, MIC1, &p), fixtures::key(&ctx, MIC2, &p));
+        let read = |state: &State, key: &SilenceKey| match &state.runtime.jobs[&JobId(1)].kind {
+            JobKind::Autocut { analysis, .. } => analysis[key],
+            other => panic!("{other:?}"),
+        };
+        // Take 1 is 10 s long, take 2 5 s; nothing read yet.
+        assert_eq!(read(&state, &k1).total_ns, 10_000_000_000);
+        assert_eq!(read(&state, &k2).total_ns, 5_000_000_000);
+        assert_eq!(read(&state, &k1).done_ns, 0);
+        // ffmpeg read 2 s of MIC1: that much, nothing to tell anyone.
+        let out = silence_progress(&state, JobId(1), k1.clone(), 2_000_000_000);
+        assert!(out.effects.is_empty() && out.reply.is_none());
+        assert_eq!(read(&out.state, &k1).done_ns, 2_000_000_000);
+        // Never back, never past the file's end.
+        let back = silence_progress(&out.state, JobId(1), k1.clone(), 1_000_000_000);
+        assert_eq!(back.state, out.state);
+        assert!(back.effects.is_empty());
+        let past = silence_progress(&out.state, JobId(1), k1.clone(), 12_000_000_000);
+        assert_eq!(read(&past.state, &k1).done_ns, 10_000_000_000);
+        // MIC1's silences came: read through; MIC2's analysis still runs.
+        let done = detected(&out.state, &ctx, MIC1);
+        assert_eq!(read(&done.state, &k1).done_ns, 10_000_000_000);
+        assert_eq!(read(&done.state, &k2).done_ns, 0);
+        // A failed one counts as read through too.
+        let gone = failed(&out.state, &ctx, MIC2, "ffmpeg exited 1");
+        assert_eq!(read(&gone.state, &k2).done_ns, 5_000_000_000);
+        // A key no job waits for any more, or another job: ignored.
+        let late = silence_progress(&done.state, JobId(1), k1, 3_000_000_000);
+        assert_eq!(late.state, done.state);
+        let other = silence_progress(&done.state, JobId(4), k2, 3_000_000_000);
+        assert_eq!(other.state, done.state);
+    }
+
+    #[test]
     fn the_last_result_applies_the_run() {
         let (state, ctx) = analyzing(false);
         let first = detected(&state, &ctx, MIC1);
@@ -1267,6 +1334,7 @@ mod tests {
                     dry_run: false,
                     pending: BTreeSet::new(),
                     ready: true,
+                    analysis: Default::default(),
                 },
                 req: None,
                 started: ctx.now,
@@ -1328,7 +1396,7 @@ mod tests {
         };
         assert_eq!(
             argv.join(" "),
-            "ffmpeg -hide_banner -nostdin -nostats -loglevel info -y \
+            "ffmpeg -hide_banner -nostdin -nostats -loglevel info -y -progress pipe:1 \
              -i file:takes/take-0001/A1-mic.mka -af silencedetect=noise=-35dB:d=0.4 -vn -f null -"
         );
         let stderr = include_str!(concat!(

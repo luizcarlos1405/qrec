@@ -52,7 +52,7 @@ pub enum Effect {
         purpose: ProbePurpose,
         jobs: Vec<ProbeJob>,
     },
-    /// → `SilenceDetected` | `SilenceFailed`.
+    /// → `SilenceProgress`… then `SilenceDetected` | `SilenceFailed`.
     DetectSilence {
         job: JobId,
         key: SilenceKey,

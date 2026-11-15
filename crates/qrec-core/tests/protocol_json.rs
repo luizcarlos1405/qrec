@@ -1035,6 +1035,11 @@ fn events_round_trip() {
             key: SilenceKey("k".into()),
             message: "ffmpeg exited 1".into(),
         },
+        Event::SilenceProgress {
+            job: JobId(5),
+            key: SilenceKey("k".into()),
+            out_time_ns: 2_000_000_000,
+        },
         Event::ExportProgress {
             job: JobId(6),
             segment: 2,
@@ -1153,6 +1158,13 @@ fn state_and_outcome_round_trip() {
                 dry_run: false,
                 pending: BTreeSet::from([SilenceKey("k".into())]),
                 ready: false,
+                analysis: BTreeMap::from([(
+                    SilenceKey("k".into()),
+                    AnalysisProgress {
+                        done_ns: 1_500_000_000,
+                        total_ns: 60_000_000_000,
+                    },
+                )]),
             },
             req: None,
             started: ts(),

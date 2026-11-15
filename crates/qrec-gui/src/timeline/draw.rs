@@ -239,18 +239,24 @@ fn label_x(b: &ClipBox) -> f64 {
 const PLATE_ICON: f64 = 12.0;
 
 /// The take label plate (C16) at (6, 10), with a spinner while autocut
-/// analyzes the clip, or the missing-media warning (`warning-text`, 4 px
-/// before the label: C16's "Label plate"). A missing clip too narrow for
-/// its label keeps the warning alone on its plate.
+/// analyzes the clip (a cut, or the autocut page's preview once it shows
+/// its analysis cue, issue #15), or the missing-media warning
+/// (`warning-text`, 4 px before the label: C16's "Label plate"). A missing
+/// clip too narrow for its label keeps the warning alone on its plate.
 fn label(s: &gtk::Snapshot, sc: &Scene<'_>, b: &ClipBox, dy: f64) {
     let p = sc.palette;
     let x = label_x(b);
+    let analyzing = b.analyzing
+        || sc
+            .autocut
+            .as_ref()
+            .is_some_and(|preview| preview.spinning.contains(&b.clip));
     let fits = |text: &str, lead: f64| {
         x + paint::plate_width(sc.widget, sc.texts, Role::CaptionStrong, text, lead)
             <= b.x + b.w - 2.0
     };
-    let warning = b.missing && !b.analyzing;
-    let lead = if b.analyzing || warning {
+    let warning = b.missing && !analyzing;
+    let lead = if analyzing || warning {
         PLATE_ICON + 4.0
     } else {
         0.0
@@ -284,7 +290,7 @@ fn label(s: &gtk::Snapshot, sc: &Scene<'_>, b: &ClipBox, dy: f64) {
             &p.warning_text,
         );
     }
-    if b.analyzing {
+    if analyzing {
         paint::spinner(
             s,
             (

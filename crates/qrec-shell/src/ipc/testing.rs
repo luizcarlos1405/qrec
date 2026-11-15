@@ -575,6 +575,7 @@ impl FakeSession {
                 dry_run: true,
                 pending: Default::default(),
                 ready: false,
+                analysis: Default::default(),
             }
         } else {
             JobKind::Purge { takes: Vec::new() }

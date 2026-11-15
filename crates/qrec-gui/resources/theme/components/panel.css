@@ -492,6 +492,44 @@ popover.autocut-track-popover .menu-caption {
   font-feature-settings: "tnum" 1;
 }
 
+/* The analysis cue (issue #15, board 07): "40%" after "Analyzing take 8",
+   muted mono; the 4 px bar under them, `accent` on the `border` track; the
+   old plan's numbers and regions at 40 % meanwhile. */
+.qrec-panel .summary-percent {
+  margin-left: 2px;
+  font-family: var(--qrec-font-mono), "DejaVu Sans Mono", monospace;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 22px;
+  font-feature-settings: "tnum" 1;
+}
+
+.qrec-panel progressbar.autocut-progress {
+  margin: 4px 0 2px 0;
+}
+
+.qrec-panel progressbar.autocut-progress > trough {
+  min-height: 4px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background-color: var(--qrec-border);
+  box-shadow: none;
+}
+
+.qrec-panel progressbar.autocut-progress > trough > progress {
+  min-height: 4px;
+  border: none;
+  border-radius: 2px;
+  background-color: var(--qrec-accent);
+  background-image: none;
+  box-shadow: none;
+}
+
+.qrec-panel .stale {
+  opacity: 0.4;
+}
+
 .qrec-panel .summary-rows > label {
   min-height: 16px;
 }

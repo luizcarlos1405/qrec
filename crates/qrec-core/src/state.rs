@@ -555,6 +555,13 @@ pub enum JobKind {
         pending: BTreeSet<SilenceKey>,
         /// Analysis finished while recording; apply after placement.
         ready: bool,
+        /// How far ffmpeg has read the file of each key this job analyzes
+        /// (`SilenceProgress`), against the file's probed length: the
+        /// percent the autocut page shows (issue #15). Only the keys that
+        /// weren't known when the job started, and only those whose file
+        /// has a length; a key analyzed (or failed) counts as read through.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        analysis: BTreeMap<SilenceKey, AnalysisProgress>,
     },
     Export {
         out: String,
@@ -620,6 +627,32 @@ pub struct AutocutParams {
     /// Trim each clip's edges only: the plan's hull (A§5.7).
     #[serde(default)]
     pub edges_only: bool,
+}
+
+/// How far one silence analysis has read its file (A§5.7): ffmpeg's
+/// `-progress` output time, against the file's length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AnalysisProgress {
+    /// Never more than `total_ns`, and never going back.
+    pub done_ns: u64,
+    pub total_ns: u64,
+}
+
+impl AnalysisProgress {
+    /// Read through: the analysis ended (found its silences, or failed).
+    pub fn finish(&mut self) {
+        self.done_ns = self.total_ns;
+    }
+
+    /// ffmpeg read up to `out_time_ns`: later than what was known, and
+    /// within the file. Whether anything changed.
+    pub fn advance(&mut self, out_time_ns: u64) -> bool {
+        let done = out_time_ns.min(self.total_ns).max(self.done_ns);
+        let changed = done != self.done_ns;
+        self.done_ns = done;
+        changed
+    }
 }
 
 /// Identifies one silence analysis: the file's identity plus the parameters

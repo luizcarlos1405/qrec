@@ -130,14 +130,22 @@ fn answers(state: &State, effect: &Effect) -> Vec<Event> {
                 })
                 .collect(),
         }],
-        Effect::DetectSilence { job, key, .. } => vec![Event::SilenceDetected {
-            job: *job,
-            key: key.clone(),
-            silences: vec![Interval {
-                start_ns: 1_000_000_000,
-                end_ns: 2_000_000_000,
-            }],
-        }],
+        Effect::DetectSilence { job, key, .. } => vec![
+            // How far it read (issue #15), then its silences.
+            Event::SilenceProgress {
+                job: *job,
+                key: key.clone(),
+                out_time_ns: 1_500_000_000,
+            },
+            Event::SilenceDetected {
+                job: *job,
+                key: key.clone(),
+                silences: vec![Interval {
+                    start_ns: 1_000_000_000,
+                    end_ns: 2_000_000_000,
+                }],
+            },
+        ],
         Effect::RenderExport { job, plan } => {
             let mut events: Vec<Event> = plan
                 .segments

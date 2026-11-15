@@ -3,6 +3,12 @@
 //! newest wins); changes are debounced 250 ms; a reply that is no longer
 //! the newest is ignored, as is everything after the page closed.
 //!
+//! The analysis cue (issue #15): a dry run that hasn't answered
+//! [`CUE_MS`] after it was sent turns it on ([`DryRuns::check_cue`]), so
+//! re-plans and cached analyses, which answer sooner, never flash it. Once
+//! on, it stays until an answer shows: a stale answer and the dry run sent
+//! after it keep it, so the old plan never comes back in between.
+//!
 //! The page asks [`DryRuns`] what to do and carries it out: send a
 //! command, arm one timer, or nothing. Time is milliseconds on a monotonic
 //! clock the caller reads (not the animation clock, which test mode
@@ -12,6 +18,9 @@ use qrec_core::Command;
 
 /// The debounce of a tuning change.
 pub const DEBOUNCE_MS: u64 = 250;
+
+/// How long a dry run runs before the page shows the analysis cue.
+pub const CUE_MS: u64 = 300;
 
 /// What the page does next.
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +52,10 @@ pub struct DryRuns {
     /// The newest one sent while the page is open.
     latest: Option<u64>,
     pending: Option<Pending>,
+    /// When the one in flight was sent.
+    sent_ms: Option<u64>,
+    /// The analysis cue shows (see the module's doc).
+    cue: bool,
 }
 
 impl DryRuns {
@@ -90,6 +103,7 @@ impl DryRuns {
                 self.next_id += 1;
                 let id = self.next_id;
                 self.in_flight = Some(id);
+                self.sent_ms = Some(now_ms);
                 self.latest = Some(id);
                 Step::Send { id, cmd: p.cmd }
             }
@@ -101,11 +115,16 @@ impl DryRuns {
     pub fn replied(&mut self, id: u64, now_ms: u64) -> (bool, Step) {
         if self.in_flight == Some(id) {
             self.in_flight = None;
+            self.sent_ms = None;
         }
         let show = self.open && self.latest == Some(id) && self.pending.is_none();
         if self.latest == Some(id) {
             // Answered: a repeat of it is nobody's.
             self.latest = None;
+        }
+        if show {
+            // The new plan shows: the cue goes with the old one.
+            self.cue = false;
         }
         (show, self.poll(now_ms))
     }
@@ -116,6 +135,30 @@ impl DryRuns {
         self.open = false;
         self.latest = None;
         self.pending = None;
+        self.cue = false;
+    }
+
+    /// When the cue is due, if a dry run in flight may turn it on.
+    pub fn cue_at(&self) -> Option<u64> {
+        if !self.open || self.cue || self.in_flight.is_none() {
+            return None;
+        }
+        self.sent_ms.map(|sent| sent + CUE_MS)
+    }
+
+    /// The cue's timer fired (or the page asks): a dry run in flight for
+    /// [`CUE_MS`] turns the cue on. Whether it shows.
+    pub fn check_cue(&mut self, now_ms: u64) -> bool {
+        if self.cue_at().is_some_and(|at| now_ms >= at) {
+            self.cue = true;
+        }
+        self.cue()
+    }
+
+    /// The analysis cue shows: the old plan's hatches are gone, its numbers
+    /// and regions dim, and the summary says what is analyzed.
+    pub fn cue(&self) -> bool {
+        self.open && self.cue
     }
 
     /// The page is open to dry runs (not on an empty timeline: G§4.7).
@@ -204,6 +247,55 @@ mod tests {
             Step::WaitUntil { at_ms: 2350 }
         );
         assert_eq!(sent(&runs.poll(2350)), Some((4, -31.0)));
+    }
+
+    #[test]
+    fn the_cue_waits_300_ms_and_stays_until_an_answer_shows() {
+        let mut runs = DryRuns::new();
+        // A quick answer (a re-plan, a cached analysis): no cue.
+        runs.open(run(-35.0), 0);
+        assert_eq!(runs.cue_at(), Some(CUE_MS));
+        assert!(!runs.check_cue(299));
+        assert_eq!(runs.replied(1, 120), (true, Step::Idle));
+        assert_eq!(runs.cue_at(), None, "nothing in flight");
+        assert!(!runs.check_cue(400));
+        // A change: nothing during its debounce; the cue 300 ms after the
+        // dry run went.
+        assert_eq!(
+            runs.change(run(-40.0), 1000),
+            Step::WaitUntil { at_ms: 1250 }
+        );
+        assert!(!runs.check_cue(1249), "only a dry run in flight counts");
+        assert_eq!(sent(&runs.poll(1250)), Some((2, -40.0)));
+        assert!(!runs.check_cue(1549));
+        assert!(runs.check_cue(1550));
+        assert_eq!(runs.cue_at(), None, "on: nothing more to wait for");
+        // A change meanwhile: #2's answer is stale and #3 goes; the cue
+        // stays, so the old plan doesn't come back in between.
+        runs.change(run(-42.0), 1600);
+        let (show, step) = runs.replied(2, 2000);
+        assert!(!show);
+        assert_eq!(sent(&step), Some((3, -42.0)));
+        assert!(runs.cue());
+        assert!(runs.check_cue(2001));
+        // #3's answer shows: the cue goes with the old plan.
+        assert_eq!(runs.replied(3, 2100), (true, Step::Idle));
+        assert!(!runs.cue());
+        assert!(!runs.check_cue(5000));
+    }
+
+    #[test]
+    fn closing_the_page_drops_the_cue() {
+        let mut runs = DryRuns::new();
+        runs.open(run(-35.0), 0);
+        assert!(runs.check_cue(500));
+        runs.close();
+        assert!(!runs.cue());
+        assert!(!runs.check_cue(600), "a closed page shows nothing");
+        // A new page waits for #1, still in the core since 0: due already.
+        assert_eq!(runs.open(run(-36.0), 600), Step::Idle);
+        assert_eq!(runs.cue_at(), Some(CUE_MS));
+        assert!(runs.check_cue(600));
     }
 
     #[test]

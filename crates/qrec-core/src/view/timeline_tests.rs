@@ -967,6 +967,7 @@ fn analyzing_and_dimmed_clips() {
                 dry_run: false,
                 pending: Default::default(),
                 ready: false,
+                analysis: Default::default(),
             },
             req: None,
             started: chrono::DateTime::parse_from_rfc3339("2026-10-14T15:00:00Z")

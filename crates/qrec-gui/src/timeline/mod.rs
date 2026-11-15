@@ -1819,6 +1819,19 @@ impl Inner {
             });
     }
 
+    /// The autocut page's preview spins take plates (its analysis cue,
+    /// issue #15); never under test mode's frozen clock.
+    fn preview_spins(&self) -> bool {
+        !testctl::mode().on
+            && self
+                .ctx
+                .store
+                .local()
+                .autocut_preview
+                .as_ref()
+                .is_some_and(|preview| !preview.spinning.is_empty())
+    }
+
     /// What needs a frame each frame: easing, a growing or saving ghost, a
     /// spinner, the playing playhead, the snap flash.
     fn needs_tick(&self) -> bool {
@@ -1837,6 +1850,7 @@ impl Inner {
         m.vm.animating(now)
             || recording
             || analyzing
+            || self.preview_spins()
             || self.ctx.store.local().program_playing
             || m.flash.is_some()
             || m.gap
@@ -1864,6 +1878,7 @@ impl Inner {
             // Fit includes the ghost as it grows between record clocks.
             let Model { vm, ghost, .. } = &mut *m;
             let grew = control::follow_frame(vm, ghost, &state, now, testctl::mode().on);
+            let moving = control::TickFacts::of(&state, testctl::mode().on);
             let facts = control::TickFacts {
                 easing: m.vm.animating(now),
                 grew,
@@ -1871,7 +1886,8 @@ impl Inner {
                 trimming: matches!(m.g.drag(), Some(Drag::Trim { started: true, .. })),
                 playing,
                 flash: m.flash.is_some(),
-                ..control::TickFacts::of(&state, testctl::mode().on)
+                analyzing: moving.analyzing || self.preview_spins(),
+                ..moving
             };
             canvas_moves = facts.canvas_moves();
             render = canvas_moves || m.canvas_moved;

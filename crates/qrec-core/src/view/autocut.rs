@@ -20,7 +20,7 @@ use crate::ids::{ClipId, Frame, TakeId, TrackId};
 use crate::model::{AudioTrack, Clip, Project};
 use crate::protocol::command::{AutocutKeep, AutocutOverrides, AutocutPatch, ClipScope, Command};
 use crate::protocol::reply::AutocutPlanView;
-use crate::state::State;
+use crate::state::{JobKind, State};
 use crate::time::{duration_label, frame_ns};
 use crate::timeline::{position_of, total_frames};
 use crate::view::AutocutPreviewSpan;
@@ -35,7 +35,9 @@ pub const MIN_KEEP_MS: (u32, u32, u32) = (0, 1000, 10);
 
 /// The page's title.
 pub const TITLE: &str = "Autocut";
-/// The summary title while a dry run runs (with a 16 px spinner, D-15).
+/// The summary title while a dry run takes longer than the cue's delay and
+/// no analysis says which take (with a 16 px spinner, D-15; issue #15's
+/// [`analyzing`] names it otherwise).
 pub const ANALYZING: &str = "Analyzing\u{2026}";
 /// The summary title when the plan cuts nothing.
 pub const NOTHING_TO_CUT: &str = "Nothing to cut";
@@ -878,6 +880,78 @@ pub fn preview_spans_for(
         }
     }
     spans
+}
+
+/// What the summary shows while the dry run analyzes audio (issue #15,
+/// board 07): the spinner's title, how far along, and the clips whose
+/// take plates spin on the timeline.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalyzingView {
+    /// "Analyzing take 8", "Analyzing 3 takes".
+    pub title: String,
+    /// 0.0–1.0: what ffmpeg has read of the files analyzed, each weighing
+    /// its length (the bar). `None` when no such file's length is known.
+    pub fraction: Option<f64>,
+    /// "40%" (rounded down, so never 100% while it runs); `None` with
+    /// `fraction`.
+    pub percent: Option<String>,
+    /// The clips whose audio is being analyzed, in the jobs' target order.
+    pub clips: Vec<ClipId>,
+}
+
+/// [`AnalyzingView`] of the dry runs waiting for an analysis (the page
+/// sends one at a time; another client's preview would count too). Only
+/// the takes and files still analyzed count: a run whose silences are all
+/// known never waits, and a file analyzed earlier isn't read again.
+/// `None` when no dry run analyzes anything.
+pub fn analyzing(state: &State) -> Option<AnalyzingView> {
+    let mut takes: Vec<TakeId> = Vec::new();
+    let mut clips: Vec<ClipId> = Vec::new();
+    let (mut done, mut total) = (0u128, 0u128);
+    for job in state.runtime.jobs.values() {
+        let JobKind::Autocut {
+            dry_run: true,
+            targets,
+            pending,
+            analysis,
+            ..
+        } = &job.kind
+        else {
+            continue;
+        };
+        if pending.is_empty() {
+            continue;
+        }
+        for target in targets {
+            if !target.tracks.iter().any(|s| pending.contains(&s.key)) {
+                continue;
+            }
+            if !takes.contains(&target.clip.take) {
+                takes.push(target.clip.take.clone());
+            }
+            if !clips.contains(&target.clip.id) {
+                clips.push(target.clip.id.clone());
+            }
+        }
+        for read in analysis.values() {
+            done += u128::from(read.done_ns);
+            total += u128::from(read.total_ns);
+        }
+    }
+    let title = match takes.as_slice() {
+        [] => return None,
+        [take] => format!("Analyzing take {}", take.number()),
+        many => format!("Analyzing {} takes", format::count(many.len() as u64)),
+    };
+    let fraction = (total > 0).then(|| (done as f64 / total as f64).clamp(0.0, 1.0));
+    let percent = fraction.map(|f| format!("{}%", (f * 100.0).floor() as u32));
+    Some(AnalyzingView {
+        title,
+        fraction,
+        percent,
+        clips,
+    })
 }
 
 /// The panel subtitle while previewing: "Previewing take 8 · c3e9",
@@ -1811,5 +1885,106 @@ mod tests {
         assert_eq!(page_enabled(&state), Err("Not while recording".into()));
         let empty = testkit::state(testkit::ProjectBuilder::new().build());
         assert_eq!(page_enabled(&empty), Ok(()), "an empty timeline opens it");
+    }
+
+    /// Issue #15, board 07: what the summary says while a dry run analyzes
+    /// (the page shows it once the dry run took over 300 ms).
+    mod analysis_cue {
+        use super::*;
+        use crate::apply::autocut::fixtures::{self, MIC1, MIC2};
+        use crate::ctx::Ctx;
+        use crate::ids::JobId;
+        use crate::on_event::autocut::{silence_detected, silence_progress};
+        use crate::state::SilenceKey;
+
+        fn setup() -> (Ctx, SilenceKey, SilenceKey) {
+            let ctx = fixtures::ctx(&fixtures::project());
+            let p = fixtures::params();
+            let (k1, k2) = (fixtures::key(&ctx, MIC1, &p), fixtures::key(&ctx, MIC2, &p));
+            (ctx, k1, k2)
+        }
+
+        fn autocut(state: &State, ctx: &Ctx, dry_run: bool) -> State {
+            let cmd = Command::Autocut {
+                scope: ClipScope::All,
+                overrides: AutocutOverrides::default(),
+                dry_run,
+            };
+            crate::apply::apply(state, ctx, cmd).unwrap().state
+        }
+
+        fn clips(ids: &[&str]) -> Vec<ClipId> {
+            ids.iter().map(|id| id.parse().unwrap()).collect()
+        }
+
+        #[test]
+        fn it_names_the_takes_and_how_far_ffmpeg_read() {
+            let (ctx, k1, k2) = setup();
+            let state = testkit::state(fixtures::project());
+            assert_eq!(analyzing(&state), None, "no dry run waits");
+            // Both takes (10 s and 5 s), nothing read yet.
+            let state = autocut(&state, &ctx, true);
+            let cue = analyzing(&state).unwrap();
+            assert_eq!(cue.title, "Analyzing 2 takes");
+            assert_eq!(
+                (cue.fraction, cue.percent.as_deref()),
+                (Some(0.0), Some("0%"))
+            );
+            assert_eq!(cue.clips, clips(&["c001", "c002"]));
+            // Half of take 1: 5 of 15 s, each file weighing its length.
+            let state = silence_progress(&state, JobId(1), k1.clone(), 5_000_000_000).state;
+            assert_eq!(analyzing(&state).unwrap().percent.as_deref(), Some("33%"));
+            // Take 1's silences came: take 2 is left, and take 1 counts read.
+            let found = fixtures::silences(MIC1);
+            let state = silence_detected(&state, &ctx, JobId(1), k1, found).state;
+            let cue = analyzing(&state).unwrap();
+            assert_eq!(cue.title, "Analyzing take 2");
+            assert_eq!(cue.percent.as_deref(), Some("66%"));
+            assert_eq!(cue.clips, clips(&["c002"]));
+            let state = silence_progress(&state, JobId(1), k2.clone(), 4_999_000_000).state;
+            let cue = analyzing(&state).unwrap();
+            assert_eq!(
+                cue.percent.as_deref(),
+                Some("99%"),
+                "never 100% while it runs"
+            );
+            // Take 2's came: the plan, and nothing to say.
+            let found = fixtures::silences(MIC2);
+            let state = silence_detected(&state, &ctx, JobId(1), k2, found).state;
+            assert_eq!(analyzing(&state), None);
+        }
+
+        #[test]
+        fn known_analyses_and_cuts_stay_out_of_it() {
+            let (ctx, k1, k2) = setup();
+            // Take 1 analyzed before: the dry run reads take 2 only.
+            let mut state = testkit::state(fixtures::project());
+            state.runtime.silence.insert(k1, fixtures::silences(MIC1));
+            let state = autocut(&state, &ctx, true);
+            let cue = analyzing(&state).unwrap();
+            assert_eq!(
+                (cue.title.as_str(), cue.clips),
+                ("Analyzing take 2", clips(&["c002"]))
+            );
+            let state = silence_progress(&state, JobId(1), k2, 2_500_000_000).state;
+            assert_eq!(analyzing(&state).unwrap().percent.as_deref(), Some("50%"));
+            // Files of unknown length: the takes, no percent (no bar).
+            let mut project = fixtures::project();
+            for take in project.takes.values_mut() {
+                for stream in &mut take.streams {
+                    stream.duration_ns = None;
+                }
+            }
+            let state = autocut(&testkit::state(project), &ctx, true);
+            let cue = analyzing(&state).unwrap();
+            assert_eq!(
+                (cue.title.as_str(), cue.fraction, cue.percent),
+                ("Analyzing 2 takes", None, None)
+            );
+            // A cut analyzing isn't the page's preview.
+            let state = autocut(&testkit::state(fixtures::project()), &ctx, false);
+            assert!(!state.runtime.jobs.is_empty());
+            assert_eq!(analyzing(&state), None);
+        }
     }
 }

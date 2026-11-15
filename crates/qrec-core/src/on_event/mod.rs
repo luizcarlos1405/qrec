@@ -7,7 +7,7 @@
 //! | file | owner | events |
 //! | --- | --- | --- |
 //! | `record.rs` | record | capture, clock, probe and countdown timer events |
-//! | `autocut.rs` | autocut | `SilenceDetected`, `SilenceFailed` |
+//! | `autocut.rs` | autocut | `SilenceDetected`, `SilenceFailed`, `SilenceProgress` |
 //! | `output.rs` | output | export and frame events, `RequesterGone` |
 //! | `disk.rs` | history | `ProjectChangedOnDisk`, `TakeDirsDeleted`, `PurgeFailed` |
 //!
@@ -116,6 +116,11 @@ pub fn on_event(state: &State, ctx: &Ctx, ev: Event) -> Outcome {
         Event::SilenceFailed { job, key, message } => {
             autocut::silence_failed(state, ctx, job, key, message)
         }
+        Event::SilenceProgress {
+            job,
+            key,
+            out_time_ns,
+        } => autocut::silence_progress(state, job, key, out_time_ns),
         Event::ExportProgress {
             job,
             segment,

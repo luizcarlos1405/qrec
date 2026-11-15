@@ -250,7 +250,7 @@ impl MediaRunner for FfmpegRunner {
                 message,
             },
             move |ctx, out| {
-                let event = silence::run(ctx, &guard.ctl, job, key, &argv);
+                let event = silence::run(ctx, &guard.ctl, job, key, &argv, out);
                 drop(guard);
                 out.event(event);
             },

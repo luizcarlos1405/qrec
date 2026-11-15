@@ -116,10 +116,12 @@ pub fn segment_check_argv(path: &str) -> Vec<String> {
     argv
 }
 
-/// `ffmpeg … -i file:<f> -af silencedetect=noise=<t>dB:d=<s> -vn -f null -`.
-/// `parse::silencedetect` turns its stderr into intervals.
+/// `ffmpeg … -progress pipe:1 -i file:<f> -af silencedetect=noise=<t>dB:d=<s>
+/// -vn -f null -`. `parse::silencedetect` turns its stderr into intervals;
+/// its `-progress` blocks (stdout: the null output writes nothing there)
+/// tell how far it has read (`SilenceProgress`, issue #15).
 pub fn silence_argv(file: &str, threshold_db: f64, min_silence_ms: u32) -> Vec<String> {
-    let mut argv = ffmpeg_prelude(false);
+    let mut argv = ffmpeg_prelude(true);
     let seconds = f64::from(min_silence_ms) / 1000.0;
     argv.extend([
         "-i".to_owned(),
@@ -797,6 +799,11 @@ mod tests {
         );
         assert_eq!(argv.last().unwrap(), "-");
         assert!(argv.contains(&"file:takes/take-0001/A1-mic.mka".to_owned()));
+        // How far it has read, on stdout (issue #15).
+        assert!(
+            argv.windows(2).any(|w| w == ["-progress", "pipe:1"]),
+            "{argv:?}"
+        );
         let argv = silence_argv("a.mka", -42.5, 1250);
         assert!(argv.contains(&"silencedetect=noise=-42.5dB:d=1.25".to_owned()));
     }

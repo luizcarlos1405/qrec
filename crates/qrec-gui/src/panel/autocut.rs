@@ -6,9 +6,14 @@
 //!
 //! - Tuning is a draft (`view::autocut::AutocutDraft`): no history. Each
 //!   change sends a dry run 250 ms later, one at a time
-//!   ([`super::dry_run::DryRuns`]); the summary title shows a spinner and
-//!   "Analyzing…" meanwhile, and `LocalUi.autocut_preview` carries the
-//!   hatches the timeline draws.
+//!   ([`super::dry_run::DryRuns`]), and `LocalUi.autocut_preview` carries
+//!   the hatches the timeline draws.
+//! - A dry run that takes longer than 300 ms shows the analysis cue (issue
+//!   #15, board 07): the summary title spins, "Analyzing take 8" with how
+//!   far ffmpeg has read ("40%", and a 4 px bar under it); the old plan's
+//!   hatches leave the timeline, where the analyzed clips' take plates
+//!   spin, and its numbers and regions dim (and take no clicks) until the
+//!   new plan shows. Re-plans and cached analyses answer sooner: no cue.
 //! - Apply sends `AutocutSettings{patch}` with the changed fields (if any),
 //!   then `Autocut{dry_run: false}`, and closes the page; the cut's answer
 //!   toasts "Autocut take 8: removed 4 silences (6.2 s)" with Undo (S25).
@@ -95,6 +100,10 @@ struct Inner {
     spinner: Spinner,
     summary_title: gtk::Label,
     summary_mono: gtk::Label,
+    /// "40%" after the title while the cue shows (issue #15, board 07).
+    summary_percent: gtk::Label,
+    /// The analysis's 4 px bar under the title, while its length is known.
+    progress: gtk::ProgressBar,
     summary_rows: gtk::Grid,
     regions: gtk::ListBox,
     region_rows: RefCell<Vec<RegionView>>,
@@ -106,6 +115,8 @@ struct Inner {
     runs: RefCell<DryRuns>,
     /// The dry run's debounce (a slot, R65).
     timer: guard::Slot,
+    /// When the analysis cue is due (issue #15).
+    cue_timer: guard::Slot,
     /// Held while the debounce runs: the dry run it leads to is work
     /// `waitIdle` waits for (G§3.18), from the change to its reply (the
     /// request counts once sent).
@@ -402,15 +413,26 @@ impl AutocutPage {
         let summary_kept = label("", &["summary-kept", "muted"]);
         summary_kept.set_valign(gtk::Align::Baseline);
         summary_kept.set_widget_name("autocut-summary-kept");
+        let summary_percent = label("", &["summary-percent", "muted"]);
+        summary_percent.set_valign(gtk::Align::Baseline);
+        summary_percent.set_widget_name("autocut-summary-percent");
+        summary_percent.set_visible(false);
         title_row.append(&spinner);
         title_row.append(&summary_title);
         title_row.append(&summary_mono);
+        title_row.append(&summary_percent);
         title_row.append(&summary_kept);
+        // The analysis's bar (board 07): `accent` on the `border` track.
+        let progress = gtk::ProgressBar::new();
+        progress.add_css_class("autocut-progress");
+        progress.set_widget_name("autocut-progress");
+        progress.set_visible(false);
         let summary_rows = gtk::Grid::new();
         summary_rows.add_css_class("summary-rows");
         summary_rows.set_column_spacing(12);
         summary_rows.set_row_spacing(4);
         summary.append(&title_row);
+        summary.append(&progress);
         summary.append(&summary_rows);
         content.append(&summary);
         let regions = gtk::ListBox::new();
@@ -488,6 +510,8 @@ impl AutocutPage {
                 spinner,
                 summary_title,
                 summary_mono,
+                summary_percent,
+                progress,
                 summary_rows,
                 regions,
                 region_rows: RefCell::new(Vec::new()),
@@ -497,6 +521,7 @@ impl AutocutPage {
                 apply,
                 runs: RefCell::new(DryRuns::new()),
                 timer: guard::Slot::new(),
+                cue_timer: guard::Slot::new(),
                 debounce_busy: RefCell::new(None),
                 draft: RefCell::new(AutocutDraft::default()),
                 wanted: RefCell::new(None),
@@ -732,6 +757,8 @@ impl AutocutPage {
             }
         });
         self.carry_out(step);
+        // One still in flight from before (this page waits for it).
+        self.arm_cue();
         self.publish();
         self.update(&state);
         if let Some(window) = inner.root.root().and_downcast::<gtk::Window>() {
@@ -749,6 +776,7 @@ impl AutocutPage {
         }
         inner.runs.borrow_mut().close();
         inner.timer.stop();
+        inner.cue_timer.stop();
         inner.debounce_busy.borrow_mut().take();
         *inner.wanted.borrow_mut() = None;
         let pushed = inner.pushed_sheet.replace(false);
@@ -895,8 +923,32 @@ impl AutocutPage {
                         AutocutPage { inner }.replied(id, reply);
                     }
                 });
+                self.arm_cue();
             }
         }
+    }
+
+    /// Arms the analysis cue's timer for the dry run in flight (issue #15):
+    /// if it hasn't answered [`super::dry_run::CUE_MS`] after it went, the
+    /// cue shows.
+    fn arm_cue(&self) {
+        let inner = &self.inner;
+        let Some(at_ms) = inner.runs.borrow().cue_at() else {
+            return;
+        };
+        let wait = Duration::from_millis(at_ms.saturating_sub(self.now_ms()));
+        let weak = Rc::downgrade(inner);
+        inner
+            .cue_timer
+            .timeout_once(wait, "autocut: the analysis cue", move || {
+                if let Some(inner) = weak.upgrade() {
+                    let page = AutocutPage { inner };
+                    let now = page.now_ms();
+                    if page.inner.runs.borrow_mut().check_cue(now) {
+                        page.publish();
+                    }
+                }
+            });
     }
 
     /// Dry run `id` answered.
@@ -940,15 +992,26 @@ impl AutocutPage {
         self.show_summary();
     }
 
-    /// Hands the preview to the timeline (`LocalUi.autocut_preview`).
+    /// Hands the preview to the timeline (`LocalUi.autocut_preview`):
+    /// while the analysis cue shows, no hatches, and the analyzed clips'
+    /// take plates spin.
     fn publish(&self) {
         let inner = &self.inner;
         if !inner.open.get() {
             return;
         }
+        let cue = inner.runs.borrow().cue();
+        let analyzed = cue
+            .then(|| autocut::analyzing(&inner.ctx.store.state()))
+            .flatten();
         let preview = Arc::new(AutocutPreview {
-            spans: inner.spans.borrow().clone(),
+            spans: if cue {
+                Vec::new()
+            } else {
+                inner.spans.borrow().clone()
+            },
             analyzing: inner.runs.borrow().analyzing(),
+            spinning: analyzed.map(|a| a.clips).unwrap_or_default(),
         });
         inner.ctx.store.update_local(move |l| {
             if l.autocut_preview.as_deref() != Some(&*preview) {
@@ -1015,6 +1078,10 @@ impl AutocutPage {
             .is_some_and(|w| *w != autocut::dry_run_key(state, &inner.draft.borrow()));
         if changed {
             self.request(state);
+        }
+        // How far the analysis read, and which clips spin.
+        if inner.runs.borrow().cue() {
+            self.publish();
         }
     }
 
@@ -1120,16 +1187,34 @@ impl AutocutPage {
 
     fn show_summary(&self) {
         let inner = &self.inner;
-        let analyzing = inner.runs.borrow().analyzing();
-        inner.spinner.set_visible(analyzing);
+        let (cue, waiting) = {
+            let runs = inner.runs.borrow();
+            (runs.cue(), runs.analyzing())
+        };
+        // What the analysis says while the cue shows (issue #15, board 07).
+        let analyzed = cue
+            .then(|| autocut::analyzing(&inner.ctx.store.state()))
+            .flatten();
+        inner.spinner.set_visible(cue);
         let summary = inner.summary.borrow().clone();
-        inner.summary_kept.set_text(match (&summary, analyzing) {
+        inner.summary_kept.set_text(match (&summary, cue) {
             (Some(s), false) => &s.kept,
             _ => "",
         });
-        match (&summary, analyzing) {
+        let percent = analyzed.as_ref().and_then(|a| a.percent.as_deref());
+        inner.summary_percent.set_text(percent.unwrap_or_default());
+        inner.summary_percent.set_visible(percent.is_some());
+        let fraction = analyzed.as_ref().and_then(|a| a.fraction);
+        inner.progress.set_fraction(fraction.unwrap_or(0.0));
+        inner.progress.set_visible(fraction.is_some());
+        // The percent sits 8 px after the title: no empty "(6.2 s)" between.
+        inner.summary_mono.set_visible(!cue);
+        match (&summary, cue) {
             (_, true) => {
-                inner.summary_title.set_text(autocut::ANALYZING);
+                let title = analyzed
+                    .as_ref()
+                    .map_or(autocut::ANALYZING, |a| a.title.as_str());
+                inner.summary_title.set_text(title);
                 inner.summary_mono.set_text("");
             }
             (Some(s), false) => {
@@ -1150,10 +1235,23 @@ impl AutocutPage {
                 inner.summary_mono.set_text("");
             }
         }
+        // The old plan while the cue shows: its numbers and regions dim, and
+        // the regions take no clicks (board 07).
+        for stale in [
+            inner.summary_rows.upcast_ref::<gtk::Widget>(),
+            inner.regions.upcast_ref(),
+        ] {
+            if cue {
+                stale.add_css_class("stale");
+            } else {
+                stale.remove_css_class("stale");
+            }
+        }
+        inner.regions.set_sensitive(!cue);
         // While a new dry run comes, a summary still right for the timeline
         // keeps its rows and regions (another knob, another scope); none
         // (just opened, or gone stale) shows none.
-        if analyzing && summary.is_some() {
+        if waiting && summary.is_some() {
             return;
         }
         // The rows and the regions of the shown summary.

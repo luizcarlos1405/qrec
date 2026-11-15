@@ -1,14 +1,18 @@
-//! `Effect::DetectSilence` → `SilenceDetected` | `SilenceFailed` (SPEC §9,
-//! A§5.7). Results are cached in `.qrec/cache/silence/<key>.json`; the key
-//! already names the file's size and mtime and the parameters, so a cached
-//! result is reused as is. Otherwise the core-built `silencedetect` argv
-//! runs with its stderr in a job log, and `parse::silencedetect` reads it.
+//! `Effect::DetectSilence` → `SilenceProgress`… then `SilenceDetected` |
+//! `SilenceFailed` (SPEC §9, A§5.7). Results are cached in
+//! `.qrec/cache/silence/<key>.json`; the key already names the file's size
+//! and mtime and the parameters, so a cached result is reused as is (no
+//! progress then). Otherwise the core-built `silencedetect` argv runs with
+//! its stderr in a job log, and `parse::silencedetect` reads it; its
+//! `-progress` blocks (stdout) become `SilenceProgress` as ffmpeg reads on
+//! (the autocut page's percent, issue #15).
 
 use std::fs;
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
+use qrec_core::parse::progress::ProgressBlock;
 use qrec_core::parse::silencedetect::parse_silencedetect;
 use qrec_core::protocol::Interval;
 use qrec_core::state::SilenceKey;
@@ -16,10 +20,11 @@ use qrec_core::{Event, JobId};
 use serde::{Deserialize, Serialize};
 
 use super::Ctx;
-use super::child::{self, Spec, Stderr};
+use super::child::{self, Spec, Stderr, Stdout};
 use super::jobs::JobCtl;
 use super::logs::tail_lines;
 use super::place::temp_path;
+use crate::msg::Inbox;
 
 /// Bumped when the cache file's meaning changes.
 const CACHE_VERSION: u32 = 1;
@@ -33,10 +38,43 @@ pub(crate) struct CacheFile {
     pub silences: Vec<Interval>,
 }
 
-pub(crate) fn run(ctx: &Ctx, ctl: &JobCtl, job: JobId, key: SilenceKey, argv: &[String]) -> Event {
-    match detect(ctx, ctl, job, &key, argv) {
+pub(crate) fn run(
+    ctx: &Ctx,
+    ctl: &JobCtl,
+    job: JobId,
+    key: SilenceKey,
+    argv: &[String],
+    out: &Inbox,
+) -> Event {
+    match detect(ctx, ctl, job, &key, argv, out) {
         Ok(silences) => Event::SilenceDetected { job, key, silences },
         Err(message) => Event::SilenceFailed { job, key, message },
+    }
+}
+
+/// The `-progress` reader: each block that read further becomes a
+/// `SilenceProgress` (ffmpeg prints one every half second, and the last
+/// at the end).
+fn progress_events(
+    job: JobId,
+    key: &SilenceKey,
+    out: &Inbox,
+) -> impl FnMut(&ProgressBlock) + Send + 'static {
+    let (key, out) = (key.clone(), out.clone());
+    let mut read = None;
+    move |block: &ProgressBlock| {
+        let Some(out_time_ns) = block.out_time_ns.and_then(|ns| u64::try_from(ns).ok()) else {
+            return;
+        };
+        if read.is_some_and(|before| out_time_ns <= before) {
+            return;
+        }
+        read = Some(out_time_ns);
+        out.event(Event::SilenceProgress {
+            job,
+            key: key.clone(),
+            out_time_ns,
+        });
     }
 }
 
@@ -98,6 +136,7 @@ fn detect(
     job: JobId,
     key: &SilenceKey,
     argv: &[String],
+    out: &Inbox,
 ) -> Result<Vec<Interval>, String> {
     let cache = cache_path(ctx, key);
     if let Some(silences) = cache.as_deref().and_then(|p| read_cache(p, key)) {
@@ -112,6 +151,7 @@ fn detect(
     let done = child::run(
         Spec::new(argv, Stderr::Log(log.file()))
             .cwd(ctx.root())
+            .stdout(Stdout::Progress(Box::new(progress_events(job, key, out))))
             .timeout(ctx.options.scaled(ctx.options.silence_timeout, input_bytes))
             .stop(&ctl.stop)
             .kill_grace(ctx.options.kill_grace),

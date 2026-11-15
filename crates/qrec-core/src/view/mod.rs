@@ -177,6 +177,11 @@ pub struct AutocutPreview {
     pub spans: Vec<AutocutPreviewSpan>,
     /// A dry run is in flight.
     pub analyzing: bool,
+    /// The clips whose audio the page's dry run analyzes, while the page
+    /// shows that it does (it took longer than the cue's delay, issue #15):
+    /// their take plates spin. The old plan's spans are gone meanwhile.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spinning: Vec<ClipId>,
 }
 
 /// One silence autocut would remove, the padding it keeps beside one, or a

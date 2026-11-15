@@ -80,6 +80,13 @@ failedWhileRecording:
     "1":
       id: 1
       kind:
+        analysis:
+          58b2a081050a9e326a6c405d1ac2b771a9eb1e508071b70461085fc30ec6ae9d:
+            doneNs: 0
+            totalNs: 5000000000
+          eb039e93458ab3222f17cdf85c66a6a25b51b0dd8f431d8b1a9338fea36fa25a:
+            doneNs: 10000000000
+            totalNs: 10000000000
         cmd:
           cmd: autocut
           dryRun: false
@@ -134,6 +141,13 @@ firstResult:
     "1":
       id: 1
       kind:
+        analysis:
+          58b2a081050a9e326a6c405d1ac2b771a9eb1e508071b70461085fc30ec6ae9d:
+            doneNs: 0
+            totalNs: 5000000000
+          eb039e93458ab3222f17cdf85c66a6a25b51b0dd8f431d8b1a9338fea36fa25a:
+            doneNs: 10000000000
+            totalNs: 10000000000
         cmd:
           cmd: autocut
           dryRun: false
@@ -281,6 +295,13 @@ readyWhileRecording:
     "1":
       id: 1
       kind:
+        analysis:
+          58b2a081050a9e326a6c405d1ac2b771a9eb1e508071b70461085fc30ec6ae9d:
+            doneNs: 5000000000
+            totalNs: 5000000000
+          eb039e93458ab3222f17cdf85c66a6a25b51b0dd8f431d8b1a9338fea36fa25a:
+            doneNs: 10000000000
+            totalNs: 10000000000
         cmd:
           cmd: autocut
           dryRun: false

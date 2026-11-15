@@ -1403,6 +1403,7 @@ mod tests {
                 dry_run: false,
                 pending: Default::default(),
                 ready: false,
+                analysis: Default::default(),
             },
             "r1",
         );

@@ -1486,6 +1486,29 @@ fn probes_fixture_media() {
 
 // ---------------------------------------------------------------- silence
 
+/// An analysis's last event: its silences, or why it failed.
+fn silence_end(e: &Event) -> bool {
+    matches!(
+        e,
+        Event::SilenceDetected { .. } | Event::SilenceFailed { .. }
+    )
+}
+
+/// `events` split into the `SilenceProgress` output times (each read
+/// further than the one before) and the rest.
+fn progress_and_rest(events: Vec<Event>) -> (Vec<u64>, Vec<Event>) {
+    let mut read = Vec::new();
+    let mut rest = Vec::new();
+    for e in events {
+        match e {
+            Event::SilenceProgress { out_time_ns, .. } => read.push(out_time_ns),
+            other => rest.push(other),
+        }
+    }
+    assert!(read.windows(2).all(|w| w[0] < w[1]), "{read:?}");
+    (read, rest)
+}
+
 fn silence_job(dir: &Path, threshold_db: f64, min_ms: u32) -> (SilenceKey, Vec<String>) {
     let file = "takes/take-0001/A1-mic.mka";
     let meta = fs::metadata(dir.join(file)).unwrap();
@@ -1544,7 +1567,8 @@ fn cached_silences_are_reused_without_ffmpeg() {
         silence_argv("takes/gone.mka", -35.0, 400),
         inbox,
     );
-    let events = events_until(&rx, WAIT, |_| true);
+    let (read, events) = progress_and_rest(events_until(&rx, WAIT, silence_end));
+    assert!(read.is_empty(), "nothing read: {read:?}");
     let [Event::SilenceFailed { job, key, message }] = events.as_slice() else {
         panic!("{events:#?}");
     };
@@ -1566,7 +1590,13 @@ fn silence_detection_finds_the_fixture_gaps_and_caches_them() {
     let mut runner = runner(&dir);
     let (inbox, rx) = Inbox::channel();
     runner.detect_silence(JobId(1), key.clone(), argv.clone(), inbox.clone());
-    let events = events_until(&rx, WAIT, |_| true);
+    let (read, events) = progress_and_rest(events_until(&rx, WAIT, silence_end));
+    // ffmpeg's last `-progress` block: it read the whole 2.5 s (issue #15).
+    let last = read.last().copied().unwrap_or_default();
+    assert!(
+        (last as i64 - 2_500_000_000).abs() <= 25_000_000,
+        "{read:?}"
+    );
     let [Event::SilenceDetected { silences, .. }] = events.as_slice() else {
         panic!("{events:#?}");
     };
@@ -1590,11 +1620,55 @@ fn silence_detection_finds_the_fixture_gaps_and_caches_them() {
             .is_file()
     );
 
-    // Again (another job): straight from the cache.
+    // Again (another job): straight from the cache, nothing to read.
     runner.detect_silence(JobId(2), key, argv, inbox);
     let again = events_until(&rx, WAIT, |_| true);
     assert!(matches!(&again[0], Event::SilenceDetected { silences: s, .. } if s == silences));
     assert!(logs_matching(&dir, "-j2-").is_empty());
+}
+
+#[test]
+fn an_analysis_reports_how_far_it_read() {
+    let env = TestEnv::new();
+    let dir = env.empty_dir("swamp");
+    // 1.6 s of tone at its own pace: a `-progress` block every half second.
+    let mut argv = ffmpeg_prelude(true);
+    argv.extend(strings(&[
+        "-re",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:duration=1.6",
+        "-af",
+        "silencedetect=noise=-35dB:d=0.4",
+        "-vn",
+        "-f",
+        "null",
+        "-",
+    ]));
+    let key = SilenceKey("ad".repeat(32));
+    let mut runner = runner(&dir);
+    let (inbox, rx) = Inbox::channel();
+    runner.detect_silence(JobId(3), key.clone(), argv, inbox);
+    let events = events_until(&rx, Duration::from_secs(20), silence_end);
+    assert!(
+        events.iter().all(|e| match e {
+            Event::SilenceProgress { job, key: k, .. } => (*job, k) == (JobId(3), &key),
+            _ => true,
+        }),
+        "{events:#?}"
+    );
+    let (read, rest) = progress_and_rest(events);
+    assert!(read.len() >= 2, "it read on, block by block: {read:?}");
+    let last = read.last().copied().unwrap_or_default();
+    assert!(
+        (last as i64 - 1_600_000_000).abs() <= 25_000_000,
+        "{read:?}"
+    );
+    assert!(
+        matches!(rest.as_slice(), [Event::SilenceDetected { silences, .. }] if silences.is_empty()),
+        "{rest:#?}"
+    );
 }
 
 #[test]

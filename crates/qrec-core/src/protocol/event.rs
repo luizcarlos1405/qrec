@@ -71,6 +71,13 @@ pub enum Event {
         key: SilenceKey,
         message: String,
     },
+    /// ~2 Hz while ffmpeg analyzes `key`'s file: how far it has read (its
+    /// `-progress` output time). The autocut page's percent (issue #15).
+    SilenceProgress {
+        job: JobId,
+        key: SilenceKey,
+        out_time_ns: u64,
+    },
     ExportProgress {
         job: JobId,
         segment: usize,

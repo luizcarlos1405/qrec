@@ -131,6 +131,38 @@ mod tests {
         );
     }
 
+    /// A silence analysis (`media_argv::silence_argv`, audio into the null
+    /// muxer) as ffmpeg 8.1.2 prints it: no `frame`, the time it has read
+    /// (issue #15's `SilenceProgress`).
+    #[test]
+    fn an_audio_only_block() {
+        let mut parser = ProgressParser::new();
+        let blocks = feed_all(
+            &mut parser,
+            "bitrate=N/A\ntotal_size=N/A\nout_time_us=12480000\nout_time_ms=12480000\n\
+             out_time=00:00:12.480000\ndup_frames=0\ndrop_frames=0\nspeed=24.9x\n\
+             progress=continue\n\
+             bitrate=N/A\ntotal_size=N/A\nout_time_us=30000000\nout_time_ms=30000000\n\
+             out_time=00:00:30.000000\ndup_frames=0\ndrop_frames=0\nspeed=1.5e+03x\n\
+             progress=end\n",
+        );
+        assert_eq!(
+            blocks,
+            vec![
+                ProgressBlock {
+                    frame: None,
+                    out_time_ns: Some(12_480_000_000),
+                    end: false
+                },
+                ProgressBlock {
+                    frame: None,
+                    out_time_ns: Some(30_000_000_000),
+                    end: true
+                },
+            ]
+        );
+    }
+
     #[test]
     fn time_keys_fall_back() {
         let mut parser = ProgressParser::new();

@@ -4,7 +4,9 @@
 //! `Autocut` snapshots its parameters and targets (`AutocutTarget`: the
 //! clip as a `ClipRef`, the track, the `SilenceKey` of its audio file from
 //! `ctx.facts.files`) into a `JobKind::Autocut` job and emits one
-//! `DetectSilence` per key missing from `runtime.silence`. The job completes
+//! `DetectSilence` per key missing from `runtime.silence`; the job's
+//! `analysis` holds each missing file's length, which `SilenceProgress`
+//! reads up to (the autocut page's percent, issue #15). The job completes
 //! in `on_event::autocut` — or right here when every key is already known.
 //! Clips that can't be analyzed (no such track, missing media, no file) are
 //! skipped with a reason; until the shared job type has a field for them,
@@ -29,7 +31,8 @@ use crate::protocol::command::{AutocutKeep, AutocutOverrides, ClipScope, Command
 use crate::protocol::effect::{Effect, LogLevel};
 use crate::protocol::reply::AutocutSkipView;
 use crate::state::{
-    AutocutParams, AutocutSource, AutocutTarget, ClipRef, Job, JobKind, SilenceKey, State,
+    AnalysisProgress, AutocutParams, AutocutSource, AutocutTarget, ClipRef, Job, JobKind,
+    SilenceKey, State,
 };
 
 pub use crate::on_event::autocut::apply_ready_autocuts;
@@ -172,8 +175,9 @@ fn start(state: &State, ctx: &Ctx, request: Request) -> Started {
     let params = request.params;
     let mut targets = Vec::new();
     let mut skipped = Vec::new();
-    // Keys in first-use order, with the file each one analyzes.
-    let mut files: Vec<(SilenceKey, String)> = Vec::new();
+    // Keys in first-use order, with the file each one analyzes and its
+    // probed length (the analysis's percent, issue #15).
+    let mut files: Vec<(SilenceKey, String, Option<i64>)> = Vec::new();
     'clips: for clip in &request.clips {
         let sources = project
             .take(&clip.take)
@@ -205,8 +209,8 @@ fn start(state: &State, ctx: &Ctx, request: Request) -> Started {
                 params.threshold_db,
                 params.min_silence_ms,
             );
-            if !files.iter().any(|(k, _)| *k == key) {
-                files.push((key.clone(), stream.file.clone()));
+            if !files.iter().any(|(k, _, _)| *k == key) {
+                files.push((key.clone(), stream.file.clone(), stream.duration_ns));
             }
             tracks.push(AutocutSource {
                 track: track.id.clone(),
@@ -226,9 +230,9 @@ fn start(state: &State, ctx: &Ctx, request: Request) -> Started {
         });
     }
 
-    let missing: Vec<&(SilenceKey, String)> = files
+    let missing: Vec<&(SilenceKey, String, Option<i64>)> = files
         .iter()
-        .filter(|(key, _)| !state.runtime.silence.contains_key(key))
+        .filter(|(key, _, _)| !state.runtime.silence.contains_key(key))
         .collect();
     let wait_for_recording = !request.dry_run && !state.runtime.record.is_idle();
     if missing.is_empty() && !wait_for_recording {
@@ -246,13 +250,29 @@ fn start(state: &State, ctx: &Ctx, request: Request) -> Started {
     let job = next.runtime.alloc_job_id();
     let mut effects: Vec<Effect> = missing
         .iter()
-        .map(|(key, file)| Effect::DetectSilence {
+        .map(|(key, file, _)| Effect::DetectSilence {
             job,
             key: key.clone(),
             argv: silence_argv(file, params.threshold_db, params.min_silence_ms),
         })
         .collect();
-    let pending: BTreeSet<SilenceKey> = missing.iter().map(|(key, _)| key.clone()).collect();
+    let pending: BTreeSet<SilenceKey> = missing.iter().map(|(key, _, _)| key.clone()).collect();
+    // What the analyses will read: the files whose length is known.
+    let analysis = missing
+        .iter()
+        .filter_map(|(key, _, length)| {
+            let total_ns = u64::try_from(length.unwrap_or(0))
+                .ok()
+                .filter(|&ns| ns > 0)?;
+            Some((
+                key.clone(),
+                AnalysisProgress {
+                    done_ns: 0,
+                    total_ns,
+                },
+            ))
+        })
+        .collect();
     let kind = JobKind::Autocut {
         cmd: events::with_skipped(request.cmd, &skipped),
         targets,
@@ -261,6 +281,7 @@ fn start(state: &State, ctx: &Ctx, request: Request) -> Started {
         // Nothing to analyze: only the recording holds it back.
         ready: pending.is_empty(),
         pending,
+        analysis,
     };
     let entry = Job {
         id: job,
@@ -674,6 +695,7 @@ mod tests {
             dry_run,
             ready,
             cmd,
+            analysis,
         } = &job.kind
         else {
             panic!("an autocut job: {job:?}");
@@ -681,6 +703,24 @@ mod tests {
         assert_eq!(params, &p);
         assert!(!dry_run && !ready);
         assert_eq!(pending.len(), 2);
+        // Each file the job reads, nothing read yet, against its length
+        // (issue #15's percent).
+        let length = |file: &str| {
+            let mut streams = state.project.takes.values().flat_map(|t| &t.streams);
+            let ns = streams.find(|s| s.file == file).and_then(|s| s.duration_ns);
+            u64::try_from(ns.expect("a probed length")).unwrap()
+        };
+        let read = |file: &str| {
+            let progress = AnalysisProgress {
+                done_ns: 0,
+                total_ns: length(file),
+            };
+            (fixtures::key(&ctx, file, &p), progress)
+        };
+        assert_eq!(
+            analysis,
+            &std::collections::BTreeMap::from([read(MIC1), read(MIC2)])
+        );
         assert_eq!(targets.len(), 2);
         assert_eq!(
             targets[0].clip,
@@ -1210,6 +1250,7 @@ mod tests {
                 dry_run: false,
                 pending: BTreeSet::new(),
                 ready: true,
+                analysis: Default::default(),
             },
             req: Some(ReqId("r0".into())),
             started: ctx.now,
