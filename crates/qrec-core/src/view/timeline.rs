@@ -1797,8 +1797,9 @@ pub fn clip_tooltip(state: &State, clip: &ClipId, keymap: &Keymap) -> Option<Cli
 #[serde(rename_all = "camelCase")]
 pub enum ToolbarVariant {
     Normal,
-    /// No clips (S01a, S01b): Bin without a count, Autocut, its settings
-    /// and the zoom cluster disabled, "No clips yet".
+    /// No clips (S01a, S01b): Bin without a count, Autocut and the zoom
+    /// cluster disabled, "No clips yet". The autocut settings open (to set
+    /// autocut up before the first take: the owner asked, 2026-11-14).
     Empty,
     /// Not Idle (S03–S05): Autocut and its settings disabled.
     Recording,
@@ -1867,7 +1868,7 @@ pub fn toolbar(state: &State, viewport: Option<&Viewport>, total: Frame) -> Tool
         bin_open: state.ui.bin_open,
         snapping: state.ui.snapping,
         autocut,
-        autocut_settings: idle && !clips.is_empty(),
+        autocut_settings: crate::view::autocut::page_enabled(state).is_ok(),
         summary,
         zoom,
         zoom_in,

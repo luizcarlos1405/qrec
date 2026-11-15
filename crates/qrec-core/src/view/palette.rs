@@ -223,7 +223,6 @@ pub fn availability(id: &str, state: &State) -> Result<(), String> {
     let empty = || Err("The timeline is empty".to_owned());
     match id {
         "export" => panel_enabled(state),
-        "autocut.preview" if !clips => empty(),
         "autocut.preview" => {
             let page = Command::Autocut {
                 scope: ClipScope::All,
@@ -624,13 +623,16 @@ mod tests {
         );
         let mut empty = testkit::state(crate::testkit::ProjectBuilder::new().build());
         empty.runtime.host = crate::state::HostKind::Gui;
-        for id in ["export", "autocut.preview", "zoom.fit"] {
+        for id in ["export", "zoom.fit"] {
             assert_eq!(
                 availability(id, &empty),
                 Err("The timeline is empty".into()),
                 "{id}"
             );
         }
+        // The autocut page opens on an empty timeline: its settings can be
+        // set before the first take.
+        assert_eq!(availability("autocut.preview", &empty), Ok(()));
         let mut counting = state.clone();
         counting.runtime.record = RecordPhase::Countdown {
             remaining: 3,

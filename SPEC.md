@@ -857,6 +857,9 @@ silencedetect=noise=<thresholdDb>dB:d=<minSilence> -vn -f null -` on
      hatched regions with sliders, and the padding kept beside each in blue.
    - The CLI equivalent is `qrec autocut --dry-run`, which prints the planned
      segments.
+   - With no clips yet, Shift+C still opens the settings, so autocut can be
+     set up before the first take; there is nothing to preview, and Save
+     keeps the settings.
 5. **Clicks at cuts.** Preview and export apply a 5 ms audio fade at every
    clip boundary that isn't a natural take start or end, to avoid clicks at
    autocut and split points.

@@ -36,6 +36,14 @@ pub const TITLE: &str = "Autocut";
 pub const ANALYZING: &str = "Analyzing\u{2026}";
 /// The summary title when the plan cuts nothing.
 pub const NOTHING_TO_CUT: &str = "Nothing to cut";
+/// The summary title on an empty timeline: no dry run goes.
+pub const NOTHING_YET: &str = "Nothing to cut yet";
+/// Its one row: what to do for a preview.
+pub const RECORD_FIRST: &str = "Record a take to see what these settings cut.";
+/// The primary button: settings and the cut.
+pub const APPLY: &str = "Apply autocut";
+/// The primary button on an empty timeline: the settings only.
+pub const SAVE: &str = "Save";
 /// The note under the switch (S12).
 pub const NOTE: &str =
     "Removed audio and video come back if you drag a clip edge out, or with Ctrl+Z.";
@@ -364,12 +372,38 @@ pub fn apply(state: &State, draft: &AutocutDraft) -> Vec<Command> {
     if patch != AutocutPatch::default() {
         commands.push(Command::AutocutSettings { patch });
     }
-    commands.push(Command::Autocut {
-        scope: scope(state),
-        overrides: AutocutOverrides::default(),
-        dry_run: false,
-    });
+    if previews(state) {
+        commands.push(Command::Autocut {
+            scope: scope(state),
+            overrides: AutocutOverrides::default(),
+            dry_run: false,
+        });
+    }
     commands
+}
+
+/// Whether the page previews a cut: the timeline has clips. On an empty
+/// one it opens all the same, to set autocut up before the first take
+/// (the owner asked, 2026-11-14), sends no dry run and shows
+/// [`empty_summary`]; its primary button reads [`SAVE`] and saves the
+/// settings only ([`apply`]).
+pub fn previews(state: &State) -> bool {
+    !state.project.timeline.clips.is_empty()
+}
+
+/// The primary button's label (and the hint of its `Enter`): [`APPLY`],
+/// or [`SAVE`] on an empty timeline.
+pub fn apply_label(state: &State) -> &'static str {
+    if previews(state) { APPLY } else { SAVE }
+}
+
+/// The summary on an empty timeline: "Nothing to cut yet", and what to do.
+pub fn empty_summary() -> AutocutSummary {
+    AutocutSummary {
+        title: NOTHING_YET.to_owned(),
+        rows: vec![(String::new(), RECORD_FIRST.to_owned())],
+        regions: Vec::new(),
+    }
 }
 
 /// The switch "Run autocut after every take": saved at once (D-15).
@@ -661,7 +695,8 @@ pub fn preview_spans_for(
 }
 
 /// The panel subtitle while previewing: "Previewing take 8 · c3e9",
-/// "Previewing 4 clips", "Previewing all 10 clips".
+/// "Previewing 4 clips", "Previewing all 10 clips"; "No clips yet" on an
+/// empty timeline.
 pub fn subtitle(state: &State) -> String {
     let clips = &state.project.timeline.clips;
     let selected: Vec<_> = state
@@ -671,6 +706,7 @@ pub fn subtitle(state: &State) -> String {
         .filter_map(|id| state.project.clip(id))
         .collect();
     match selected.as_slice() {
+        [] if clips.is_empty() => format::NO_CLIPS.to_owned(),
         [] => format!(
             "Previewing all {} {}",
             format::count(clips.len() as u64),
@@ -681,12 +717,9 @@ pub fn subtitle(state: &State) -> String {
     }
 }
 
-/// Whether the page opens now (the `autocut.page` hint, G§4.3): clips on
-/// the timeline and the gates of `Autocut` (Idle).
+/// Whether the page opens now (the `autocut.page` hint, G§4.3): the gates
+/// of `Autocut` (Idle). An empty timeline opens it too ([`previews`]).
 pub fn page_enabled(state: &State) -> Result<(), String> {
-    if state.project.timeline.clips.is_empty() {
-        return Err("The timeline is empty".to_owned());
-    }
     crate::view::enabled(
         state,
         &Command::Autocut {
@@ -928,6 +961,46 @@ mod tests {
         // timeline 2084 + 108 … 2084 + 146.
         assert_eq!((spans[0].from, spans[0].to), (2192, 2230));
         assert_eq!(spans[0].tag, "\u{2212}1.3 s");
+    }
+
+    /// An empty timeline opens the page (the owner asked, 2026-11-14): no
+    /// dry run to preview, "Nothing to cut yet", and Save keeps the
+    /// settings without a cut. A recording still closes it.
+    #[test]
+    fn an_empty_timeline_opens_the_page_to_save_settings() {
+        let mut state = s12();
+        state.project.timeline.clips.clear();
+        state.ui.selection.clear();
+        assert_eq!(page_enabled(&state), Ok(()));
+        assert!(!previews(&state));
+        assert_eq!(subtitle(&state), "No clips yet");
+        assert_eq!(apply_label(&state), SAVE);
+        assert_eq!(apply_label(&s12()), APPLY);
+        assert_eq!(empty_summary().title, NOTHING_YET);
+        assert_eq!(
+            empty_summary().rows,
+            [(String::new(), RECORD_FIRST.to_owned())]
+        );
+        let draft = AutocutDraft::from(&state.project);
+        assert!(apply(&state, &draft).is_empty(), "nothing changed: nothing");
+        let tuned = Knob::MinKeep.set(&draft, 80.0);
+        assert_eq!(
+            apply(&state, &tuned),
+            [Command::AutocutSettings {
+                patch: AutocutPatch {
+                    min_keep_ms: Some(80),
+                    ..AutocutPatch::default()
+                },
+            }],
+            "the settings only: no cut"
+        );
+        state.runtime.record = RecordPhase::Recording {
+            take: TakeId::numbered(10),
+            mode: RecordMode::Append,
+            elapsed_ns: 0,
+            waiters: vec![],
+        };
+        assert_eq!(page_enabled(&state), Err("Not while recording".to_owned()));
     }
 
     #[test]
@@ -1239,7 +1312,7 @@ mod tests {
     }
 
     #[test]
-    fn the_page_needs_clips_and_idle() {
+    fn the_page_needs_idle() {
         let mut state = s12();
         assert_eq!(page_enabled(&state), Ok(()));
         state.runtime.record = RecordPhase::Recording {
@@ -1250,6 +1323,6 @@ mod tests {
         };
         assert_eq!(page_enabled(&state), Err("Not while recording".into()));
         let empty = testkit::state(testkit::ProjectBuilder::new().build());
-        assert_eq!(page_enabled(&empty), Err("The timeline is empty".into()));
+        assert_eq!(page_enabled(&empty), Ok(()), "an empty timeline opens it");
     }
 }

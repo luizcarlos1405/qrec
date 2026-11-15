@@ -2465,7 +2465,7 @@ decides, because some ids are handled by the GUI and not by
 | Id | Enabled when |
 | --- | --- |
 | `export.panel` (the `export` key) | an export job runs, or the timeline has clips and the phase is Idle |
-| `autocut.page` (the `autocut.preview` key) | the timeline has clips and the phase is Idle |
+| `autocut.page` (the `autocut.preview` key) | the phase is Idle (an empty timeline opens it too, to set autocut up before the first take: owner's call, 2026-11-14) |
 | `zoom.selection` | the selection isn't empty (S07: disabled) |
 | `zoom.in` / `zoom.out` | px/frame < 128 / px/frame > fit; a combined item when either is |
 | `zoom.fit` | the timeline has clips |
@@ -2493,7 +2493,7 @@ decides, because some ids are handled by the GUI and not by
 | ExportSetup / ExportDone / ExportFailed | `[Enter]` "Export" / "Open file" / "Try again" · `[Tab]` "Move focus" · `[Esc]` "Close" |
 | Modal | `[Tab]` "Move focus" · `[Enter]` "Activate focused button" · `[Esc]` "Cancel" |
 | Settings (not drawn) | `[Tab]` "Move focus" · `[Esc]` "Close" |
-| LayersSheet (not drawn) | `[Tab]` "Move focus" · `[Esc]` "Close"; with the autocut page: `[Enter]` "Apply autocut" · `[Tab]` "Move focus" · `[Esc]` "Cancel" |
+| LayersSheet (not drawn) | `[Tab]` "Move focus" · `[Esc]` "Close"; with the autocut page: `[Enter]` "Apply autocut" ("Save" on an empty timeline) · `[Tab]` "Move focus" · `[Esc]` "Cancel" |
 | Palette (S19) | `[↑][↓]` "Choose" · `[Enter]` "Run" · `[Esc]` "Close" |
 | PortalDenied (S24, Live only) | `record.toggle` "Try again" · `canvas.mode` "Program" · `bin.toggle` "Bin" · `keys.help` "All keys" |
 | Blocking { page } (WP8, `view::blocking::hints`) | S23: `[Enter]` "Check again" · `app.quit` "Quit"; X3: `[Enter]` "Copy command" · `app.quit` "Quit"; X1's and D-29's modal: `[Tab]` "Move focus" · `[Enter]` "Activate focused button" · `[Esc]` "Quit"; the other pages: `app.quit` "Quit" |
@@ -2778,7 +2778,8 @@ As built (WP6, round 3):
 - **Toolbar** (C14): Bin (count = bin takes, `b`), Snap (`n`), divider,
   Autocut (`c`), the autocut-settings icon (`autocut.page`); right:
   summary, zoom out, slider, zoom in, Fit, readout. Empty and Recording
-  variants (S01a, S04).
+  variants (S01a, S04); the Empty one keeps the autocut-settings icon
+  enabled (`autocut::page_enabled`: owner's call, 2026-11-14).
 - **Headers** (C17): Video, "Thumbnails: Face (L2)" (the project scene's
   topmost visible layer); lanes: role icon, label, id chip, scissors on
   `autocut.track` (unset: each lane a clip is analyzed on, G§4.7's
@@ -3076,6 +3077,14 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     its hatches, summary and regions go until the new answer (review R40,
     R76).
   - `apply(&State, &draft) -> Vec<Command>` (D-15).
+  - An empty timeline opens the page too (`autocut::previews` false; the
+    owner asked, 2026-11-14: autocut is set up before the first take). No
+    dry run goes; the subtitle reads "No clips yet", the summary "Nothing
+    to cut yet" with "Record a take to see what these settings cut.", and
+    the primary button (and its `Enter` hint) "Save": `apply` sends the
+    changed settings and no cut. Clips coming back while it shows (an
+    undo, another client) start the dry runs again; a timeline emptied
+    under it drops them for that summary.
   - `summary(&AutocutPlanView, &State) -> AutocutSummary { title, rows:
     Vec<(String, String)>, regions: Vec<RegionRow> }`, matching the S12
     PNG: title "Removes 4 silences (6.2 s)"; rows ("Take 8",

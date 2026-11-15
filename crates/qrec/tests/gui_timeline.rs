@@ -897,10 +897,14 @@ fn s12_zoom_to_c3e9() {
     nested.window(0).wait_idle();
     let open_local = local(&mut nested);
     assert_eq!(open_local["panelPage"], "autocut", "{open_local}");
-    let spans = open_local["autocutPreview"]["spans"]
+    // The four cuts (the padding beside each is drawn too).
+    let spans: Vec<Value> = open_local["autocutPreview"]["spans"]
         .as_array()
         .cloned()
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| s["kind"] == "cut")
+        .collect();
     assert_eq!(spans.len(), 4, "{open_local}");
     let ui = nested.cli_json(&project, &["status"])["data"]["ui"].clone();
     let zoom = ui["zoom"].as_f64().expect("a zoom");

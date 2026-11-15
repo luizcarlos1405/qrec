@@ -924,7 +924,8 @@ fn toolbar_variants() {
     assert_eq!(e.variant, ToolbarVariant::Empty);
     assert_eq!(e.bin_count, None);
     assert_eq!(e.summary, ("No clips yet".to_owned(), String::new()));
-    assert!(e.autocut.is_err() && !e.autocut_settings && !e.zoom && !e.fit);
+    // The settings open before the first take; nothing to cut or zoom yet.
+    assert!(e.autocut.is_err() && e.autocut_settings && !e.zoom && !e.fit);
 
     let rec = recording(RecordMode::Append, 4842);
     let rview = Viewport::from_state(&rec, W).unwrap();

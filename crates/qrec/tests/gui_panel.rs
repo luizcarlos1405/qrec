@@ -2420,6 +2420,68 @@ fn the_autocut_knobs_say_what_they_do() {
     assert_clean(nested.window(0));
 }
 
+/// An empty timeline opens the autocut page (the owner asked, 2026-11-14):
+/// from the toolbar's settings icon, with no dry run ("Nothing to cut
+/// yet") and Save for its primary button, which keeps a tuned knob and
+/// cuts nothing; clips coming back while it shows bring the preview back.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn the_autocut_page_opens_on_an_empty_timeline() {
+    let mut nested = Nested::start(AREA, "autocut-empty", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &ui(|_| {}));
+    open(&mut nested, &project, levels(DESIGN_LEVELS));
+    let all = "c7f3,c8a1,c1b2,c1b3,c1b4,c1b5,c1b6,c2d0,c2d1,c3e9";
+    cli_ok(&nested, &project, &["clip", "remove", all]);
+    assert_eq!(clip_count(&nested, &project), 0);
+    nested.window(0).wait_idle();
+    let (x, y) = center(region(nested.window(0), "tl-autocut-settings"));
+    nested.pointer().click(x, y);
+    let labels = wait_for_label(nested.window(0), autocut::NOTHING_YET);
+    assert_has(
+        &labels,
+        &["No clips yet", autocut::RECORD_FIRST, autocut::SAVE],
+    );
+    assert!(!labels.iter().any(|l| l == autocut::APPLY), "{labels:#?}");
+    let shot = nested.screenshot("empty-page");
+    crop(&nested, &shot, PANEL, "panel");
+    // Min keep 80, then Save: the setting alone, and the page closes.
+    let before = history_cursor(&nested, &project);
+    let (x, y) = center(region(nested.window(0), "knob-field-3"));
+    nested.pointer().click(x, y);
+    nested.keys(&["-M", "ctrl", "-k", "a", "-m", "ctrl", "80", "-k", "Return"]);
+    nested.window(0).wait_idle();
+    assert_has(&panel_labels(nested.window(0)), &[autocut::NOTHING_YET]);
+    let (x, y) = center(region(nested.window(0), "autocut-apply"));
+    nested.pointer().click(x, y);
+    wait_for_label(nested.window(0), "Onion layers");
+    let status = nested.cli_json(&project, &["status"]);
+    assert_eq!(
+        status["data"]["project"]["autocut"]["minKeepMs"], 80,
+        "{status}"
+    );
+    assert_eq!(history_cursor(&nested, &project), before + 1, "one entry");
+    assert_eq!(clip_count(&nested, &project), 0);
+    // Open again, then the clips come back (the undo of the setting and of
+    // the removal): the page previews them.
+    nested.keys(&["-M", "shift", "-k", "c", "-m", "shift"]);
+    wait_for_label(nested.window(0), autocut::NOTHING_YET);
+    cli_ok(&nested, &project, &["undo", "2"]);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let gui = nested.window(0);
+        gui.wait_idle();
+        let labels = panel_labels(gui);
+        if labels.iter().any(|l| l.starts_with("Removes "))
+            && labels.iter().any(|l| l == autocut::APPLY)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no preview: {labels:#?}");
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert_clean(nested.window(0));
+}
+
 // ------------------------------------------------------- 1300 wide (Medium)
 
 /// The panel docked at 320 (G§3.15 Medium): the inspector's crop fields

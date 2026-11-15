@@ -180,13 +180,12 @@ pub fn hint_bar(
 /// `keymap::action_for` isn't `Unavailable`.
 pub fn hint_enabled(id: &str, state: &State, facts: &GuiFacts) -> bool {
     let clips = !state.project.timeline.clips.is_empty();
-    let idle = state.runtime.record.is_idle();
     match id {
         // The keys of `export` and `autocut.preview` open their GUI (G§3.8
         // step 10), whatever `action_for` says of the command: the export
         // panel by the rule `Ctrl+E` and the header's slot follow.
         "export.panel" | "export" => crate::view::export::panel_enabled(state).is_ok(),
-        "autocut.page" | "autocut.preview" => clips && idle,
+        "autocut.page" | "autocut.preview" => crate::view::autocut::page_enabled(state).is_ok(),
         "zoom.selection" => !state.ui.selection.is_empty(),
         "zoom.in" => facts.px_per_frame < MAX_PX_PER_FRAME,
         "zoom.out" => facts.px_per_frame > facts.fit_px_per_frame,
@@ -455,10 +454,14 @@ impl Items<'_> {
                     .bind_on(&["cancel"], "Cancel drag");
             }
             H::AutocutPage => {
-                self.literal(&[&["Enter"]], "Apply autocut", true)
-                    .literal(&[&["Esc"]], "Cancel", true)
-                    .bind(&["play.toggle"], play)
-                    .bind(&["zoom.in", "zoom.out"], "Zoom");
+                self.literal(
+                    &[&["Enter"]],
+                    crate::view::autocut::apply_label(self.state),
+                    true,
+                )
+                .literal(&[&["Esc"]], "Cancel", true)
+                .bind(&["play.toggle"], play)
+                .bind(&["zoom.in", "zoom.out"], "Zoom");
             }
             H::LayerEdit => {
                 self.bind(
@@ -504,7 +507,8 @@ impl Items<'_> {
                 // `Enter` reaches the page's default widget, Apply; `Esc`
                 // is the page's Cancel there (G§3.8 step 4).
                 if *autocut {
-                    self.literal(&[&["Enter"]], "Apply autocut", true);
+                    let apply = crate::view::autocut::apply_label(self.state);
+                    self.literal(&[&["Enter"]], apply, true);
                 }
                 let esc = if *autocut { "Cancel" } else { "Close" };
                 self.literal(&[&["Tab"]], "Move focus", true)
@@ -1433,12 +1437,13 @@ mod tests {
         assert!(!hint_enabled("autocut.page", &busy, &facts));
         export_job(&mut busy);
         assert!(hint_enabled("export.panel", &busy, &facts));
-        // An empty timeline: nothing to export, fit or autocut.
+        // An empty timeline: nothing to export or fit; the autocut page
+        // opens to set autocut up before the first take.
         let mut empty = state;
         empty.project.timeline.clips.clear();
         assert!(!hint_enabled("export.panel", &empty, &facts));
         assert!(!hint_enabled("zoom.fit", &empty, &facts));
-        assert!(!hint_enabled("autocut.page", &empty, &facts));
+        assert!(hint_enabled("autocut.page", &empty, &facts));
     }
 
     /// While an export runs, "Show export" leads the window's states but

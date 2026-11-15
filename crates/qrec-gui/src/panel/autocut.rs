@@ -354,7 +354,7 @@ impl AutocutPage {
                 Some(&esc),
             ))]);
         });
-        let apply = labeled_with_caps("Apply autocut", &["Enter".to_owned()], Kind::Primary);
+        let apply = labeled_with_caps(autocut::APPLY, &["Enter".to_owned()], Kind::Primary);
         apply.set_widget_name("autocut-apply");
         footer.append(&fill);
         footer.append(&cancel);
@@ -550,21 +550,28 @@ impl AutocutPage {
     }
 
     /// Opens the page on the project's settings and sends its first dry
-    /// run at once.
+    /// run at once; on an empty timeline none goes, and the summary says
+    /// so (`autocut::previews`).
     pub fn open(&self) {
         let inner = &self.inner;
         let state = inner.ctx.store.state();
         inner.open.set(true);
         *inner.draft.borrow_mut() = AutocutDraft::from(&state.project);
-        *inner.summary.borrow_mut() = None;
+        let previews = autocut::previews(&state);
+        *inner.summary.borrow_mut() = (!previews).then(autocut::empty_summary);
         inner.spans.borrow_mut().clear();
         inner.selected_region.set(None);
         self.show_draft(&state);
+        self.show_apply_label(&state);
         self.show_summary();
         let key = autocut::dry_run_key(&state, &inner.draft.borrow());
         let cmd = key.cmd.clone();
         *inner.wanted.borrow_mut() = Some(key);
-        let step = inner.runs.borrow_mut().open(cmd, self.now_ms());
+        let step = if previews {
+            inner.runs.borrow_mut().open(cmd, self.now_ms())
+        } else {
+            Step::Idle
+        };
         // Narrow: the page shows in the sheet (one already open stays the
         // person's when the page closes).
         let push = {
@@ -678,12 +685,31 @@ impl AutocutPage {
         };
         let cmd = key.cmd.clone();
         *inner.wanted.borrow_mut() = Some(key);
+        if !autocut::previews(state) {
+            // An empty timeline (emptied, or tuned while empty): nothing to
+            // preview, no dry run; what was waiting goes.
+            inner.runs.borrow_mut().close();
+            inner.timer.stop();
+            inner.debounce_busy.borrow_mut().take();
+            inner.spans.borrow_mut().clear();
+            *inner.summary.borrow_mut() = Some(autocut::empty_summary());
+            inner.selected_region.set(None);
+            self.publish();
+            return;
+        }
         if stale {
             inner.spans.borrow_mut().clear();
             *inner.summary.borrow_mut() = None;
             inner.selected_region.set(None);
         }
-        let step = inner.runs.borrow_mut().change(cmd, self.now_ms());
+        // Clips came onto an empty timeline (an undo, another client): the
+        // dry runs start again, the first at once.
+        let reopen = !inner.runs.borrow().is_open();
+        let step = if reopen {
+            inner.runs.borrow_mut().open(cmd, self.now_ms())
+        } else {
+            inner.runs.borrow_mut().change(cmd, self.now_ms())
+        };
         self.carry_out(step);
         self.publish();
     }
@@ -834,6 +860,7 @@ impl AutocutPage {
             return;
         }
         inner.subtitle.set_text(&autocut::subtitle(state));
+        self.show_apply_label(state);
         inner.setting.set(true);
         inner
             .switch
@@ -847,6 +874,27 @@ impl AutocutPage {
             .is_some_and(|w| *w != autocut::dry_run_key(state, &inner.draft.borrow()));
         if changed {
             self.request(state);
+        }
+    }
+
+    /// "Apply autocut", or "Save" on an empty timeline (the settings only),
+    /// with its accessible name.
+    fn show_apply_label(&self, state: &State) {
+        let apply = &self.inner.apply;
+        let text = autocut::apply_label(state);
+        let Some(label) = apply
+            .child()
+            .and_then(|content| content.first_child())
+            .and_downcast::<gtk::Label>()
+        else {
+            return;
+        };
+        if label.text() != text {
+            label.set_text(text);
+            apply.update_property(&[gtk::accessible::Property::Label(&button::accessible_name(
+                text,
+                Some(&["Enter".to_owned()]),
+            ))]);
         }
     }
 

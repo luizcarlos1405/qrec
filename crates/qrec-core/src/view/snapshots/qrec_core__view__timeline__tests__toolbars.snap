@@ -31,7 +31,7 @@ expression: "[normal, e, r]"
     "autocut": {
       "Err": "The timeline is empty"
     },
-    "autocutSettings": false,
+    "autocutSettings": true,
     "summary": [
       "No clips yet",
       ""

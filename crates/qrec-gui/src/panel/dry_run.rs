@@ -118,6 +118,11 @@ impl DryRuns {
         self.pending = None;
     }
 
+    /// The page is open to dry runs (not on an empty timeline: G§4.7).
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
     /// A dry run runs or waits: the summary shows "Analyzing…".
     pub fn analyzing(&self) -> bool {
         self.open && (self.in_flight.is_some() || self.pending.is_some())
