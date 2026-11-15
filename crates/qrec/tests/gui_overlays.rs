@@ -1218,6 +1218,7 @@ fn the_recording_and_autocut_pages_write_their_settings() {
     let labels = nested.window(0).labels("settings-autocut");
     for want in [
         "Run autocut after every take",
+        "Trim edges only",
         "Threshold",
         "dB",
         "Min silence",
@@ -1229,6 +1230,8 @@ fn the_recording_and_autocut_pages_write_their_settings() {
     }
     click(&mut nested, "settings-auto-run");
     wait_setting(&file, "autocut.auto_run_after_take", &json!(true));
+    click(&mut nested, "settings-edges-only");
+    wait_setting(&file, "autocut.edges_only", &json!(true));
     click(&mut nested, "settings-autocut-threshold-db");
     // (wtype reads "-40" as an option: the minus is its key.)
     nested.keys(&[

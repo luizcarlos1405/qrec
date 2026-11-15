@@ -1,8 +1,8 @@
 //! The autocut page (S12, D-15): it replaces the panel's content, a pushed
 //! page with a back button. "Detect silence on", four sliders with value
-//! fields, the summary of the newest dry run, the region list (a click
-//! seeks), "Run autocut after every take", the note, and Cancel / Apply
-//! autocut.
+//! fields, the "Trim edges only" check box (issue #15: part of the draft),
+//! the summary of the newest dry run, the region list (a click seeks),
+//! "Run autocut after every take", the note, and Cancel / Apply autocut.
 //!
 //! - Tuning is a draft (`view::autocut::AutocutDraft`): no history. Each
 //!   change sends a dry run 250 ms later, one at a time
@@ -32,8 +32,8 @@ use qrec_core::protocol::ToastLevel;
 use qrec_core::protocol::command::SeekTarget;
 use qrec_core::protocol::reply::AutocutPlanView;
 use qrec_core::view::autocut::{
-    self, AUTO_RUN, AutocutDraft, AutocutSummary, DETECT_ON, DryRunKey, Knob, NOTE, RegionRow,
-    TITLE,
+    self, AUTO_RUN, AutocutDraft, AutocutSummary, DETECT_ON, DryRunKey, EDGES_ONLY,
+    EDGES_ONLY_CAPTION, Knob, NOTE, RegionRow, TITLE,
 };
 use qrec_core::view::notices::Notice;
 use qrec_core::view::{AutocutPreview, PanelPageKind, format};
@@ -70,6 +70,8 @@ struct Inner {
     dropdown: gtk::DropDown,
     tracks: RefCell<Vec<TrackId>>,
     knobs: Vec<KnobView>,
+    /// "Trim edges only" (the draft's `edges_only`).
+    edges: gtk::CheckButton,
     spinner: Spinner,
     summary_title: gtk::Label,
     summary_mono: gtk::Label,
@@ -281,6 +283,20 @@ impl AutocutPage {
                 _tooltip: tooltip,
             });
         }
+        // "Trim edges only" under the sliders, its caption under its label
+        // (issue #15, board 02).
+        let edges_block = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        edges_block.add_css_class("autocut-block");
+        edges_block.add_css_class("autocut-edges");
+        let edges = gtk::CheckButton::with_label(EDGES_ONLY);
+        edges.set_widget_name("autocut-edges-only");
+        edges.set_focus_on_click(false);
+        edges.update_property(&[gtk::accessible::Property::Description(EDGES_ONLY_CAPTION)]);
+        let edges_caption = label(EDGES_ONLY_CAPTION, &["t-caption", "muted", "edges-caption"]);
+        edges_caption.set_wrap(true);
+        edges_block.append(&edges);
+        edges_block.append(&edges_caption);
+        content.append(&edges_block);
         // The summary.
         let summary = gtk::Box::new(gtk::Orientation::Vertical, 2);
         summary.add_css_class("autocut-summary");
@@ -370,6 +386,7 @@ impl AutocutPage {
                 dropdown,
                 tracks: RefCell::new(Vec::new()),
                 knobs,
+                edges,
                 spinner,
                 summary_title,
                 summary_mono,
@@ -464,6 +481,19 @@ impl AutocutPage {
                 let page = AutocutPage { inner };
                 let mut draft = page.inner.draft.borrow().clone();
                 draft.track = track;
+                page.set_draft(draft);
+            }));
+        let weak = Rc::downgrade(inner);
+        inner
+            .edges
+            .connect_toggled(guarded!("autocut: edges only", move |check| {
+                let Some(inner) = weak.upgrade() else { return };
+                if inner.setting.get() || !inner.open.get() {
+                    return;
+                }
+                let page = AutocutPage { inner };
+                let mut draft = page.inner.draft.borrow().clone();
+                draft.edges_only = check.is_active();
                 page.set_draft(draft);
             }));
         let weak = Rc::downgrade(inner);
@@ -930,6 +960,9 @@ impl AutocutPage {
                 knob.scale.set_value(value);
             }
             knob.field.set_value(&knob.knob.text(&draft));
+        }
+        if inner.edges.is_active() != draft.edges_only {
+            inner.edges.set_active(draft.edges_only);
         }
         inner.setting.set(false);
         self.show_tracks(state);

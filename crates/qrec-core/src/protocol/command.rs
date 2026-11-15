@@ -801,6 +801,8 @@ pub struct AutocutPatch {
     pub padding_ms: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_keep_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edges_only: Option<bool>,
 }
 
 /// One-off autocut parameters; absent fields come from the project settings.
@@ -817,6 +819,8 @@ pub struct AutocutOverrides {
     pub padding_ms: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_keep_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edges_only: Option<bool>,
 }
 
 /// Where a recording goes.

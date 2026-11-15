@@ -297,6 +297,8 @@ pub struct AutocutPage {
     pub group: GroupHeader,
     /// "Run autocut after every take" (S12's switch).
     pub auto_run: Switch,
+    /// "Trim edges only" (S12's check box; board 06 of issue #15).
+    pub edges_only: Switch,
     /// S12's knobs: Threshold, Min silence, Padding, Min keep.
     pub knobs: Vec<NumberRow>,
     pub footer: String,
@@ -333,6 +335,16 @@ pub fn autocut_page(config: &UserConfig, config_path: &str) -> AutocutPage {
             caption: Some("Cuts the silences of each take as it lands.".to_owned()),
             on: a.auto_run_after_take,
             key: "autocut.auto_run_after_take".to_owned(),
+        },
+        edges_only: Switch {
+            label: crate::view::autocut::EDGES_ONLY.to_owned(),
+            caption: Some(
+                "Cuts only the silence before the first sound and after the last. \
+                 Pauses inside a clip stay."
+                    .to_owned(),
+            ),
+            on: a.edges_only,
+            key: "autocut.edges_only".to_owned(),
         },
         knobs: vec![
             knob(

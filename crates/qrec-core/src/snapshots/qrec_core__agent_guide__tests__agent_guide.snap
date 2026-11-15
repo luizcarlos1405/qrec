@@ -1,6 +1,7 @@
 ---
 source: crates/qrec-core/src/agent_guide.rs
-expression: "agent_guide(&Desktop::Niri)"
+assertion_line: 505
+expression: "agent_guide(&Desktop::Niri, QREC)"
 ---
 # Qrec agent guide
 
@@ -141,6 +142,7 @@ Autocut silences. Preview first; applying is one undoable step:
 qrec autocut --dry-run --json   # data.result: {clips: [{clip, kept, removedFrames, silences}], skipped}
 qrec autocut                    # every clip; --clips c7f3,c8a1 for some
 qrec autocut --track A1 --threshold-db -40 --padding-ms 150
+qrec autocut --edges-only        # only each clip's leading and trailing silence
 ```
 
 Export and stills (canvas size and fps):
@@ -242,6 +244,7 @@ They are per user: defaults for new projects, the encoder and the GUI:
 - `autocut.min_silence_ms`: an integer from 0 to 60000
 - `autocut.padding_ms`: an integer from 0 to 60000
 - `autocut.min_keep_ms`: an integer from 0 to 60000
+- `autocut.edges_only`: true or false
 - `encoder.preference`: auto, vaapi or x264
 - `encoder.vaapi_device`: a render node such as /dev/dri/renderD129, or auto
 - `ui.scale`: a number from 0.5 to 3

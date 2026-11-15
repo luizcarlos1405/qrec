@@ -1,5 +1,6 @@
 ---
 source: crates/qrec-core/src/on_event/autocut.rs
+assertion_line: 1199
 expression: "json!({\n    \"firstResult\": fixtures::digest(&first), \"lastResult\":\n    fixtures::digest(&done), \"failedWhileRecording\":\n    fixtures::digest(&failed_first), \"readyWhileRecording\":\n    fixtures::digest(&deferred), \"appliedAfterPlacement\":\n    fixtures::digest(&flushed),\n})"
 ---
 appliedAfterPlacement:
@@ -86,6 +87,7 @@ failedWhileRecording:
         dryRun: false
         kind: autocut
         params:
+          edgesOnly: false
           minKeepMs: 50
           minSilenceMs: 400
           paddingMs: 120
@@ -135,6 +137,7 @@ firstResult:
         dryRun: false
         kind: autocut
         params:
+          edgesOnly: false
           minKeepMs: 50
           minSilenceMs: 400
           paddingMs: 120
@@ -268,6 +271,7 @@ readyWhileRecording:
         dryRun: false
         kind: autocut
         params:
+          edgesOnly: false
           minKeepMs: 50
           minSilenceMs: 400
           paddingMs: 120

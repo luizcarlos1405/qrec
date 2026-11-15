@@ -10,7 +10,10 @@
 //! 5. snap outward to frames (`in = ns_to_frame_floor`, `out =
 //!    ns_to_frame_ceil`), clamp to the clip, merge touching fragments;
 //! 6. nothing kept ⇒ the clip is left unchanged and reported "entirely
-//!    silent at −35 dB": autocut never deletes a whole clip.
+//!    silent at −35 dB": autocut never deletes a whole clip;
+//! 7. `edgesOnly` ⇒ the kept fragments become their hull, from where the
+//!    first starts to where the last ends: only the silence before the
+//!    first sound and after the last goes, and the clip stays one clip.
 //!
 //! Two precisions over A§5.7 (both pinned by `tests/props_autocut.rs`):
 //! - Overlapping or touching silences are merged before step 2. ffmpeg never
@@ -138,6 +141,7 @@ pub fn params_of(settings: &AutocutSettings) -> AutocutParams {
         min_silence_ms: settings.min_silence_ms,
         padding_ms: settings.padding_ms,
         min_keep_ms: settings.min_keep_ms,
+        edges_only: settings.edges_only,
     }
 }
 
@@ -168,14 +172,17 @@ pub fn to_take_time(silences: &[Interval], stream: &Stream, track: &AudioTrack) 
         .collect()
 }
 
-/// Steps 2–6 for silences already in take time.
+/// Steps 2–7 for silences already in take time.
 pub fn cut_clip(clip: &Clip, silences: &[Interval], params: &AutocutParams, fps: Fps) -> ClipCut {
     let range = Interval {
         start_ns: frame_ns(as_i64(clip.in_), fps),
         end_ns: frame_ns(as_i64(clip.out), fps),
     };
     let spans = kept_spans(range, silences, params.padding_ms, params.min_keep_ms);
-    let kept = snap_to_frames(&spans, clip, fps);
+    let mut kept = snap_to_frames(&spans, clip, fps);
+    if params.edges_only {
+        kept = hull(&kept);
+    }
     if kept.is_empty() {
         return ClipCut {
             kept,
@@ -313,6 +320,15 @@ pub fn snap_to_frames(spans: &[Interval], clip: &Clip, fps: Fps) -> Vec<[Frame; 
     kept
 }
 
+/// Step 7: the kept fragments as one, from the first's start to the last's
+/// end (none stays none).
+pub fn hull(kept: &[[Frame; 2]]) -> Vec<[Frame; 2]> {
+    match (kept.first(), kept.last()) {
+        (Some(first), Some(last)) => vec![[first[0], last[1]]],
+        _ => Vec::new(),
+    }
+}
+
 /// The union of `silences`: sorted, empty ones dropped, overlapping and
 /// touching ones merged.
 fn union(silences: &[Interval]) -> Vec<Interval> {
@@ -413,22 +429,42 @@ pub fn entirely_silent(params: &AutocutParams) -> String {
 }
 
 /// "Autocut take 3: removed 4 silences (6.2 s)" (one take) or "Autocut 2
-/// takes: …": the history label of a run that changed clips of `takes`.
-pub fn run_label(takes: &BTreeSet<TakeId>, silences: usize, removed_ns: i64) -> String {
+/// takes: …": the history label of a run that changed clips of `takes`;
+/// with `edges_only`, "Autocut take 3: trimmed 2 edges (3.1 s)".
+pub fn run_label(
+    takes: &BTreeSet<TakeId>,
+    silences: usize,
+    removed_ns: i64,
+    edges_only: bool,
+) -> String {
+    let (verb, what) = if edges_only {
+        ("trimmed", plural(silences, "edge", "edges"))
+    } else {
+        ("removed", plural(silences, "silence", "silences"))
+    };
     format!(
-        "Autocut {}: removed {silences} {} ({})",
+        "Autocut {}: {verb} {silences} {what} ({})",
         takes_label(takes),
-        plural(silences, "silence", "silences"),
         duration_label(removed_ns)
     )
 }
 
-/// "Dry run: autocut take 3 would remove 4 silences (6.2 s)".
-pub fn dry_run_label(takes: &BTreeSet<TakeId>, silences: usize, removed_ns: i64) -> String {
+/// "Dry run: autocut take 3 would remove 4 silences (6.2 s)"; with
+/// `edges_only`, "Dry run: autocut take 3 would trim 2 edges (3.1 s)".
+pub fn dry_run_label(
+    takes: &BTreeSet<TakeId>,
+    silences: usize,
+    removed_ns: i64,
+    edges_only: bool,
+) -> String {
+    let (verb, what) = if edges_only {
+        ("trim", plural(silences, "edge", "edges"))
+    } else {
+        ("remove", plural(silences, "silence", "silences"))
+    };
     format!(
-        "Dry run: autocut {} would remove {silences} {} ({})",
+        "Dry run: autocut {} would {verb} {silences} {what} ({})",
         takes_label(takes),
-        plural(silences, "silence", "silences"),
         duration_label(removed_ns)
     )
 }
@@ -475,6 +511,7 @@ mod tests {
             min_silence_ms: 400,
             padding_ms: 120,
             min_keep_ms: 200,
+            edges_only: false,
         }
     }
 
@@ -876,17 +913,29 @@ mod tests {
     fn labels() {
         let one: BTreeSet<TakeId> = [TakeId::numbered(3)].into();
         assert_eq!(
-            run_label(&one, 4, 6_200_000_000),
+            run_label(&one, 4, 6_200_000_000, false),
             "Autocut take 3: removed 4 silences (6.2 s)"
         );
         assert_eq!(
-            run_label(&one, 1, 450_000_000),
+            run_label(&one, 1, 450_000_000, false),
             "Autocut take 3: removed 1 silence (0.5 s)"
         );
         let two: BTreeSet<TakeId> = [TakeId::numbered(1), TakeId::numbered(3)].into();
         assert_eq!(
-            run_label(&two, 7, 64_000_000_000),
+            run_label(&two, 7, 64_000_000_000, false),
             "Autocut 2 takes: removed 7 silences (1 min 4.0 s)"
+        );
+        assert_eq!(
+            run_label(&one, 2, 3_100_000_000, true),
+            "Autocut take 3: trimmed 2 edges (3.1 s)"
+        );
+        assert_eq!(
+            dry_run_label(&one, 1, 900_000_000, true),
+            "Dry run: autocut take 3 would trim 1 edge (0.9 s)"
+        );
+        assert_eq!(
+            dry_run_label(&two, 4, 6_200_000_000, false),
+            "Dry run: autocut 2 takes would remove 4 silences (6.2 s)"
         );
         assert_eq!(db_label(-35.0), "\u{2212}35 dB");
         assert_eq!(db_label(-35.5), "\u{2212}35.5 dB");
@@ -966,6 +1015,39 @@ mod tests {
                 (10, 50),
                 vec![[0, 3000]],
                 p.clone(),
+            ),
+            // Issue #15: the speech sample's edges only; its two pauses stay.
+            (
+                "edges only",
+                FPS30,
+                (0, 210),
+                vec![[0, 512], [2005, 3008], [3605, 5013], [6016, 7000]],
+                AutocutParams {
+                    edges_only: true,
+                    ..p.clone()
+                },
+            ),
+            // A click 40 ms long before the first word goes with the edge.
+            (
+                "edges only, a click before the first word",
+                FPS30,
+                (0, 210),
+                vec![[0, 1000], [1040, 2005], [3008, 7000]],
+                AutocutParams {
+                    edges_only: true,
+                    ..p.clone()
+                },
+            ),
+            // Silences only inside: nothing to trim.
+            (
+                "edges only, pauses inside only",
+                FPS30,
+                (0, 210),
+                vec![[2005, 3008], [3605, 5013]],
+                AutocutParams {
+                    edges_only: true,
+                    ..p.clone()
+                },
             ),
         ];
         let table: Vec<Case> = cases

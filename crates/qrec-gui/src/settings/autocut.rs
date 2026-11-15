@@ -3,11 +3,13 @@
 //!
 //! What it shows is `view::preferences::autocut_page` of `config.toml`:
 //! the autocut settings new projects start with. "Run autocut after every
-//! take" (C27, S12's words) and S12's four knobs as C29 numeric fields
-//! with their units (Threshold dB, Min silence, Padding and Min keep ms;
-//! `config.toml`'s ranges, the knobs' steps). A project's own settings are
-//! its autocut page's (S12, `Shift+C`). Each change writes its setting as
-//! `qrec config set` does; a refused value says why under its field.
+//! take" (C27, S12's words), "Trim edges only" (a switch here, saved at
+//! once like the rest; issue #15, board 06) and S12's four knobs as C29
+//! numeric fields with their units (Threshold dB, Min silence, Padding and
+//! Min keep ms; `config.toml`'s ranges, the knobs' steps). A project's own
+//! settings are its autocut page's (S12, `Shift+C`). Each change writes its
+//! setting as `qrec config set` does; a refused value says why under its
+//! field.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -60,6 +62,17 @@ impl AutocutPage {
             },
             &auto_run,
         ));
+        let edges_only = gtk::Switch::new();
+        edges_only.set_widget_name("settings-edges-only");
+        edges_only.set_focus_on_click(false);
+        rows.append(&super::row(
+            &RowText {
+                label: view.edges_only.label.clone(),
+                caption: view.edges_only.caption.clone(),
+                tooltip: None,
+            },
+            &edges_only,
+        ));
         let mut fields = Vec::new();
         for knob in &view.knobs {
             let field = NumericField::new(&knob.unit, &knob.text.label);
@@ -80,6 +93,7 @@ impl AutocutPage {
         let parts = Rc::new(Parts {
             ctx: ctx.clone(),
             auto_run,
+            edges_only,
             fields,
             footer,
             syncing: Cell::new(false),
@@ -107,6 +121,7 @@ impl AutocutPage {
 struct Parts {
     ctx: Ctx,
     auto_run: gtk::Switch,
+    edges_only: gtk::Switch,
     /// Each knob's field, its setting and its unit.
     fields: Vec<(NumericField, String, String)>,
     footer: Footer,
@@ -132,6 +147,10 @@ impl Parts {
             self.auto_run.set_active(view.auto_run.on);
         }
         self.auto_run.set_state(view.auto_run.on);
+        if self.edges_only.is_active() != view.edges_only.on {
+            self.edges_only.set_active(view.edges_only.on);
+        }
+        self.edges_only.set_state(view.edges_only.on);
         for ((field, _, _), knob) in self.fields.iter().zip(&view.knobs) {
             field.set_value(&knob.value);
         }
@@ -182,6 +201,25 @@ impl Parts {
                 }
                 parts.write(
                     "autocut.auto_run_after_take",
+                    if on { "true" } else { "false" },
+                    None,
+                );
+                gtk::glib::Propagation::Stop
+            }
+        ));
+        let parts = Rc::downgrade(self);
+        self.edges_only.connect_state_set(guarded!(
+            "settings: autocut edges only",
+            after_panic = gtk::glib::Propagation::Stop,
+            move |_, on| {
+                let Some(parts) = parts.upgrade() else {
+                    return gtk::glib::Propagation::Stop;
+                };
+                if parts.syncing.get() {
+                    return gtk::glib::Propagation::Proceed;
+                }
+                parts.write(
+                    "autocut.edges_only",
                     if on { "true" } else { "false" },
                     None,
                 );

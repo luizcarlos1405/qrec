@@ -1,5 +1,6 @@
 ---
 source: crates/qrec-core/src/autocut.rs
+assertion_line: 1067
 expression: table
 ---
 - name: speech sample
@@ -21,6 +22,7 @@ expression: table
     minSilenceMs: 400
     paddingMs: 120
     minKeepMs: 200
+    edgesOnly: false
   cut:
     kept:
       - - 11
@@ -50,6 +52,7 @@ expression: table
     minSilenceMs: 400
     paddingMs: 0
     minKeepMs: 200
+    edgesOnly: false
   cut:
     kept:
       - - 15
@@ -79,6 +82,7 @@ expression: table
     minSilenceMs: 400
     paddingMs: 400
     minKeepMs: 200
+    edgesOnly: false
   cut:
     kept:
       - - 0
@@ -106,6 +110,7 @@ expression: table
     minSilenceMs: 400
     paddingMs: 120
     minKeepMs: 200
+    edgesOnly: false
   cut:
     kept:
       - - 71
@@ -127,6 +132,7 @@ expression: table
     minSilenceMs: 400
     paddingMs: 120
     minKeepMs: 200
+    edgesOnly: false
   cut:
     kept:
       - - 0
@@ -152,6 +158,7 @@ expression: table
     minSilenceMs: 400
     paddingMs: 120
     minKeepMs: 300
+    edgesOnly: false
   cut:
     kept:
       - - 0
@@ -173,7 +180,80 @@ expression: table
     minSilenceMs: 400
     paddingMs: 120
     minKeepMs: 200
+    edgesOnly: false
   cut:
     kept: []
+    silences: 0
+    removedFrames: 0
+- name: edges only
+  fps: "30"
+  clip:
+    - 0
+    - 210
+  silences_ms:
+    - - 0
+      - 512
+    - - 2005
+      - 3008
+    - - 3605
+      - 5013
+    - - 6016
+      - 7000
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 120
+    minKeepMs: 200
+    edgesOnly: true
+  cut:
+    kept:
+      - - 11
+        - 185
+    silences: 2
+    removedFrames: 36
+- name: "edges only, a click before the first word"
+  fps: "30"
+  clip:
+    - 0
+    - 210
+  silences_ms:
+    - - 0
+      - 1000
+    - - 1040
+      - 2005
+    - - 3008
+      - 7000
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 120
+    minKeepMs: 200
+    edgesOnly: true
+  cut:
+    kept:
+      - - 56
+        - 94
+    silences: 2
+    removedFrames: 172
+- name: "edges only, pauses inside only"
+  fps: "30"
+  clip:
+    - 0
+    - 210
+  silences_ms:
+    - - 2005
+      - 3008
+    - - 3605
+      - 5013
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 120
+    minKeepMs: 200
+    edgesOnly: true
+  cut:
+    kept:
+      - - 0
+        - 210
     silences: 0
     removedFrames: 0

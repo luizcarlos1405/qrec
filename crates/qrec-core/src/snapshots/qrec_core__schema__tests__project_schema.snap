@@ -1,5 +1,6 @@
 ---
 source: crates/qrec-core/src/schema.rs
+assertion_line: 582
 expression: project_schema()
 ---
 {
@@ -65,6 +66,10 @@ expression: project_schema()
       "additionalProperties": false,
       "properties": {
         "autoRunAfterTake": {
+          "type": "boolean"
+        },
+        "edgesOnly": {
+          "description": "Only the silence before the first sound and after the last of each\nclip is cut; pauses inside a clip stay (the plan's hull, A§5.7).\nWritten only when on, so a project from before it reads and writes\nback unchanged.",
           "type": "boolean"
         },
         "minKeepMs": {

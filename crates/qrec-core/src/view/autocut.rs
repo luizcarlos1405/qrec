@@ -36,6 +36,12 @@ pub const TITLE: &str = "Autocut";
 pub const ANALYZING: &str = "Analyzing\u{2026}";
 /// The summary title when the plan cuts nothing.
 pub const NOTHING_TO_CUT: &str = "Nothing to cut";
+/// The summary title when an edges-only plan trims nothing.
+pub const NOTHING_TO_TRIM: &str = "Nothing to trim";
+/// The check box under the sliders (issue #15, board 02).
+pub const EDGES_ONLY: &str = "Trim edges only";
+/// Its caption.
+pub const EDGES_ONLY_CAPTION: &str = "Keeps the pauses inside each clip.";
 /// The summary title on an empty timeline: no dry run goes.
 pub const NOTHING_YET: &str = "Nothing to cut yet";
 /// Its one row: what to do for a preview.
@@ -62,6 +68,9 @@ pub struct AutocutDraft {
     pub min_silence_ms: u32,
     pub padding_ms: u32,
     pub min_keep_ms: u32,
+    /// "Trim edges only".
+    #[serde(default)]
+    pub edges_only: bool,
 }
 
 impl From<&Project> for AutocutDraft {
@@ -74,6 +83,7 @@ impl From<&Project> for AutocutDraft {
             min_silence_ms: a.min_silence_ms,
             padding_ms: a.padding_ms,
             min_keep_ms: a.min_keep_ms,
+            edges_only: a.edges_only,
         }
     }
 }
@@ -299,6 +309,7 @@ pub fn overrides(draft: &AutocutDraft) -> AutocutOverrides {
         min_silence_ms: Some(draft.min_silence_ms),
         padding_ms: Some(draft.padding_ms),
         min_keep_ms: Some(draft.min_keep_ms),
+        edges_only: Some(draft.edges_only),
     }
 }
 
@@ -361,6 +372,7 @@ pub fn changed(state: &State, draft: &AutocutDraft) -> AutocutPatch {
             .then_some(draft.min_silence_ms),
         padding_ms: (draft.padding_ms != saved.padding_ms).then_some(draft.padding_ms),
         min_keep_ms: (draft.min_keep_ms != saved.min_keep_ms).then_some(draft.min_keep_ms),
+        edges_only: (draft.edges_only != saved.edges_only).then_some(draft.edges_only),
     }
 }
 
@@ -420,7 +432,8 @@ pub fn auto_run(on: bool) -> Command {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutocutSummary {
-    /// "Removes 4 silences (6.2 s)"; "Nothing to cut".
+    /// "Removes 4 silences (6.2 s)", "Trims 2 edges (3.1 s)"; "Nothing to
+    /// cut", "Nothing to trim".
     pub title: String,
     /// ("Take 8", "00:01:43:15 → 00:01:37:09") per take, then
     /// ("Timeline", "00:04:06:11 → 00:04:00:05").
@@ -503,7 +516,12 @@ pub fn summary_with(
             .map(nothing_to_cut_reason)
             .unwrap_or_else(|| default_reason(plan, state));
         return AutocutSummary {
-            title: NOTHING_TO_CUT.to_owned(),
+            title: if plan.edges_only {
+                NOTHING_TO_TRIM
+            } else {
+                NOTHING_TO_CUT
+            }
+            .to_owned(),
             rows: vec![(String::new(), why)],
             regions: Vec::new(),
         };
@@ -512,11 +530,19 @@ pub fn summary_with(
         .iter()
         .map(|r| frame_ns(r.to as i64, fps) - frame_ns(r.from as i64, fps))
         .sum();
-    let title = format!(
-        "Removes {silences} {} ({})",
-        if silences == 1 { "silence" } else { "silences" },
-        duration_label(removed_ns)
-    );
+    let title = if plan.edges_only {
+        format!(
+            "Trims {silences} {} ({})",
+            if silences == 1 { "edge" } else { "edges" },
+            duration_label(removed_ns)
+        )
+    } else {
+        format!(
+            "Removes {silences} {} ({})",
+            if silences == 1 { "silence" } else { "silences" },
+            duration_label(removed_ns)
+        )
+    };
     let clips = &state.project.timeline.clips;
     let mut takes: Vec<TakeId> = Vec::new();
     for run in &runs {
@@ -594,7 +620,12 @@ pub fn summary_with(
 fn nothing_to_cut_reason(message: &str) -> String {
     let lower = message.to_lowercase();
     let mut rest = message;
-    for lead in ["dry run: nothing to cut: ", "nothing to cut: "] {
+    for lead in [
+        "dry run: nothing to cut: ",
+        "nothing to cut: ",
+        "dry run: nothing to trim: ",
+        "nothing to trim: ",
+    ] {
         if lower.starts_with(lead) {
             rest = &message[lead.len()..];
             break;
@@ -608,6 +639,11 @@ fn nothing_to_cut_reason(message: &str) -> String {
 fn default_reason(plan: &AutocutPlanView, state: &State) -> String {
     if plan.clips.is_empty() {
         "No clip could be analyzed".to_owned()
+    } else if plan.edges_only {
+        format!(
+            "No silence long enough at the clips' edges at {}",
+            db_label(state.project.autocut.threshold_db)
+        )
     } else {
         format!(
             "No silence long enough to cut at {}",
@@ -830,6 +866,7 @@ mod tests {
                 silences: 4,
             }],
             skipped: vec![],
+            edges_only: false,
         }
     }
 
@@ -880,6 +917,59 @@ mod tests {
         assert_eq!(subtitle(&state), "Previewing take 8 · c3e9");
     }
 
+    /// Issue #15, board 02: edges only on c3e9 trims 2.2 s before the first
+    /// sound and 0.9 s after the last.
+    #[test]
+    fn edges_only_trims_edges() {
+        let state = s12();
+        let plan = AutocutPlanView {
+            clips: vec![AutocutClipView {
+                clip: id("c3e9"),
+                kept: vec![[66, 3078]],
+                removed_frames: 93,
+                silences: 2,
+            }],
+            skipped: vec![],
+            edges_only: true,
+        };
+        let got = summary(&plan, &state);
+        assert_eq!(got.title, "Trims 2 edges (3.1 s)");
+        assert_eq!(got.rows[0].1, "00:01:43:15 → 00:01:40:12");
+        assert_eq!(got.regions.len(), 2);
+        assert_eq!(got.regions[1].size, "27 f · 0.9 s");
+        let spans = preview_spans(&plan, &state);
+        let cuts: Vec<_> = spans
+            .iter()
+            .filter(|s| s.kind == HatchKind::Cut)
+            .map(|s| s.tag.as_str())
+            .collect();
+        assert_eq!(cuts, ["\u{2212}2.2 s", "\u{2212}0.9 s"]);
+
+        let none = AutocutPlanView {
+            clips: vec![AutocutClipView {
+                clip: id("c3e9"),
+                kept: vec![[0, 3105]],
+                removed_frames: 0,
+                silences: 0,
+            }],
+            skipped: vec![],
+            edges_only: true,
+        };
+        let got = summary_with(
+            &none,
+            &state,
+            Some(
+                "Dry run: nothing to trim: no silence long enough at the clips' edges at \u{2212}35 dB",
+            ),
+        );
+        assert_eq!(got.title, "Nothing to trim");
+        assert_eq!(
+            got.rows[0].1,
+            "No silence long enough at the clips' edges at −35 dB"
+        );
+        assert_eq!(summary_with(&none, &state, None), got);
+    }
+
     #[test]
     fn nothing_to_cut_reads_the_cores_message() {
         let state = s12();
@@ -891,6 +981,7 @@ mod tests {
                 silences: 0,
             }],
             skipped: vec![],
+            edges_only: false,
         };
         let got = summary_with(
             &plan,
@@ -915,6 +1006,7 @@ mod tests {
                 clip: id("c3e9"),
                 reason: "entirely silent at \u{2212}35 dB".into(),
             }],
+            edges_only: false,
         };
         assert_eq!(
             summary(&none, &state).rows,
@@ -1037,6 +1129,19 @@ mod tests {
             ..back
         };
         assert_eq!(changed(&state, &back), AutocutPatch::default());
+        // "Trim edges only" is part of the draft: Apply saves it.
+        let edges = AutocutDraft {
+            edges_only: true,
+            ..draft.clone()
+        };
+        assert_eq!(
+            changed(&state, &edges),
+            AutocutPatch {
+                edges_only: Some(true),
+                ..AutocutPatch::default()
+            }
+        );
+        assert_eq!(overrides(&edges).edges_only, Some(true));
         // A draft that unsets the track clears it.
         let mut cleared = state.clone();
         cleared.project.autocut.track = None;
@@ -1125,6 +1230,7 @@ mod tests {
                 silences: 1,
             }],
             skipped: vec![],
+            edges_only: false,
         };
         // Every scene of one to three tracks, each a mic or system audio.
         for n in 1..=3u32 {
@@ -1217,6 +1323,7 @@ mod tests {
                 silences: 1,
             }],
             skipped: vec![],
+            edges_only: false,
         };
         let mut state = testkit::state(project);
         let take = state.project.take(&TakeId::numbered(1)).unwrap();
@@ -1293,6 +1400,7 @@ mod tests {
                 },
             ],
             skipped: vec![],
+            edges_only: false,
         };
         let spans = preview_spans_for(&both, &state, None, 0);
         assert_eq!(

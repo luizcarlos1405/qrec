@@ -299,7 +299,12 @@ pub(crate) fn finish(state: &State, ctx: &Ctx, job: Snapshot) -> Finished {
         }
     }
     in_timeline_order(project, &mut skipped);
-    let plan = AutocutPlanView { clips, skipped };
+    let edges_only = job.params.edges_only;
+    let plan = AutocutPlanView {
+        clips,
+        skipped,
+        edges_only,
+    };
     let note = skipped_note(&plan.skipped);
 
     let failed = plan
@@ -335,22 +340,26 @@ pub(crate) fn finish(state: &State, ctx: &Ctx, job: Snapshot) -> Finished {
 
     if cuts.is_empty() {
         let why = nothing_to_cut(&plan, &job.params);
+        let what = if edges_only { "trim" } else { "cut" };
         let message = match job.dry_run {
-            true => with_note(format!("Dry run: nothing to cut: {why}"), &note),
-            false => with_note(format!("Nothing to cut: {why}"), &note),
+            true => with_note(format!("Dry run: nothing to {what}: {why}"), &note),
+            false => with_note(format!("Nothing to {what}: {why}"), &note),
         };
         let level = if plan.clips.is_empty() {
             ToastLevel::Warning
         } else {
             ToastLevel::Info
         };
-        let toast = Toast::new(level, "Autocut found nothing to cut")
+        let toast = Toast::new(level, format!("Autocut found nothing to {what}"))
             .with_body(with_note(capitalized(&why), &note));
         return unchanged(state, Ok(CmdResult::new(message).with_result(&plan)), toast);
     }
 
     if job.dry_run {
-        let message = with_note(dry_run_label(&takes, silences, removed_ns), &note);
+        let message = with_note(
+            dry_run_label(&takes, silences, removed_ns, edges_only),
+            &note,
+        );
         let toast = Toast::new(ToastLevel::Info, message.clone());
         return unchanged(state, Ok(CmdResult::new(message).with_result(&plan)), toast);
     }
@@ -405,7 +414,7 @@ pub(crate) fn finish(state: &State, ctx: &Ctx, job: Snapshot) -> Finished {
         next.project.timeline.clips =
             timeline::replace_run(&next.project.timeline.clips, index, 1, fragments);
     }
-    let label = run_label(&takes, silences, removed_ns);
+    let label = run_label(&takes, silences, removed_ns, edges_only);
     let committed = commit(state, ctx, label.clone(), job.cmd, next);
     let message = with_note(label.clone(), &note);
     // S25 #6: "Autocut take 8: removed 4 silences (6.2 s)" / Undo.
@@ -481,6 +490,10 @@ fn unchanged(state: &State, reply: Result<CmdResult, CoreError>, toast: Toast) -
 fn nothing_to_cut(plan: &AutocutPlanView, params: &AutocutParams) -> String {
     match plan.clips.len() {
         0 => "no clip could be analyzed".to_owned(),
+        _ if params.edges_only => format!(
+            "no silence long enough at the clips' edges at {}",
+            db_label(params.threshold_db)
+        ),
         _ => format!(
             "no silence long enough to cut at {}",
             db_label(params.threshold_db)
@@ -722,6 +735,53 @@ mod tests {
             entry.cmd,
             json!({"cmd": "autocut", "scope": "all", "overrides": {}, "dryRun": false})
         );
+    }
+
+    /// Issue #15: edges only trims each clip's ends, keeps its pauses and
+    /// its id, and says "trimmed … edges"; the analysis is the same one
+    /// (same keys), so a clip with silences inside only is left alone.
+    #[test]
+    fn edges_only_trims_each_clip_in_place() {
+        let project = fixtures::project();
+        let ctx = fixtures::ctx(&project);
+        let state = testkit::state(project);
+        let run = |state: &State, dry_run: bool| {
+            let cmd = Command::Autocut {
+                scope: ClipScope::All,
+                overrides: AutocutOverrides {
+                    edges_only: Some(true),
+                    ..AutocutOverrides::default()
+                },
+                dry_run,
+            };
+            let out = crate::apply::apply(state, &ctx, cmd).unwrap();
+            let first = detected(&out.state, &ctx, MIC1);
+            detected(&first.state, &ctx, MIC2)
+        };
+        let dry = run(&state, true);
+        let (_, reply) = reply_of(&dry).unwrap();
+        let result = reply.as_ref().unwrap();
+        assert_eq!(
+            result.message,
+            "Dry run: autocut take 1 would trim 2 edges (2.5 s)"
+        );
+        let plan = view(result);
+        assert!(plan.edges_only);
+        assert_eq!(plan.clips[0].kept, vec![[20, 244]]);
+        assert_eq!(plan.clips[1].kept, vec![[0, 150]], "pauses inside stay");
+
+        let done = run(&state, false);
+        let (_, reply) = reply_of(&done).unwrap();
+        let result = reply.as_ref().unwrap();
+        assert_eq!(result.message, "Autocut take 1: trimmed 2 edges (2.5 s)");
+        assert!(result.created.is_empty(), "no clip is split");
+        let clips = &done.state.project.timeline.clips;
+        assert_eq!(clips.len(), 2);
+        assert_eq!(
+            (clips[0].id.as_str(), clips[0].in_, clips[0].out),
+            ("c001", 20, 244)
+        );
+        assert_eq!(done.state.history.entries[0].label, result.message);
     }
 
     #[test]

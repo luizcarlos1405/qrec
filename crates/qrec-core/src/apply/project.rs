@@ -418,6 +418,7 @@ pub fn autocut_settings(
         min_silence_ms,
         padding_ms,
         min_keep_ms,
+        edges_only,
     } = patch;
     if auto_run_after_take.is_none()
         && track.is_keep()
@@ -425,10 +426,11 @@ pub fn autocut_settings(
         && min_silence_ms.is_none()
         && padding_ms.is_none()
         && min_keep_ms.is_none()
+        && edges_only.is_none()
     {
         return Err(CoreError::usage("nothing to change").with_hint(
             "qrec autocut settings [--auto-run BOOL] [--track A1|auto] [--threshold-db DB] \
-             [--min-silence-ms MS] [--padding-ms MS] [--min-keep-ms MS]",
+             [--min-silence-ms MS] [--padding-ms MS] [--min-keep-ms MS] [--edges-only BOOL]",
         ));
     }
 
@@ -449,6 +451,9 @@ pub fn autocut_settings(
     }
     if let Some(v) = min_keep_ms {
         settings.min_keep_ms = v;
+    }
+    if let Some(v) = edges_only {
+        settings.edges_only = v;
     }
     if let Some(problem) = autocut_problem(&settings) {
         return Err(CoreError::usage(problem));
@@ -501,6 +506,10 @@ pub fn autocut_settings(
     }
     if settings.min_keep_ms != before.min_keep_ms {
         changes.push(format!("min keep {} ms", settings.min_keep_ms));
+    }
+    if settings.edges_only != before.edges_only {
+        let on = if settings.edges_only { "on" } else { "off" };
+        changes.push(format!("edges only {on}"));
     }
 
     let mut next = state.clone();
@@ -1240,10 +1249,12 @@ mod tests {
             min_silence_ms: Some(500),
             padding_ms: Some(100),
             min_keep_ms: Some(250),
+            edges_only: Some(true),
         };
         let out = autocut_settings(&state, &ctx(), patch).unwrap();
         let a = &out.state.project.autocut;
         assert!(a.auto_run_after_take);
+        assert!(a.edges_only);
         assert_eq!(a.track, Some(track("A1")));
         assert_eq!(
             (
@@ -1258,9 +1269,10 @@ mod tests {
         assert_eq!(
             entry.label,
             "Autocut settings: auto-run on, track A1, threshold -40 dB, \
-             min silence 500 ms, padding 100 ms, min keep 250 ms"
+             min silence 500 ms, padding 100 ms, min keep 250 ms, edges only on"
         );
         assert_eq!(entry.cmd["cmd"], "autocutSettings");
+        assert_eq!(reply(&out).result["edgesOnly"], true);
         assert_eq!(reply(&out).result["track"], "A1");
 
         let patch = AutocutPatch {

@@ -1374,6 +1374,60 @@ fn autocut_dry_run_then_apply() {
     assert_eq!(clip_ids(&env, &dir), ["c001"]);
 }
 
+/// Issue #15: edges only trims the silence before the first sound and
+/// after the last, keeps the pause between them, and leaves one clip.
+#[test]
+fn autocut_edges_only_trims_the_ends() {
+    let env = TestEnv::new();
+    // 4 s at 30 fps; sound 0.5-1.5 s and 2.5-3.5 s: silences at both ends
+    // and a 1 s pause between.
+    let spec =
+        MediaSpec::video(320, 180, 30, 120).with_audio(48_000, 1, &[(500, 1500), (2500, 3500)]);
+    let dir = project_with(&env, "edges", &[spec]);
+
+    let all = qrec(&env, &dir, &["autocut", "--dry-run", "--json"]);
+    all.ok();
+    assert_eq!(all.reply()["data"]["result"]["clips"][0]["silences"], 3);
+
+    qrec(&env, &dir, &["autocut", "settings", "--edges-only", "true"]).ok();
+    let dry = qrec(&env, &dir, &["autocut", "--dry-run", "--json"]);
+    dry.ok();
+    let plan = &dry.reply()["data"]["result"];
+    assert_eq!(plan["edgesOnly"], true, "{plan}");
+    let clip = &plan["clips"][0];
+    assert_eq!(clip["silences"], 2, "{plan}");
+    let kept = clip["kept"].as_array().unwrap();
+    assert_eq!(kept.len(), 1, "{plan}");
+    // 120 ms of padding: from ~0.38 s to ~3.62 s, snapped outward.
+    let (start, end) = (kept[0][0].as_u64().unwrap(), kept[0][1].as_u64().unwrap());
+    assert!((10..=12).contains(&start), "{plan}");
+    assert!((108..=110).contains(&end), "{plan}");
+    let message = dry.reply()["data"]["message"].as_str().unwrap().to_owned();
+    assert!(message.contains("would trim 2 edges"), "{message}");
+
+    // One run with every silence, the setting notwithstanding.
+    let override_ = qrec(
+        &env,
+        &dir,
+        &["autocut", "--edges-only=false", "--dry-run", "--json"],
+    );
+    override_.ok();
+    assert_eq!(
+        override_.reply()["data"]["result"]["clips"][0]["silences"],
+        3
+    );
+
+    let apply = qrec(&env, &dir, &["autocut", "--json"]);
+    apply.ok();
+    assert!(created(&apply).is_empty(), "no clip is split");
+    let rows = qrec(&env, &dir, &["clip", "list", "--json"]).reply()["data"].clone();
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], "c001");
+    assert_eq!(rows[0]["in"].as_u64(), Some(start));
+    assert_eq!(rows[0]["out"].as_u64(), Some(end));
+}
+
 #[test]
 fn export_end_to_end_never_overwrites() {
     let env = TestEnv::new();

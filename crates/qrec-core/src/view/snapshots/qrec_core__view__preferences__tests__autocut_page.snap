@@ -1,5 +1,6 @@
 ---
 source: crates/qrec-core/src/view/preferences.rs
+assertion_line: 901
 expression: autocut
 ---
 {
@@ -12,6 +13,12 @@ expression: autocut
     "caption": "Cuts the silences of each take as it lands.",
     "on": false,
     "key": "autocut.auto_run_after_take"
+  },
+  "edgesOnly": {
+    "label": "Trim edges only",
+    "caption": "Cuts only the silence before the first sound and after the last. Pauses inside a clip stay.",
+    "on": false,
+    "key": "autocut.edges_only"
   },
   "knobs": [
     {

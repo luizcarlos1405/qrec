@@ -58,6 +58,7 @@ impl UserConfig {
                 min_silence_ms: self.autocut.min_silence_ms,
                 padding_ms: self.autocut.padding_ms,
                 min_keep_ms: self.autocut.min_keep_ms,
+                edges_only: self.autocut.edges_only,
             },
         }
     }
@@ -115,6 +116,7 @@ pub struct AutocutDefaults {
     pub min_silence_ms: u32,
     pub padding_ms: u32,
     pub min_keep_ms: u32,
+    pub edges_only: bool,
 }
 
 impl Default for AutocutDefaults {
@@ -126,6 +128,7 @@ impl Default for AutocutDefaults {
             min_silence_ms: a.min_silence_ms,
             padding_ms: a.padding_ms,
             min_keep_ms: a.min_keep_ms,
+            edges_only: a.edges_only,
         }
     }
 }
@@ -312,6 +315,7 @@ pub const KEYS: &[ConfigKey] = &[
     key("autocut.min_silence_ms", MS, "an integer from 0 to 60000", "Only silences at least this long are removed."),
     key("autocut.padding_ms", MS, "an integer from 0 to 60000", "Audio kept on each side of speech."),
     key("autocut.min_keep_ms", MS, "an integer from 0 to 60000", "Sounds shorter than this between cuts are cut too (padding doesn't count)."),
+    key("autocut.edges_only", Kind::Bool, "true or false", "Cut only the silence before the first sound and after the last of each clip, in new projects."),
     key("encoder.preference", Kind::Encoder, "auto, vaapi or x264", "H.264 encoder when a project says auto."),
     key("encoder.vaapi_device", Kind::Device, "a render node such as /dev/dri/renderD129, or auto", "VA-API node when a project names none; auto = the first Intel or AMD node, never NVIDIA."),
     key("ui.scale", Kind::Float { min: 0.5, max: 3.0 }, "a number from 0.5 to 3", "Interface scale."),

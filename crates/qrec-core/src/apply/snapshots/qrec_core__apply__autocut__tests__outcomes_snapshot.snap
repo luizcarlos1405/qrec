@@ -1,5 +1,6 @@
 ---
 source: crates/qrec-core/src/apply/autocut.rs
+assertion_line: 1181
 expression: "json!({\n    \"started\": fixtures::digest(&started), \"completedAtOnce\":\n    fixtures::digest(&at_once), \"dryRun\": fixtures::digest(&dry),\n})"
 ---
 completedAtOnce:
@@ -156,6 +157,7 @@ started:
         dryRun: false
         kind: autocut
         params:
+          edgesOnly: false
           minKeepMs: 50
           minSilenceMs: 400
           paddingMs: 120

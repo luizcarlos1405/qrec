@@ -195,6 +195,7 @@ fn all_commands() -> Vec<Command> {
                 min_silence_ms: Some(500),
                 padding_ms: Some(100),
                 min_keep_ms: Some(250),
+                edges_only: None,
             },
         },
         Command::AutocutSettings {
@@ -290,6 +291,7 @@ fn all_commands() -> Vec<Command> {
                 min_silence_ms: Some(400),
                 padding_ms: Some(120),
                 min_keep_ms: Some(200),
+                edges_only: None,
             },
             dry_run: true,
         },
@@ -1132,6 +1134,7 @@ fn state_and_outcome_round_trip() {
                     min_silence_ms: 400,
                     padding_ms: 120,
                     min_keep_ms: 200,
+                    edges_only: false,
                 },
                 dry_run: false,
                 pending: BTreeSet::from([SilenceKey("k".into())]),
@@ -1261,6 +1264,7 @@ fn views_and_plans_round_trip() {
             clip: clip("c8a1"),
             reason: "changed while analyzing".into(),
         }],
+        edges_only: false,
     });
     round_trip(&TakeFinalizedView {
         take: take(4),

@@ -900,6 +900,7 @@ fn command_for_op(state: &State, op: &Op) -> Option<Command> {
                     min_silence_ms: Some(u32::from(*ms)),
                     padding_ms: Some(u32::from(*ms / 10)),
                     min_keep_ms: Some(u32::from(*ms / 2)),
+                    edges_only: None,
                 },
             }
         }

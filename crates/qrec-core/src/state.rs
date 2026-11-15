@@ -601,6 +601,9 @@ pub struct AutocutParams {
     pub min_silence_ms: u32,
     pub padding_ms: u32,
     pub min_keep_ms: u32,
+    /// Trim each clip's edges only: the plan's hull (A§5.7).
+    #[serde(default)]
+    pub edges_only: bool,
 }
 
 /// Identifies one silence analysis: the file's identity plus the parameters

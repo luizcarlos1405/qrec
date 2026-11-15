@@ -3,7 +3,8 @@
 //! without silence is unchanged. Plus: the planner equals an independent
 //! oracle, re-cutting a fragment changes nothing, more padding never keeps
 //! less, the whole command (job, analysis events, one history entry)
-//! applies exactly the planned cuts, and ffmpeg logs parse back exactly.
+//! applies exactly the planned cuts, edges only keeps the plan's hull, and
+//! ffmpeg logs parse back exactly.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -145,6 +146,7 @@ fn arb_params() -> impl Strategy<Value = AutocutParams> {
         min_silence_ms: 400,
         padding_ms,
         min_keep_ms,
+        edges_only: false,
     })
 }
 
@@ -306,6 +308,28 @@ proptest! {
         };
         prop_assert!(inside(&base.kept, &padded.kept), "{:?} ⊄ {:?}", base.kept, padded.kept);
         prop_assert!(inside(&strict.kept, &base.kept), "{:?} ⊄ {:?}", strict.kept, base.kept);
+    }
+
+    /// Edges only (issue #15) keeps the full plan's hull: one fragment at
+    /// most (the clip stays one clip), nothing removed between the first
+    /// and the last frame the full plan keeps, and nothing kept that the
+    /// full plan cuts at the edges.
+    #[test]
+    fn edges_only_keeps_the_hull(
+        fps in strategies::arb_fps(),
+        clip in arb_clip(),
+        silences in arb_silences(),
+        params in arb_params(),
+    ) {
+        let full = cut_clip(&clip, &silences, &params, fps);
+        let edges = cut_clip(&clip, &silences, &AutocutParams { edges_only: true, ..params.clone() }, fps);
+        prop_assert!(edges.kept.len() <= 1, "{:?}", edges.kept);
+        prop_assert_eq!(edges.kept.is_empty(), full.kept.is_empty());
+        if let (Some(first), Some(last)) = (full.kept.first(), full.kept.last()) {
+            prop_assert_eq!(edges.kept[0], [first[0], last[1]]);
+            prop_assert!(edges.silences <= 2);
+            prop_assert_eq!(edges.removed_frames, (first[0] - clip.in_) + (clip.out - last[1]));
+        }
     }
 }
 

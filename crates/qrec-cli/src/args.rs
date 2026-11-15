@@ -161,7 +161,10 @@ pub enum Cmd {
     /// --padding-ms of audio around speech, and cuts the rest: each clip becomes
     /// several clips of the same take, in one undoable step. Kept fragments
     /// shorter than --min-keep-ms are dropped; a clip that is silent throughout
-    /// is left alone. Flags override the project settings for this run only.
+    /// is left alone. With --edges-only, only the silence before the first
+    /// sound and after the last of each clip is cut: the pauses inside stay
+    /// and each clip stays one clip. Flags override the project settings for
+    /// this run only.
     Autocut(AutocutArgs),
     /// Undo the last N changes (default 1).
     ///
@@ -201,7 +204,7 @@ pub enum Cmd {
     ///
     /// Without a subcommand, prints every setting. Keys: theme,
     /// canvas.{width,height,fps,background}, recording.countdown_secs,
-    /// autocut.{auto_run_after_take,threshold_db,min_silence_ms,padding_ms,min_keep_ms},
+    /// autocut.{auto_run_after_take,threshold_db,min_silence_ms,padding_ms,min_keep_ms,edges_only},
     /// encoder.{preference,vaapi_device}, ui.{scale,reduced_motion,sounds},
     /// projects.open_last. The project folders are changed with `qrec folders`.
     Config(ConfigArgs),
@@ -827,6 +830,16 @@ pub struct AutocutParamArgs {
     /// Sounds shorter than this between cuts are cut too (padding doesn't count).
     #[arg(long, value_name = "MS", allow_negative_numbers = true)]
     pub min_keep_ms: Option<u32>,
+    /// Trim only each clip's edges: the silence before the first sound and after the last
+    /// (`--edges-only=false` cuts every silence even when the setting is on).
+    #[arg(
+        long,
+        value_name = "BOOL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true"
+    )]
+    pub edges_only: Option<bool>,
 }
 
 /// What `autocut settings` changes; at least one is required.
@@ -851,6 +864,9 @@ pub struct AutocutSettingsArgs {
     /// Sounds shorter than this between cuts are cut too (padding doesn't count).
     #[arg(long, value_name = "MS", allow_negative_numbers = true)]
     pub min_keep_ms: Option<u32>,
+    /// Trim only each clip's edges, keeping the pauses inside (true or false).
+    #[arg(long, value_name = "BOOL")]
+    pub edges_only: Option<bool>,
 }
 
 // ------------------------------------------------------------------ history

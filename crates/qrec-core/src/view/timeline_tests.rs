@@ -958,6 +958,7 @@ fn analyzing_and_dimmed_clips() {
                     min_silence_ms: 400,
                     padding_ms: 120,
                     min_keep_ms: 200,
+                    edges_only: false,
                 },
                 dry_run: false,
                 pending: Default::default(),

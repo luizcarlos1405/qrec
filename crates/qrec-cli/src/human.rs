@@ -528,8 +528,9 @@ pub(crate) fn autocut_plan(plan: &AutocutPlanView, dry_run: bool) -> Vec<String>
                 ]
             })
             .collect();
+        let count = if plan.edges_only { "EDGES" } else { "SILENCES" };
         lines.extend(layout(
-            &["CLIP", "SILENCES", "REMOVED", "KEPT (take frames)"],
+            &["CLIP", count, "REMOVED", "KEPT (take frames)"],
             &rows,
             &[Align::Left, Align::Right, Align::Right],
         ));
@@ -544,14 +545,19 @@ pub(crate) fn autocut_plan(plan: &AutocutPlanView, dry_run: bool) -> Vec<String>
             .iter()
             .map(|c| c.removed_frames)
             .fold(0, u64::saturating_add);
-        lines.push(if silences == 0 {
-            "Nothing to cut.".to_owned()
-        } else {
-            format!(
-                "Would remove {silences} silence{} ({}). Run without --dry-run to cut.",
-                plural(silences),
+        lines.push(match (silences, plan.edges_only) {
+            (0, false) => "Nothing to cut.".to_owned(),
+            (0, true) => "Nothing to trim.".to_owned(),
+            (n, false) => format!(
+                "Would remove {n} silence{} ({}). Run without --dry-run to cut.",
+                plural(n),
                 frames(removed)
-            )
+            ),
+            (n, true) => format!(
+                "Would trim {n} edge{} ({}). Run without --dry-run to cut.",
+                plural(n),
+                frames(removed)
+            ),
         });
     }
     lines
@@ -1228,6 +1234,7 @@ mod tests {
                 clip: "c8a1".parse().unwrap(),
                 reason: "entirely silent at -35 dB".into(),
             }],
+            edges_only: false,
         };
         assert_eq!(
             autocut_plan(&plan, true),
@@ -1242,8 +1249,27 @@ mod tests {
         let empty = AutocutPlanView {
             clips: vec![],
             skipped: vec![],
+            edges_only: false,
         };
         assert_eq!(autocut_plan(&empty, true), ["Nothing to cut."]);
+        let edges = AutocutPlanView {
+            clips: vec![AutocutClipView {
+                clip: "c7f3".parse().unwrap(),
+                kept: vec![[12, 380]],
+                removed_frames: 32,
+                silences: 2,
+            }],
+            skipped: vec![],
+            edges_only: true,
+        };
+        assert_eq!(
+            autocut_plan(&edges, true),
+            [
+                "CLIP  EDGES  REMOVED  KEPT (take frames)",
+                "c7f3      2      32f  12-380",
+                "Would trim 2 edges (32f). Run without --dry-run to cut.",
+            ]
+        );
     }
 
     #[test]

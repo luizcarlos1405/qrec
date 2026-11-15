@@ -2002,7 +2002,9 @@ fn s12_the_autocut_page() {
         let (dx, dy) = nested.opts.pixel_px(x, y);
         gui_support::rgb_pixels(&shot, [dx, dy, 1, 1])[0]
     };
-    let row = px(1300.0, 650.0);
+    // Issue #15's "Trim edges only" (under the sliders) moves the summary
+    // and the regions 61 px down from S12's frame.
+    let row = px(1300.0, 711.0);
     assert!(
         row.iter()
             .zip([0x2E, 0x3E, 0x1B])
@@ -2014,21 +2016,21 @@ fn s12_the_autocut_page() {
         gui_support::token_rgb("swamp-night", "accent"),
         "c3e9's stroke inside a region"
     );
-    // The summary's heading 8 px under the knobs' end labels, on S12's
-    // baseline: its title's ink from y 563 (its glyphs a pixel shorter than
-    // the frame's, from 562; it sat a pixel lower, from 564), its rows' from
-    // 587. The footer's Esc cap is a medium one, its `keycap` fill 17 px
+    // The summary's heading on S12's baseline, 61 px lower for "Trim edges
+    // only": its title's ink from y 624 (S12's 563: its glyphs a pixel
+    // shorter than the frame's, from 562; it sat a pixel lower, from 564),
+    // its rows' from 648 (S12's 587). The footer's Esc cap is a medium one, its `keycap` fill 17 px
     // tall (20 with the stroke; the small one's was 13). WP10's shot
     // review.
-    let surface = px(1300.0, 552.0);
-    let heading = ink_top(&nested, &shot, [1228.0, 550.0, 154.0, 30.0], surface);
+    let surface = px(1300.0, 613.0);
+    let heading = ink_top(&nested, &shot, [1228.0, 611.0, 154.0, 30.0], surface);
     assert!(
-        (heading - 563.0).abs() <= 0.75,
+        (heading - 624.0).abs() <= 0.75,
         "the summary's heading from y {heading}"
     );
-    let rows = ink_top(&nested, &shot, [1300.0, 580.0, 190.0, 20.0], surface);
+    let rows = ink_top(&nested, &shot, [1300.0, 641.0, 190.0, 20.0], surface);
     assert!(
-        (rows - 587.0).abs() <= 1.0,
+        (rows - 648.0).abs() <= 1.0,
         "the summary's rows from y {rows}"
     );
     let caps = gui_support::keycap_fills(&nested.opts, &shot, [1340.0, 915.0, 100.0, 40.0]);
@@ -2081,6 +2083,89 @@ fn s12_the_autocut_page() {
         "{toast:?}"
     );
     nested.screenshot("applied");
+    assert_clean(nested.window(0));
+}
+
+/// Issue #15: "Trim edges only" is part of the page's draft. Ticking it
+/// re-runs the dry run (an edges-only summary); Cancel drops it; ticked
+/// again, Apply saves it with the cut, and no clip is split.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn trim_edges_only_is_part_of_the_draft() {
+    let mut nested = Nested::start(AREA, "autocut-edges", Options::default());
+    let preset = ui(|u| {
+        u.canvas_mode = CanvasMode::Program;
+        u.selection = vec![clip("c3e9")];
+    });
+    let project = fixture(&nested, DesignVariant::Base, &preset);
+    open(&mut nested, &project, levels(DESIGN_LEVELS));
+    let before = history_cursor(&nested, &project);
+    let edges_summary = |nested: &mut Nested| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let gui = nested.window(0);
+            gui.wait_idle();
+            let labels = panel_labels(gui);
+            if let Some(title) = labels
+                .iter()
+                .find(|l| l.starts_with("Trims ") || *l == autocut::NOTHING_TO_TRIM)
+            {
+                return title.clone();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no edges-only summary: {labels:#?}"
+            );
+            thread::sleep(Duration::from_millis(100));
+        }
+    };
+    nested.keys(&["-M", "shift", "-k", "c", "-m", "shift"]);
+    let labels = wait_for_label(nested.window(0), "Removes 4 silences");
+    assert_has(&labels, &[autocut::EDGES_ONLY, autocut::EDGES_ONLY_CAPTION]);
+    let (x, y) = center(region(nested.window(0), "autocut-edges-only"));
+    nested.pointer().click(x, y);
+    edges_summary(&mut nested);
+    // Cancel: nothing saved.
+    let (x, y) = center(region(nested.window(0), "autocut-cancel"));
+    nested.pointer().click(x, y);
+    wait_for_label(nested.window(0), "Onion layers");
+    assert_eq!(
+        history_cursor(&nested, &project),
+        before,
+        "Cancel sends nothing"
+    );
+    let status = nested.cli_json(&project, &["status"]);
+    // Off is the default: qrec.json leaves `edgesOnly` out.
+    assert_eq!(
+        status["data"]["project"]["autocut"].get("edgesOnly"),
+        None,
+        "{status}"
+    );
+    // Reopened, the box is off again; ticked, Apply saves it with the cut.
+    nested.keys(&["-M", "shift", "-k", "c", "-m", "shift"]);
+    wait_for_label(nested.window(0), "Removes 4 silences");
+    let (x, y) = center(region(nested.window(0), "autocut-edges-only"));
+    nested.pointer().click(x, y);
+    let title = edges_summary(&mut nested);
+    let (x, y) = center(region(nested.window(0), "autocut-apply"));
+    nested.pointer().click(x, y);
+    wait_for_label(nested.window(0), "Onion layers");
+    let want = if title.starts_with("Trims ") { 2 } else { 1 };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while history_cursor(&nested, &project) != before + want {
+        assert!(Instant::now() < deadline, "Apply never landed ({title})");
+        thread::sleep(Duration::from_millis(100));
+    }
+    let status = nested.cli_json(&project, &["status"]);
+    assert_eq!(
+        status["data"]["project"]["autocut"]["edgesOnly"], true,
+        "{status}"
+    );
+    assert_eq!(
+        clip_count(&nested, &project),
+        10,
+        "edges only splits nothing"
+    );
     assert_clean(nested.window(0));
 }
 

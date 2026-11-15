@@ -366,6 +366,12 @@ popover.qrec-value-tooltip > contents {
   min-width: 80px;
 }
 
+/* "Trim edges only": the caption under the label, in line with its text
+   (the 16 px box and checkbutton's 8 px spacing). */
+.qrec-panel .autocut-edges .edges-caption {
+  margin-left: 24px;
+}
+
 /* A knob's track: centered on its field (the trough at the field's
    middle), the ticks 6 px under it, the end labels 6 px under those. */
 .qrec-panel .knob scale {

@@ -271,6 +271,7 @@ fn effective_params(
         min_silence_ms: overrides.min_silence_ms.unwrap_or(base.min_silence_ms),
         padding_ms: overrides.padding_ms.unwrap_or(base.padding_ms),
         min_keep_ms: overrides.min_keep_ms.unwrap_or(base.min_keep_ms),
+        edges_only: overrides.edges_only.unwrap_or(base.edges_only),
     };
     check_params(&params)?;
     Ok(params)
@@ -418,6 +419,7 @@ pub(crate) mod fixtures {
             min_silence_ms: 400,
             padding_ms: 120,
             min_keep_ms: 50,
+            edges_only: false,
         }
     }
 
@@ -850,6 +852,7 @@ mod tests {
             min_silence_ms: Some(700),
             padding_ms: Some(50),
             min_keep_ms: Some(0),
+            edges_only: None,
         };
         let scope = ClipScope::Clips(vec![ClipId::from_raw("c001")]);
         let out = autocut(&state, &ctx, scope.clone(), overrides.clone(), false).unwrap();
@@ -877,7 +880,8 @@ mod tests {
                 threshold_db: -42.5,
                 min_silence_ms: 700,
                 padding_ms: 50,
-                min_keep_ms: 0
+                min_keep_ms: 0,
+                edges_only: false,
             }
         );
         assert_eq!(targets[0].track.as_str(), "A2");

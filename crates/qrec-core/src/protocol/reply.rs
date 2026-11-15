@@ -137,6 +137,10 @@ pub struct HistoryRow {
 pub struct AutocutPlanView {
     pub clips: Vec<AutocutClipView>,
     pub skipped: Vec<AutocutSkipView>,
+    /// The plan trims each clip's edges only (`autocut.edgesOnly`): its
+    /// removed runs are edges, not silences.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub edges_only: bool,
 }
 
 /// The planned cut of one clip.

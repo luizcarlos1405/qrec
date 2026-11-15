@@ -323,6 +323,9 @@ fn architecture_extensions_parse() {
         "qrec autocut settings --auto-run true",
         "qrec autocut settings --track A1",
         "qrec autocut settings --track auto",
+        "qrec autocut --edges-only --dry-run",
+        "qrec autocut --edges-only=false --clips c7f3",
+        "qrec autocut settings --edges-only true",
         "qrec autocut settings --auto-run false --threshold-db -40 --min-silence-ms 500 \
          --padding-ms 100 --min-keep-ms 250",
         "qrec record start --over c7f3 --countdown 3 --wait",
@@ -417,6 +420,30 @@ fn hyphen_values_parse_as_values() {
                 threshold_db: Some(-35.0),
                 ..Default::default()
             },
+            dry_run: false,
+        })
+    );
+    for (line, edges_only) in [
+        ("qrec autocut --edges-only", Some(true)),
+        ("qrec autocut --edges-only=true", Some(true)),
+        ("qrec autocut --edges-only=false", Some(false)),
+        ("qrec autocut --edges-only --dry-run", Some(true)),
+        ("qrec autocut", None),
+    ] {
+        let Cmd::Autocut(args) = cmd(line) else {
+            panic!("{line}")
+        };
+        assert_eq!(args.params.edges_only, edges_only, "{line}");
+    }
+    assert_eq!(
+        cmd("qrec autocut settings --edges-only false"),
+        Cmd::Autocut(AutocutArgs {
+            command: Some(AutocutCmd::Settings(AutocutSettingsArgs {
+                edges_only: Some(false),
+                ..Default::default()
+            })),
+            scope: AutocutScopeArgs::default(),
+            params: AutocutParamArgs::default(),
             dry_run: false,
         })
     );

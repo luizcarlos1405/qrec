@@ -494,6 +494,12 @@ pub struct AutocutSettings {
     pub padding_ms: u32,
     /// Sounds shorter than this between cuts are cut too (padding doesn't count).
     pub min_keep_ms: u32,
+    /// Only the silence before the first sound and after the last of each
+    /// clip is cut; pauses inside a clip stay (the plan's hull, A§5.7).
+    /// Written only when on, so a project from before it reads and writes
+    /// back unchanged.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub edges_only: bool,
 }
 
 impl Default for AutocutSettings {
@@ -505,6 +511,7 @@ impl Default for AutocutSettings {
             min_silence_ms: 400,
             padding_ms: 120,
             min_keep_ms: 50,
+            edges_only: false,
         }
     }
 }

@@ -209,6 +209,7 @@ Autocut silences. Preview first; applying is one undoable step:
 qrec autocut --dry-run --json   # data.result: {clips: [{clip, kept, removedFrames, silences}], skipped}
 qrec autocut                    # every clip; --clips c7f3,c8a1 for some
 qrec autocut --track A1 --threshold-db -40 --padding-ms 150
+qrec autocut --edges-only        # only each clip's leading and trailing silence
 ```
 
 Export and stills (canvas size and fps):

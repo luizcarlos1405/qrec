@@ -1398,6 +1398,7 @@ mod tests {
                     min_silence_ms: 400,
                     padding_ms: 120,
                     min_keep_ms: 200,
+                    edges_only: false,
                 },
                 dry_run: false,
                 pending: Default::default(),
