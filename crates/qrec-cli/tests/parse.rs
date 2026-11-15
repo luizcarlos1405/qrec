@@ -796,12 +796,43 @@ fn parsed_values_are_typed() {
         Cmd::Autocut(AutocutArgs {
             command: Some(AutocutCmd::Settings(AutocutSettingsArgs {
                 auto_run: Some(true),
-                track: Some(AutoOr::Value(track("A2"))),
+                track: vec![AutoOr::Value(track("A2"))],
                 ..Default::default()
             })),
             scope: AutocutScopeArgs::default(),
             params: AutocutParamArgs::default(),
             dry_run: false,
+        })
+    );
+    // Several tracks: repeated, or with commas.
+    for line in [
+        "qrec autocut settings --track A1 --track A2",
+        "qrec autocut settings --track A1,A2",
+    ] {
+        assert_eq!(
+            cmd(line),
+            Cmd::Autocut(AutocutArgs {
+                command: Some(AutocutCmd::Settings(AutocutSettingsArgs {
+                    track: vec![AutoOr::Value(track("A1")), AutoOr::Value(track("A2"))],
+                    ..Default::default()
+                })),
+                scope: AutocutScopeArgs::default(),
+                params: AutocutParamArgs::default(),
+                dry_run: false,
+            }),
+            "{line}"
+        );
+    }
+    assert_eq!(
+        cmd("qrec autocut --track A1 --track A2 --dry-run"),
+        Cmd::Autocut(AutocutArgs {
+            command: None,
+            scope: AutocutScopeArgs::default(),
+            params: AutocutParamArgs {
+                track: vec![track("A1"), track("A2")],
+                ..Default::default()
+            },
+            dry_run: true,
         })
     );
     assert_eq!(

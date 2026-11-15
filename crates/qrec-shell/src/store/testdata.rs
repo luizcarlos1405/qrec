@@ -61,14 +61,14 @@ pub fn take_json(id: &str, frames: u64) -> Value {
 /// two clips: `c001` = [0, 100) and `c002` = [150, 300).
 pub fn sample_json() -> Value {
     json!({
-        "version": 1,
+        "version": 2,
         "name": "swamp",
         "createdAt": CREATED_AT,
         "canvas": { "width": 320, "height": 180, "fps": { "num": 30, "den": 1 }, "background": "#000000" },
         "scene": { "layers": [screen()], "audio": [mic()] },
         "recording": { "countdownSecs": 0, "encoder": "auto", "vaapiDevice": null },
         "autocut": {
-            "autoRunAfterTake": false, "track": "A1", "thresholdDb": -35.0,
+            "autoRunAfterTake": false, "tracks": ["A1"], "thresholdDb": -35.0,
             "minSilenceMs": 400, "paddingMs": 120, "minKeepMs": 200
         },
         "takes": { "take-0001": take_json("take-0001", 300) },

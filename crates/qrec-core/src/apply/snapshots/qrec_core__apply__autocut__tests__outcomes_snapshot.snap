@@ -1,6 +1,5 @@
 ---
 source: crates/qrec-core/src/apply/autocut.rs
-assertion_line: 1181
 expression: "json!({\n    \"started\": fixtures::digest(&started), \"completedAtOnce\":\n    fixtures::digest(&at_once), \"dryRun\": fixtures::digest(&dry),\n})"
 ---
 completedAtOnce:
@@ -40,6 +39,8 @@ completedAtOnce:
                 - 244
             removedFrames: 113
             silences: 3
+            tracks:
+              - A1
           - clip: c002
             kept:
               - - 0
@@ -48,6 +49,8 @@ completedAtOnce:
                 - 150
             removedFrames: 16
             silences: 1
+            tracks:
+              - A1
         skipped: []
       seq: 1
   timeline:
@@ -86,6 +89,8 @@ dryRun:
                 - 150
             removedFrames: 16
             silences: 1
+            tracks:
+              - A1
         skipped: []
       seq: ~
   timeline:
@@ -172,15 +177,17 @@ started:
               in: 0
               out: 300
               take: take-0001
-            key: eb039e93458ab3222f17cdf85c66a6a25b51b0dd8f431d8b1a9338fea36fa25a
-            track: A1
+            tracks:
+              - key: eb039e93458ab3222f17cdf85c66a6a25b51b0dd8f431d8b1a9338fea36fa25a
+                track: A1
           - clip:
               id: c002
               in: 0
               out: 150
               take: take-0002
-            key: 58b2a081050a9e326a6c405d1ac2b771a9eb1e508071b70461085fc30ec6ae9d
-            track: A1
+            tracks:
+              - key: 58b2a081050a9e326a6c405d1ac2b771a9eb1e508071b70461085fc30ec6ae9d
+                track: A1
       req: r1
       started: "2026-10-14T12:30:00Z"
   reply: ~

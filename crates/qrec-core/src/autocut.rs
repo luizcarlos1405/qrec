@@ -1,8 +1,10 @@
 //! The autocut planner (A§5.7, SPEC §9). Owner: autocut.
 //!
-//! Per clip and track:
-//! 1. silences arrive in **file time**; shift them to take time
-//!    `t = x + startOffsetNs + syncOffsetMs·10⁶`;
+//! Per clip, over the tracks it listens to (issue #15: several):
+//! 1. silences arrive in **file time**, one analysis per track; shift each
+//!    track's to take time `t = x + startOffsetNs + syncOffsetMs·10⁶`; with
+//!    several tracks keep only what is silent on all of them, without the
+//!    parts shorter than `minSilenceMs` ([`combined_silences`]);
 //! 2. shrink each by `paddingMs` on both sides and drop the empty ones;
 //! 3. kept = the clip range minus the shrunk silences;
 //! 4. drop kept fragments with less than `minKeepMs` of sound: what isn't
@@ -145,6 +147,15 @@ pub fn params_of(settings: &AutocutSettings) -> AutocutParams {
     }
 }
 
+/// One analyzed track of a take: the track (take scene), its stream, and
+/// its silences in file time, as ffmpeg reports them.
+#[derive(Debug, Clone, Copy)]
+pub struct TrackSilences<'a> {
+    pub track: &'a AudioTrack,
+    pub stream: &'a Stream,
+    pub silences: &'a [Interval],
+}
+
 /// Plans the cut of `clip` from the silences of `stream` (its `track` in
 /// the take scene). `silences` are in file time, as ffmpeg reports them.
 pub fn plan_clip(
@@ -155,7 +166,78 @@ pub fn plan_clip(
     params: &AutocutParams,
     fps: Fps,
 ) -> ClipCut {
-    cut_clip(clip, &to_take_time(silences, stream, track), params, fps)
+    let one = [TrackSilences {
+        track,
+        stream,
+        silences,
+    }];
+    plan_clip_on(clip, &one, params, fps)
+}
+
+/// Plans the cut of `clip` from several tracks: a region is cut only when
+/// it is silent on every one of them ([`combined_silences`]).
+pub fn plan_clip_on(
+    clip: &Clip,
+    tracks: &[TrackSilences<'_>],
+    params: &AutocutParams,
+    fps: Fps,
+) -> ClipCut {
+    cut_clip(
+        clip,
+        &combined_silences(tracks, params.min_silence_ms),
+        params,
+        fps,
+    )
+}
+
+/// Step 1 for every analyzed track: each one's silences in take time (its
+/// own offsets), intersected, since sound on any track keeps a region.
+/// With several tracks, intersections shorter than `min_silence_ms` are
+/// dropped: each track's silences are that long, their overlap may not be.
+/// One track's silences come back as they are.
+pub fn combined_silences(tracks: &[TrackSilences<'_>], min_silence_ms: u32) -> Vec<Interval> {
+    let per_track: Vec<Vec<Interval>> = tracks
+        .iter()
+        .map(|t| to_take_time(t.silences, t.stream, t.track))
+        .collect();
+    intersect_silences(&per_track, min_silence_ms)
+}
+
+/// [`combined_silences`] for silences already in take time: one list as
+/// it is; several intersected, without the parts shorter than
+/// `min_silence_ms`.
+pub fn intersect_silences(per_track: &[Vec<Interval>], min_silence_ms: u32) -> Vec<Interval> {
+    match per_track {
+        [] => Vec::new(),
+        [one] => one.clone(),
+        [first, rest @ ..] => {
+            let min = i64::from(min_silence_ms) * NS_PER_MS;
+            rest.iter()
+                .fold(union(first), |acc, next| intersect(&acc, &union(next)))
+                .into_iter()
+                .filter(|s| s.end_ns - s.start_ns >= min)
+                .collect()
+        }
+    }
+}
+
+/// The intersection of two sorted, disjoint interval lists.
+fn intersect(a: &[Interval], b: &[Interval]) -> Vec<Interval> {
+    let (mut i, mut j) = (0, 0);
+    let mut out = Vec::new();
+    while i < a.len() && j < b.len() {
+        let start_ns = a[i].start_ns.max(b[j].start_ns);
+        let end_ns = a[i].end_ns.min(b[j].end_ns);
+        if start_ns < end_ns {
+            out.push(Interval { start_ns, end_ns });
+        }
+        if a[i].end_ns < b[j].end_ns {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    out
 }
 
 /// Step 1: file time → take time, `t = x + startOffsetNs + syncOffsetMs·10⁶`.
@@ -271,13 +353,11 @@ fn sound_ns(span: Interval, silences: &[Interval]) -> i64 {
 }
 
 /// Why a clip whose cut keeps nothing is left alone: "entirely silent at
-/// −35 dB" when the silences (file time) cover all of it, else "no sound of
+/// −35 dB" when the (combined) silences cover all of it, else "no sound of
 /// 50 ms or more to keep" (its sounds are all shorter than `minKeepMs`).
 pub fn nothing_kept_reason(
     clip: &Clip,
-    stream: &Stream,
-    track: &AudioTrack,
-    silences: &[Interval],
+    tracks: &[TrackSilences<'_>],
     params: &AutocutParams,
     fps: Fps,
 ) -> String {
@@ -285,7 +365,7 @@ pub fn nothing_kept_reason(
         start_ns: frame_ns(as_i64(clip.in_), fps),
         end_ns: frame_ns(as_i64(clip.out), fps),
     };
-    let covered = union(&to_take_time(silences, stream, track))
+    let covered = union(&combined_silences(tracks, params.min_silence_ms))
         .iter()
         .any(|s| s.start_ns <= range.start_ns && range.end_ns <= s.end_ns);
     if covered {
@@ -348,40 +428,53 @@ fn union(silences: &[Interval]) -> Vec<Interval> {
     merged
 }
 
-/// The track that drives detection for `take`: the override, else
-/// `autocut.track`, else [`default_track`] of the take scene. `None` when
-/// the take lacks it (the clip is skipped with a warning).
-pub fn choose_track(
-    project: &Project,
-    take: &Take,
-    override_track: Option<&TrackId>,
-) -> Option<TrackId> {
-    match override_track.or(project.autocut.track.as_ref()) {
-        Some(id) => take.scene.track(id).map(|t| t.id.clone()),
-        None => default_track(&take.scene).map(|t| t.id.clone()),
+/// The tracks autocut is asked to listen to: the override when it names
+/// any, else `autocut.tracks`. Empty = each take's [`default_track`].
+pub fn wanted_tracks<'a>(project: &'a Project, override_tracks: &'a [TrackId]) -> &'a [TrackId] {
+    if override_tracks.is_empty() {
+        &project.autocut.tracks
+    } else {
+        override_tracks
     }
 }
 
-/// The tracks autocut analyzes for `clips` ([`choose_track`] of each one's
-/// take with `override_track`), in clip order, each once. A take recorded
-/// with a track the project scene no longer has may be analyzed on it, and
-/// takes of different scenes on different tracks: the page's "Detect
-/// silence on" shows its scope's first, the lanes' scissors sit on each
-/// (R77's audit). A clip whose take lacks the track (skipped) adds none.
+/// The tracks that drive detection for `take`, as found in its scene:
+/// [`wanted_tracks`] (in that order) or, when none is named, the take
+/// scene's [`default_track`]. Named tracks the take lacks are left out
+/// (`analysis_sources` says so).
+pub fn choose_tracks(project: &Project, take: &Take, override_tracks: &[TrackId]) -> Vec<TrackId> {
+    let wanted = wanted_tracks(project, override_tracks);
+    if wanted.is_empty() {
+        return default_track(&take.scene)
+            .map(|t| vec![t.id.clone()])
+            .unwrap_or_default();
+    }
+    wanted
+        .iter()
+        .filter(|id| take.scene.track(id).is_some())
+        .cloned()
+        .collect()
+}
+
+/// The tracks autocut analyzes for `clips` ([`choose_tracks`] of each
+/// one's take), in clip order, each once. A take recorded with a track the
+/// project scene no longer has may be analyzed on it, and takes of
+/// different scenes on different tracks: the page's "Detect silence on"
+/// shows its scope's, the lanes' scissors sit on each (R77's audit).
 pub fn analyzed_tracks<'a>(
     project: &Project,
     clips: impl IntoIterator<Item = &'a Clip>,
-    override_track: Option<&TrackId>,
+    override_tracks: &[TrackId],
 ) -> Vec<TrackId> {
     let mut tracks: Vec<TrackId> = Vec::new();
     for clip in clips {
         let Some(take) = project.take(&clip.take) else {
             continue;
         };
-        if let Some(track) = choose_track(project, take, override_track)
-            && !tracks.contains(&track)
-        {
-            tracks.push(track);
+        for track in choose_tracks(project, take, override_tracks) {
+            if !tracks.contains(&track) {
+                tracks.push(track);
+            }
         }
     }
     tracks
@@ -400,27 +493,74 @@ pub fn default_track(scene: &Scene) -> Option<&AudioTrack> {
         .or_else(|| scene.audio.first())
 }
 
-/// The audio track (take scene) and stream autocut analyzes for clips of
-/// `take`, or why it can't: "take 3 has no track A2", "take 3 has no audio
-/// track", "track A1 of take 3 is missing media".
-pub fn analysis_source<'t>(
+/// What autocut analyzes for clips of a take: each usable track (take
+/// scene) with its stream, and a warning when some named track can't be
+/// used ("take 3 has no track A2: silence detected on A1 only").
+#[derive(Debug, Clone)]
+pub struct AnalysisSources<'t> {
+    pub tracks: Vec<(&'t AudioTrack, &'t Stream)>,
+    pub warning: Option<String>,
+}
+
+/// The tracks and streams autocut analyzes for clips of `take`, or why it
+/// can't: "take 3 has no track A2", "take 3 has none of the tracks A2,
+/// A3", "take 3 has no audio track", "track A1 of take 3 is missing
+/// media". A take that has only some of the named tracks uses those, with
+/// a warning; it's skipped only when it has none of them.
+pub fn analysis_sources<'t>(
     project: &Project,
     take_id: &TakeId,
     take: &'t Take,
-    override_track: Option<&TrackId>,
-) -> Result<(&'t AudioTrack, &'t Stream), String> {
+    override_tracks: &[TrackId],
+) -> Result<AnalysisSources<'t>, String> {
     let n = take_id.number();
-    let chosen = choose_track(project, take, override_track);
-    let Some(track) = chosen.as_ref().and_then(|id| take.scene.track(id)) else {
-        return Err(match override_track.or(project.autocut.track.as_ref()) {
-            Some(wanted) => format!("take {n} has no track {wanted}"),
-            None => format!("take {n} has no audio track"),
-        });
-    };
-    match take.stream(track.id.as_str()) {
-        Some(stream) if stream.kind == StreamKind::Audio && !track.missing => Ok((track, stream)),
-        _ => Err(format!("track {} of take {n} is missing media", track.id)),
+    let wanted = wanted_tracks(project, override_tracks);
+    let chosen = choose_tracks(project, take, override_tracks);
+    let mut usable = Vec::new();
+    let mut problems = Vec::new();
+    for id in wanted.iter().filter(|id| !chosen.contains(id)) {
+        problems.push(format!("take {n} has no track {id}"));
     }
+    for id in &chosen {
+        let Some(track) = take.scene.track(id) else {
+            continue;
+        };
+        match take.stream(track.id.as_str()) {
+            Some(stream) if stream.kind == StreamKind::Audio && !track.missing => {
+                usable.push((track, stream));
+            }
+            _ => problems.push(format!("track {} of take {n} is missing media", track.id)),
+        }
+    }
+    if usable.is_empty() {
+        return Err(match (chosen.is_empty(), wanted) {
+            (false, _) => problems
+                .into_iter()
+                .find(|p| p.ends_with("missing media"))
+                .unwrap_or_else(|| format!("take {n} has no audio track")),
+            (true, []) => format!("take {n} has no audio track"),
+            (true, [one]) => format!("take {n} has no track {one}"),
+            (true, many) => format!(
+                "take {n} has none of the tracks {}",
+                many.iter()
+                    .map(TrackId::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        });
+    }
+    let warning = (!problems.is_empty()).then(|| {
+        let used: Vec<&str> = usable.iter().map(|(t, _)| t.id.as_str()).collect();
+        format!(
+            "{}: silence detected on {} only",
+            problems.join(", "),
+            used.join(" and ")
+        )
+    });
+    Ok(AnalysisSources {
+        tracks: usable,
+        warning,
+    })
 }
 
 /// The skip reason of a clip that would lose everything: "entirely silent at −35 dB".
@@ -570,7 +710,7 @@ mod tests {
             })
             .build();
         let take = project.take(&TakeId::numbered(1)).unwrap();
-        let (track, stream) = analysis_source(&project, &TakeId::numbered(1), take, None).unwrap();
+        let (track, stream) = only_source(&project, take);
         assert_eq!(
             to_take_time(&[ms(1000, 2000)], stream, track),
             vec![ms(1083, 2083)],
@@ -662,11 +802,16 @@ mod tests {
             .take("take-0001", 300)
             .build();
         let take = project.take(&TakeId::numbered(1)).unwrap();
-        let (track, stream) = analysis_source(&project, &TakeId::numbered(1), take, None).unwrap();
+        let (track, stream) = only_source(&project, take);
         let reason = |c: &Clip, silences: &[Interval]| {
             let cut = plan_clip(c, stream, track, silences, &params(), FPS30);
             assert!(cut.keeps_nothing(), "{cut:?}");
-            nothing_kept_reason(c, stream, track, silences, &params(), FPS30)
+            let one = [TrackSilences {
+                track,
+                stream,
+                silences,
+            }];
+            nothing_kept_reason(c, &one, &params(), FPS30)
         };
         assert_eq!(
             reason(&clip(30, 90), &[ms(0, 2500), ms(2500, 4000)]),
@@ -831,8 +976,15 @@ mod tests {
         }
     }
 
+    /// The one track and stream autocut analyzes for `take` by default.
+    fn only_source<'t>(project: &Project, take: &'t Take) -> (&'t AudioTrack, &'t Stream) {
+        let sources = analysis_sources(project, &TakeId::numbered(1), take, &[]).unwrap();
+        assert_eq!(sources.tracks.len(), 1);
+        sources.tracks[0]
+    }
+
     #[test]
-    fn choosing_the_track() {
+    fn choosing_the_tracks() {
         let project = ProjectBuilder::new()
             .screen_layer("L1", "DP-1")
             .system("A1", "alsa_output.monitor")
@@ -843,28 +995,55 @@ mod tests {
         let take_id = TakeId::numbered(1);
         let take = project.take(&take_id).unwrap();
         let a = |s: &str| s.parse::<TrackId>().unwrap();
+        let ids = |sources: AnalysisSources<'_>| {
+            sources
+                .tracks
+                .iter()
+                .map(|(t, _)| t.id.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(choose_tracks(&project, take, &[]), [a("A2")], "first mic");
+        assert_eq!(choose_tracks(&project, take, &[a("A3")]), [a("A3")]);
         assert_eq!(
-            choose_track(&project, take, None),
-            Some(a("A2")),
-            "first mic"
+            choose_tracks(&project, take, &[a("A3"), a("A1")]),
+            [a("A3"), a("A1")]
         );
-        assert_eq!(choose_track(&project, take, Some(&a("A3"))), Some(a("A3")));
-        assert_eq!(choose_track(&project, take, Some(&a("A9"))), None);
+        assert!(choose_tracks(&project, take, &[a("A9")]).is_empty());
 
         let mut with_setting = project.clone();
-        with_setting.autocut.track = Some(a("A1"));
-        assert_eq!(choose_track(&with_setting, take, None), Some(a("A1")));
+        with_setting.autocut.tracks = vec![a("A1")];
+        assert_eq!(choose_tracks(&with_setting, take, &[]), [a("A1")]);
         assert_eq!(
-            choose_track(&with_setting, take, Some(&a("A3"))),
-            Some(a("A3")),
+            choose_tracks(&with_setting, take, &[a("A3")]),
+            [a("A3")],
             "the override wins over the setting"
         );
-        with_setting.autocut.track = Some(a("A7"));
-        assert_eq!(choose_track(&with_setting, take, None), None, "no fallback");
+        with_setting.autocut.tracks = vec![a("A7")];
+        assert!(
+            choose_tracks(&with_setting, take, &[]).is_empty(),
+            "no fallback"
+        );
         assert_eq!(
-            analysis_source(&with_setting, &take_id, take, None).unwrap_err(),
+            analysis_sources(&with_setting, &take_id, take, &[]).unwrap_err(),
             "take 1 has no track A7"
         );
+        with_setting.autocut.tracks = vec![a("A7"), a("A8")];
+        assert_eq!(
+            analysis_sources(&with_setting, &take_id, take, &[]).unwrap_err(),
+            "take 1 has none of the tracks A7, A8"
+        );
+        // Some of them: those, with a warning.
+        with_setting.autocut.tracks = vec![a("A1"), a("A7")];
+        let sources = analysis_sources(&with_setting, &take_id, take, &[]).unwrap();
+        assert_eq!(
+            sources.warning.as_deref(),
+            Some("take 1 has no track A7: silence detected on A1 only")
+        );
+        assert_eq!(ids(sources), ["A1"]);
+        with_setting.autocut.tracks = vec![a("A1"), a("A3")];
+        let sources = analysis_sources(&with_setting, &take_id, take, &[]).unwrap();
+        assert_eq!(sources.warning, None);
+        assert_eq!(ids(sources), ["A1", "A3"]);
 
         // No mic: the first track.
         let system_only = ProjectBuilder::new()
@@ -873,7 +1052,7 @@ mod tests {
             .take("take-0001", 100)
             .build();
         let take = system_only.take(&take_id).unwrap();
-        assert_eq!(choose_track(&system_only, take, None), Some(a("A1")));
+        assert_eq!(choose_tracks(&system_only, take, &[]), [a("A1")]);
 
         // No audio at all.
         let silent = ProjectBuilder::new()
@@ -881,9 +1060,9 @@ mod tests {
             .take("take-0001", 100)
             .build();
         let take = silent.take(&take_id).unwrap();
-        assert_eq!(choose_track(&silent, take, None), None);
+        assert!(choose_tracks(&silent, take, &[]).is_empty());
         assert_eq!(
-            analysis_source(&silent, &take_id, take, None).unwrap_err(),
+            analysis_sources(&silent, &take_id, take, &[]).unwrap_err(),
             "take 1 has no audio track"
         );
 
@@ -892,21 +1071,68 @@ mod tests {
         let mut lost_take = lost.take(&take_id).unwrap().clone();
         lost_take.scene.audio[1].missing = true;
         assert_eq!(
-            analysis_source(&lost, &take_id, &lost_take, None).unwrap_err(),
+            analysis_sources(&lost, &take_id, &lost_take, &[]).unwrap_err(),
             "track A2 of take 1 is missing media"
+        );
+        let sources = analysis_sources(&lost, &take_id, &lost_take, &[a("A2"), a("A3")]).unwrap();
+        assert_eq!(
+            sources.warning.as_deref(),
+            Some("track A2 of take 1 is missing media: silence detected on A3 only")
         );
         lost_take.scene.audio[1].missing = false;
         lost_take.streams.retain(|s| s.id != "A2");
         assert_eq!(
-            analysis_source(&lost, &take_id, &lost_take, None).unwrap_err(),
+            analysis_sources(&lost, &take_id, &lost_take, &[]).unwrap_err(),
             "track A2 of take 1 is missing media"
         );
-        let (track, stream) =
-            analysis_source(&project, &take_id, project.take(&take_id).unwrap(), None).unwrap();
+        let (track, stream) = only_source(&project, project.take(&take_id).unwrap());
         assert_eq!(
             (track.id.as_str(), stream.file.as_str()),
             ("A2", "takes/take-0001/A2-mic.mka")
         );
+    }
+
+    /// Several tracks: a region is cut only where every one is silent, and
+    /// an overlap shorter than Min silence isn't cut.
+    #[test]
+    fn several_tracks_cut_only_where_all_are_silent() {
+        let project = ProjectBuilder::new()
+            .mic("A1", "alsa_input.mic")
+            .system("A2", "alsa_output.monitor")
+            .take("take-0001", 300)
+            .build();
+        let take = project.take(&TakeId::numbered(1)).unwrap();
+        let (a1, a2) = (&take.scene.audio[0], &take.scene.audio[1]);
+        let (s1, s2) = (take.stream("A1").unwrap(), take.stream("A2").unwrap());
+        // A1 silent 1–3 s and 5–7 s; A2 silent 2–4 s and 6.8–9 s.
+        let on_a1 = [ms(1000, 3000), ms(5000, 7000)];
+        let on_a2 = [ms(2000, 4000), ms(6800, 9000)];
+        let both = [
+            TrackSilences {
+                track: a1,
+                stream: s1,
+                silences: &on_a1,
+            },
+            TrackSilences {
+                track: a2,
+                stream: s2,
+                silences: &on_a2,
+            },
+        ];
+        // 2–3 s is silent on both; 6.8–7 s (200 ms) is under Min silence.
+        assert_eq!(combined_silences(&both, 400), vec![ms(2000, 3000)]);
+        assert_eq!(
+            combined_silences(&both, 100),
+            vec![ms(2000, 3000), ms(6800, 7000)]
+        );
+        // One track: its silences as they are, even short ones.
+        assert_eq!(combined_silences(&both[..1], 5000), on_a1.to_vec());
+        let p = AutocutParams {
+            padding_ms: 0,
+            ..params()
+        };
+        let cut = plan_clip_on(&clip(0, 300), &both, &p, FPS30);
+        assert_eq!(cut.kept, vec![[0, 60], [90, 300]]);
     }
 
     #[test]
@@ -1060,6 +1286,69 @@ mod tests {
                     clip: [a, b],
                     cut: cut_clip(&clip(a, b), &silences, &params, fps),
                     silences_ms,
+                    params,
+                }
+            })
+            .collect();
+        insta::assert_yaml_snapshot!(table);
+    }
+
+    /// Issue #15: two tracks, a region cut only when silent on both.
+    #[test]
+    fn two_tracks_snapshot() {
+        #[derive(Serialize)]
+        struct Case {
+            name: &'static str,
+            a1_ms: Vec<[i64; 2]>,
+            a2_ms: Vec<[i64; 2]>,
+            combined_ms: Vec<[i64; 2]>,
+            params: AutocutParams,
+            cut: ClipCut,
+        }
+        let p = params();
+        let speech = vec![[0, 512], [2005, 3008], [3605, 5013], [6016, 7000]];
+        let cases = [
+            // System audio plays a sound under the second pause: it stays.
+            (
+                "sound on A2 keeps a pause",
+                speech.clone(),
+                vec![[0, 3500], [5200, 7000]],
+                p.clone(),
+            ),
+            // The silences overlap by 208 ms only, under Min silence (400).
+            (
+                "a short overlap isn't cut",
+                vec![[0, 512], [2005, 3008]],
+                vec![[2800, 4000]],
+                p.clone(),
+            ),
+            (
+                "edges only on the combined silences",
+                speech.clone(),
+                vec![[0, 3500], [5200, 7000]],
+                AutocutParams {
+                    edges_only: true,
+                    ..p.clone()
+                },
+            ),
+        ];
+        let to_ms = |list: &[Interval]| -> Vec<[i64; 2]> {
+            list.iter()
+                .map(|i| [i.start_ns / NS_PER_MS, i.end_ns / NS_PER_MS])
+                .collect()
+        };
+        let table: Vec<Case> = cases
+            .into_iter()
+            .map(|(name, a1_ms, a2_ms, params)| {
+                let list = |l: &[[i64; 2]]| l.iter().map(|&[a, b]| ms(a, b)).collect::<Vec<_>>();
+                let combined =
+                    intersect_silences(&[list(&a1_ms), list(&a2_ms)], params.min_silence_ms);
+                Case {
+                    name,
+                    combined_ms: to_ms(&combined),
+                    cut: cut_clip(&clip(0, 210), &combined, &params, FPS30),
+                    a1_ms,
+                    a2_ms,
                     params,
                 }
             })

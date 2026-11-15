@@ -24,7 +24,8 @@ use serde_json::Value;
 
 use crate::apply::Outcome;
 use crate::autocut::{
-    ClipCut, db_label, dry_run_label, nothing_kept_reason, plan_clip, plural, run_label,
+    ClipCut, TrackSilences, db_label, dry_run_label, nothing_kept_reason, plan_clip_on, plural,
+    run_label,
 };
 use crate::ctx::{Ctx, IdGen};
 use crate::error::CoreError;
@@ -89,7 +90,7 @@ pub fn silence_failed(
     {
         let (failed, rest): (Vec<AutocutTarget>, Vec<AutocutTarget>) = std::mem::take(targets)
             .into_iter()
-            .partition(|t| t.key == key);
+            .partition(|t| t.tracks.iter().any(|source| source.key == key));
         *targets = rest;
         let (clean, mut skipped) = split_skipped(cmd);
         skipped.extend(failed.into_iter().map(|t| AutocutSkipView {
@@ -284,9 +285,11 @@ pub(crate) fn finish(state: &State, ctx: &Ctx, job: Snapshot) -> Finished {
             Ok((clip, cut)) => {
                 clips.push(AutocutClipView {
                     clip: clip.id.clone(),
+                    tracks: target.tracks.iter().map(|s| s.track.clone()).collect(),
                     kept: cut.kept.clone(),
                     removed_frames: cut.removed_frames,
                     silences: cut.silences,
+                    warning: target.warning.clone(),
                 });
                 if cut.changes(clip) {
                     cuts.insert(clip.id.clone(), cut);
@@ -305,7 +308,7 @@ pub(crate) fn finish(state: &State, ctx: &Ctx, job: Snapshot) -> Finished {
         skipped,
         edges_only,
     };
-    let note = skipped_note(&plan.skipped);
+    let note = run_note(&plan);
 
     let failed = plan
         .skipped
@@ -451,28 +454,34 @@ fn plan_target<'s>(
         .filter(|clip| target.clip.matches(clip))
         .ok_or_else(changed)?;
     let take = project.take(&clip.take).ok_or_else(changed)?;
-    let track = take.scene.track(&target.track).ok_or_else(changed)?;
-    let stream = take
-        .stream(target.track.as_str())
-        .filter(|s| s.kind == StreamKind::Audio && !track.missing)
-        .ok_or_else(|| {
-            format!(
-                "track {} of take {} is missing media",
-                track.id,
-                clip.take.number()
-            )
-        })?;
-    let silences = state
-        .runtime
-        .silence
-        .get(&target.key)
-        .ok_or_else(|| format!("{ANALYSIS_FAILED}no result"))?;
+    let mut tracks = Vec::with_capacity(target.tracks.len());
+    for source in &target.tracks {
+        let track = take.scene.track(&source.track).ok_or_else(changed)?;
+        let stream = take
+            .stream(source.track.as_str())
+            .filter(|s| s.kind == StreamKind::Audio && !track.missing)
+            .ok_or_else(|| {
+                format!(
+                    "track {} of take {} is missing media",
+                    track.id,
+                    clip.take.number()
+                )
+            })?;
+        let silences = state
+            .runtime
+            .silence
+            .get(&source.key)
+            .ok_or_else(|| format!("{ANALYSIS_FAILED}no result"))?;
+        tracks.push(TrackSilences {
+            track,
+            stream,
+            silences,
+        });
+    }
     let fps = project.canvas.fps;
-    let cut = plan_clip(clip, stream, track, silences, params, fps);
+    let cut = plan_clip_on(clip, &tracks, params, fps);
     if cut.keeps_nothing() {
-        return Err(nothing_kept_reason(
-            clip, stream, track, silences, params, fps,
-        ));
+        return Err(nothing_kept_reason(clip, &tracks, params, fps));
     }
     Ok((clip, cut))
 }
@@ -499,6 +508,18 @@ fn nothing_to_cut(plan: &AutocutPlanView, params: &AutocutParams) -> String {
             db_label(params.threshold_db)
         ),
     }
+}
+
+/// The skipped clips' note, then the tracks takes couldn't use, each once
+/// ("take 3 has no track A2: silence detected on A1 only").
+fn run_note(plan: &AutocutPlanView) -> Option<String> {
+    let mut notes: Vec<String> = skipped_note(&plan.skipped).into_iter().collect();
+    for warning in plan.clips.iter().filter_map(|c| c.warning.as_ref()) {
+        if !notes.contains(warning) {
+            notes.push(warning.clone());
+        }
+    }
+    (!notes.is_empty()).then(|| notes.join("; "))
 }
 
 /// "1 clip skipped (c1a2: entirely silent at −35 dB)"; at most three reasons.
@@ -574,7 +595,8 @@ pub(crate) fn progress_of(job: &Job, ctx: &Ctx) -> Option<Effect> {
         .filter(|s| s.reason.starts_with(ANALYSIS_FAILED))
         .count();
     let total = (targets.len() + failed) as u64;
-    let done = (failed + targets.iter().filter(|t| !pending.contains(&t.key)).count()) as u64;
+    let analyzed = |t: &&AutocutTarget| t.tracks.iter().all(|s| !pending.contains(&s.key));
+    let done = (failed + targets.iter().filter(analyzed).count()) as u64;
     let elapsed = u64::try_from((ctx.now - job.started).num_seconds()).unwrap_or(0);
     let eta_secs =
         (done > 0 && done < total && elapsed > 0).then(|| elapsed * (total - done) / done);
@@ -634,7 +656,7 @@ mod tests {
     use crate::ids::TakeId;
     use crate::protocol::command::{AutocutOverrides, ClipScope, Command};
     use crate::protocol::effect::HistoryOp;
-    use crate::state::{ClipRef, RecordMode, RecordPhase};
+    use crate::state::{AutocutSource, ClipRef, RecordMode, RecordPhase};
     use crate::testkit;
 
     /// A state with job 1 analyzing both mic files (`qrec autocut`, request r1).
@@ -1116,8 +1138,11 @@ mod tests {
         let mut state = state;
         let target = AutocutTarget {
             clip: ClipRef::of(&state.project.timeline.clips[1]),
-            track: "A1".parse().unwrap(),
-            key: fixtures::key(&ctx, MIC2, &p),
+            tracks: vec![AutocutSource {
+                track: "A1".parse().unwrap(),
+                key: fixtures::key(&ctx, MIC2, &p),
+            }],
+            warning: None,
         };
         state.runtime.jobs.insert(
             JobId(9),

@@ -1,0 +1,96 @@
+---
+source: crates/qrec-core/src/autocut.rs
+expression: table
+---
+- name: sound on A2 keeps a pause
+  a1_ms:
+    - - 0
+      - 512
+    - - 2005
+      - 3008
+    - - 3605
+      - 5013
+    - - 6016
+      - 7000
+  a2_ms:
+    - - 0
+      - 3500
+    - - 5200
+      - 7000
+  combined_ms:
+    - - 0
+      - 512
+    - - 2005
+      - 3008
+    - - 6016
+      - 7000
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 120
+    minKeepMs: 200
+    edgesOnly: false
+  cut:
+    kept:
+      - - 11
+        - 64
+      - - 86
+        - 185
+    silences: 3
+    removedFrames: 58
+- name: "a short overlap isn't cut"
+  a1_ms:
+    - - 0
+      - 512
+    - - 2005
+      - 3008
+  a2_ms:
+    - - 2800
+      - 4000
+  combined_ms: []
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 120
+    minKeepMs: 200
+    edgesOnly: false
+  cut:
+    kept:
+      - - 0
+        - 210
+    silences: 0
+    removedFrames: 0
+- name: edges only on the combined silences
+  a1_ms:
+    - - 0
+      - 512
+    - - 2005
+      - 3008
+    - - 3605
+      - 5013
+    - - 6016
+      - 7000
+  a2_ms:
+    - - 0
+      - 3500
+    - - 5200
+      - 7000
+  combined_ms:
+    - - 0
+      - 512
+    - - 2005
+      - 3008
+    - - 6016
+      - 7000
+  params:
+    thresholdDb: -35
+    minSilenceMs: 400
+    paddingMs: 120
+    minKeepMs: 200
+    edgesOnly: true
+  cut:
+    kept:
+      - - 11
+        - 185
+    silences: 2
+    removedFrames: 36

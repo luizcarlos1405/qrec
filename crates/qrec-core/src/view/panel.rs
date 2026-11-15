@@ -400,8 +400,9 @@ pub struct AudioRow {
 }
 
 /// The audio rows of the scene the canvas shows. The "Autocut" tag sits on
-/// `autocut.track`, or on the scene's first mic (else its first track)
-/// when it is unset: the track autocut then uses for a take of that scene.
+/// each of `autocut.tracks`, or on the scene's first mic (else its first
+/// track) when none is named: the track autocut then uses for a take of
+/// that scene.
 /// In Program that is the selected clip's take, what its clips are
 /// analyzed on; in Live the project scene, what the next take is analyzed
 /// on (an older take recorded with another scene may be analyzed on a
@@ -411,7 +412,7 @@ pub struct AudioRow {
 /// "Device not found".
 pub fn audio_rows(state: &State, live: &LiveSources) -> Vec<AudioRow> {
     let scene = canvas_scene(&state.project, &state.ui);
-    let autocut = autocut_track(state, scene);
+    let autocut = autocut_tracks(state, scene);
     let live_mode = state.ui.canvas_mode == CanvasMode::Live;
     let editable = edit_target(&state.project, &state.ui).is_some_and(|target| {
         let probe = Command::AudioSet {
@@ -428,7 +429,7 @@ pub fn audio_rows(state: &State, live: &LiveSources) -> Vec<AudioRow> {
             track: track.id.clone(),
             role: track.role,
             label: track.label.clone(),
-            autocut: autocut.as_ref() == Some(&track.id),
+            autocut: autocut.contains(&track.id),
             muted: track.muted,
             gain: format::gain_db(track.gain_db),
             gain_db: track.gain_db,
@@ -441,16 +442,19 @@ pub fn audio_rows(state: &State, live: &LiveSources) -> Vec<AudioRow> {
         .collect()
 }
 
-/// The track autocut listens to in `scene`: the project's `autocut.track`,
-/// else the scene's [`default_track`](crate::autocut::default_track) (its
-/// first mic, else its first track).
-pub fn autocut_track(state: &State, scene: &Scene) -> Option<TrackId> {
-    state
-        .project
-        .autocut
-        .track
-        .clone()
-        .or_else(|| crate::autocut::default_track(scene).map(|t| t.id.clone()))
+/// The tracks autocut listens to in `scene`: the project's
+/// `autocut.tracks`, else the scene's
+/// [`default_track`](crate::autocut::default_track) (its first mic, else
+/// its first track).
+pub fn autocut_tracks(state: &State, scene: &Scene) -> Vec<TrackId> {
+    let tracks = &state.project.autocut.tracks;
+    if tracks.is_empty() {
+        crate::autocut::default_track(scene)
+            .map(|t| vec![t.id.clone()])
+            .unwrap_or_default()
+    } else {
+        tracks.clone()
+    }
 }
 
 /// No `Live` status for `source` once the engine reported any (an empty
@@ -540,11 +544,12 @@ pub fn track_rename_outcome(state: &State, track: &TrackId, label: &str) -> Rena
     }
 }
 
-/// The overflow's "Use for autocut": `AutocutSettings{track}`.
+/// The overflow's "Use for autocut": `AutocutSettings{tracks}`, the track
+/// alone (the autocut page checks more than one).
 pub fn use_for_autocut(track: &TrackId) -> Command {
     Command::AutocutSettings {
         patch: AutocutPatch {
-            track: Nullable::Set(track.clone()),
+            tracks: Some(vec![track.clone()]),
             ..AutocutPatch::default()
         },
     }
@@ -1377,14 +1382,21 @@ mod tests {
     #[test]
     fn the_autocut_tag_follows_the_setting() {
         let mut state = s02();
-        state.project.autocut.track = Some(TrackId::numbered(2));
+        state.project.autocut.tracks = vec![TrackId::numbered(2)];
         let tags: Vec<bool> = audio_rows(&state, &BTreeMap::new())
             .iter()
             .map(|r| r.autocut)
             .collect();
         assert_eq!(tags, [false, true]);
+        // Both: both tagged.
+        state.project.autocut.tracks = vec![TrackId::numbered(2), TrackId::numbered(1)];
+        let tags: Vec<bool> = audio_rows(&state, &BTreeMap::new())
+            .iter()
+            .map(|r| r.autocut)
+            .collect();
+        assert_eq!(tags, [true, true]);
         // Unset: the scene's first mic, which autocut then uses.
-        state.project.autocut.track = None;
+        state.project.autocut.tracks.clear();
         let tags: Vec<bool> = audio_rows(&state, &BTreeMap::new())
             .iter()
             .map(|r| r.autocut)

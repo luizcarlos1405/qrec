@@ -504,7 +504,7 @@ mod tests {
             ("/canvas/width", json!(1921), "not a multiple of 2"),
             ("/canvas/height", json!(8), "below 16"),
             ("/canvas/fps/num", json!(0), "below 1"),
-            ("/version", json!(2), "is not 1"),
+            ("/version", json!(1), "is not 2"),
             ("/scene/layers/0/opacity", json!(1.5), "above 1"),
             (
                 "/scene/layers/0/fit",
@@ -523,7 +523,7 @@ mod tests {
             ("/recording/encoder", json!("nvenc"), "matches 0 of oneOf"),
             ("/autocut/thresholdDb", json!(3), "above 0"),
             ("/autocut/minKeepMs", json!(60001), "above 60000"),
-            ("/autocut/track", json!("A 1"), "matches none of anyOf"),
+            ("/autocut/tracks", json!(["A 1"]), "doesn't match"),
             (
                 "/takes/take-0001/recordedAt",
                 json!("yesterday"),

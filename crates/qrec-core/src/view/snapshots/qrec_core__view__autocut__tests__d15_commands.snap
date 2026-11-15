@@ -1,6 +1,5 @@
 ---
 source: crates/qrec-core/src/view/autocut.rs
-assertion_line: 1060
 expression: "serde_json::json!({\n    \"dryRun\": dry_run(&state, &tuned).to_json(), \"applyUnchanged\":\n    json(unchanged), \"applyTuned\": json(apply(&state, &tuned)), \"autoRun\":\n    auto_run(true).to_json(),\n})"
 ---
 {
@@ -10,7 +9,10 @@ expression: "serde_json::json!({\n    \"dryRun\": dry_run(&state, &tuned).to_jso
       "patch": {
         "paddingMs": 90,
         "thresholdDb": -42.0,
-        "track": "A2"
+        "tracks": [
+          "A1",
+          "A2"
+        ]
       }
     },
     {
@@ -51,7 +53,10 @@ expression: "serde_json::json!({\n    \"dryRun\": dry_run(&state, &tuned).to_jso
       "minSilenceMs": 400,
       "paddingMs": 90,
       "thresholdDb": -42.0,
-      "track": "A2"
+      "tracks": [
+        "A1",
+        "A2"
+      ]
     },
     "scope": {
       "clips": [

@@ -950,8 +950,11 @@ fn analyzing_and_dimmed_clips() {
                 cmd: serde_json::json!({}),
                 targets: vec![AutocutTarget {
                     clip: ClipRef::of(&c3e9),
-                    track: "A1".parse().unwrap(),
-                    key: SilenceKey("k".into()),
+                    tracks: vec![crate::state::AutocutSource {
+                        track: "A1".parse().unwrap(),
+                        key: SilenceKey("k".into()),
+                    }],
+                    warning: None,
                 }],
                 params: AutocutParams {
                     threshold_db: -35.0,

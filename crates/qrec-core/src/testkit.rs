@@ -365,7 +365,7 @@ fn design_builder() -> ProjectBuilder {
     a1.label = "Yeti Nano".to_owned();
     a2.label = "System audio".to_owned();
     a2.gain_db = -6.0;
-    project.autocut.track = Some(parse_id("A1"));
+    project.autocut.tracks = vec![parse_id("A1")];
     // BRIEF §3.6's min keep, not the default.
     project.autocut.min_keep_ms = 200;
     builder
@@ -686,7 +686,7 @@ mod tests {
                 ("A2", "System audio", AudioRole::System, -6.0)
             ]
         );
-        assert_eq!(p.autocut.track.as_ref().map(TrackId::as_str), Some("A1"));
+        assert_eq!(p.autocut.tracks, [parse_id::<TrackId>("A1")]);
         assert_eq!(
             (
                 p.autocut.threshold_db,

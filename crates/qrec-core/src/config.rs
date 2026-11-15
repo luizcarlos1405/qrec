@@ -53,7 +53,7 @@ impl UserConfig {
             },
             autocut: AutocutSettings {
                 auto_run_after_take: self.autocut.auto_run_after_take,
-                track: None,
+                tracks: Vec::new(),
                 threshold_db: self.autocut.threshold_db,
                 min_silence_ms: self.autocut.min_silence_ms,
                 padding_ms: self.autocut.padding_ms,

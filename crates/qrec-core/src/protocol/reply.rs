@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ids::{ClipId, Frame, TakeId};
+use crate::ids::{ClipId, Frame, TakeId, TrackId};
 use crate::model::TakeStatus;
 use crate::state::{HostKind, Job, RecordMode, RecordPhase};
 
@@ -148,11 +148,17 @@ pub struct AutocutPlanView {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutocutClipView {
     pub clip: ClipId,
+    /// The tracks its silences were detected on.
+    pub tracks: Vec<TrackId>,
     /// Kept fragments as `[in, out)` take frames.
     pub kept: Vec<[Frame; 2]>,
     pub removed_frames: Frame,
     /// Number of silences removed.
     pub silences: usize,
+    /// Named tracks its take couldn't use ("take 3 has no track A2: silence
+    /// detected on A1 only").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 /// A clip autocut left alone, and why ("changed while analyzing", "entirely

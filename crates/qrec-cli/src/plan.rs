@@ -18,7 +18,7 @@ use qrec_core::protocol::{
     InsertAt, LayerPatch, MoveTo, Nullable, Quality, Query, RecordModeArg, SceneDest, SceneTarget,
     SeekTarget, VideoCodec, VideoSourceArg, WireBody,
 };
-use qrec_core::{CoreError, TimeArg};
+use qrec_core::{CoreError, TimeArg, TrackId};
 
 use crate::args::*;
 use crate::backend::{Fallback, ProjectRequest, RECORD_DEADLINE, RouteOpts};
@@ -338,7 +338,7 @@ impl Builder {
             Cmd::Record(record) => self.record(record),
             Cmd::Take(take) => self.take(take),
             Cmd::Clip(clip) => self.clip(clip)?,
-            Cmd::Autocut(args) => self.autocut(args),
+            Cmd::Autocut(args) => self.autocut(args)?,
             Cmd::Undo(args) => self.command("undo", Command::Undo { steps: args.steps }, Msg),
             Cmd::Redo(args) => self.command("redo", Command::Redo { steps: args.steps }, Msg),
             Cmd::History(args) => self.history(args),
@@ -749,14 +749,14 @@ impl Builder {
         })
     }
 
-    fn autocut(&self, args: &AutocutArgs) -> ProjectPlan {
+    fn autocut(&self, args: &AutocutArgs) -> Result<ProjectPlan, CoreError> {
         if let Some(AutocutCmd::Settings(s)) = &args.command {
-            return self.command(
+            return Ok(self.command(
                 "autocut settings",
                 Command::AutocutSettings {
                     patch: AutocutPatch {
                         auto_run_after_take: s.auto_run,
-                        track: auto_or(s.track.clone()),
+                        tracks: tracks_or_auto(&s.track)?,
                         threshold_db: s.threshold_db,
                         min_silence_ms: s.min_silence_ms,
                         padding_ms: s.padding_ms,
@@ -765,7 +765,7 @@ impl Builder {
                     },
                 },
                 View::Command,
-            );
+            ));
         }
         let scope = if args.scope.clips.is_empty() {
             ClipScope::All
@@ -773,12 +773,12 @@ impl Builder {
             ClipScope::Clips(args.scope.clips.clone())
         };
         let p = &args.params;
-        self.command(
+        Ok(self.command(
             "autocut",
             Command::Autocut {
                 scope,
                 overrides: AutocutOverrides {
-                    track: p.track.clone(),
+                    tracks: p.track.clone(),
                     threshold_db: p.threshold_db,
                     min_silence_ms: p.min_silence_ms,
                     padding_ms: p.padding_ms,
@@ -790,7 +790,7 @@ impl Builder {
             View::Autocut {
                 dry_run: args.dry_run,
             },
-        )
+        ))
     }
 
     fn history(&self, args: &HistoryArgs) -> ProjectPlan {
@@ -859,6 +859,29 @@ fn target(args: &SceneTargetArgs) -> SceneTarget {
 }
 
 /// `auto` clears the field (`null`: let Qrec choose); absent keeps it.
+/// `--track A1 --track A2` (each once) for `autocut settings`, or `--track
+/// auto` alone for each take's first mic; absent keeps the setting.
+fn tracks_or_auto(given: &[AutoOr<TrackId>]) -> Result<Option<Vec<TrackId>>, CoreError> {
+    if given.is_empty() {
+        return Ok(None);
+    }
+    let mut tracks = Vec::new();
+    for value in given {
+        match value {
+            AutoOr::Auto if given.len() == 1 => return Ok(Some(Vec::new())),
+            AutoOr::Auto => {
+                return Err(
+                    CoreError::usage("--track auto can't be combined with tracks")
+                        .with_hint("--track auto alone listens to each take's first mic"),
+                );
+            }
+            AutoOr::Value(id) if !tracks.contains(id) => tracks.push(id.clone()),
+            AutoOr::Value(_) => {}
+        }
+    }
+    Ok(Some(tracks))
+}
+
 fn auto_or<T>(value: Option<AutoOr<T>>) -> Nullable<T> {
     match value {
         None => Nullable::Keep,
@@ -1294,18 +1317,33 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&dry.request.body).unwrap()["command"],
             json!({"cmd": "autocut", "scope": {"clips": ["c1", "c2"]},
-                   "overrides": {"track": "A2", "thresholdDb": -40.0, "minSilenceMs": 300, "paddingMs": 100, "minKeepMs": 150},
+                   "overrides": {"tracks": ["A2"], "thresholdDb": -40.0, "minSilenceMs": 300, "paddingMs": 100, "minKeepMs": 150},
                    "dryRun": true})
         );
         assert_eq!(command("qrec autocut --all")["scope"], json!("all"));
         assert_eq!(
             command("qrec autocut settings --auto-run true --track auto --threshold-db -30"),
-            json!({"cmd": "autocutSettings", "patch": {"autoRunAfterTake": true, "track": null, "thresholdDb": -30.0}})
+            json!({"cmd": "autocutSettings", "patch": {"autoRunAfterTake": true, "tracks": [], "thresholdDb": -30.0}})
         );
         assert_eq!(
             command("qrec autocut settings --track A1")["patch"],
-            json!({"track": "A1"})
+            json!({"tracks": ["A1"]})
         );
+        assert_eq!(
+            command("qrec autocut settings --track A2 --track A1 --track A2")["patch"],
+            json!({"tracks": ["A2", "A1"]}),
+            "each once, in the order given"
+        );
+        assert_eq!(
+            command("qrec autocut --track A1,A2")["overrides"],
+            json!({"tracks": ["A1", "A2"]})
+        );
+        let err = plan(
+            &cli("qrec autocut settings --track A1 --track auto"),
+            Some(Path::new("/work/dir")),
+        )
+        .unwrap_err();
+        assert_eq!(err.message, "--track auto can't be combined with tracks");
     }
 
     #[test]

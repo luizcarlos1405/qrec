@@ -793,8 +793,11 @@ mod tests {
                             in_: 0,
                             out: 10,
                         },
-                        track: "A1".parse().unwrap(),
-                        key: SilenceKey("k".into()),
+                        tracks: vec![crate::state::AutocutSource {
+                            track: "A1".parse().unwrap(),
+                            key: SilenceKey("k".into()),
+                        }],
+                        warning: None,
                     }],
                     params: AutocutParams {
                         threshold_db: -35.0,

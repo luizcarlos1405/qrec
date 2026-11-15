@@ -17,7 +17,7 @@ use crate::ids::{ClipId, Frame, LayerId, TakeId, TrackId};
 use crate::validate::MAX_FPS;
 
 /// The schema version this build reads and writes.
-pub const CURRENT_VERSION: u32 = 1;
+pub const CURRENT_VERSION: u32 = 2;
 
 /// The project file name inside a project folder.
 pub const PROJECT_FILE: &str = "qrec.json";
@@ -485,8 +485,10 @@ pub enum EncoderPref {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutocutSettings {
     pub auto_run_after_take: bool,
-    /// The audio track used for silence detection. `null` = the take's first mic track.
-    pub track: Option<TrackId>,
+    /// The audio tracks silence is detected on: a region is cut only when
+    /// it is silent on every one of them. Empty = the take's first mic
+    /// track. (Schema v1 had one `track`, `null` for the first mic.)
+    pub tracks: Vec<TrackId>,
     pub threshold_db: f64,
     /// Only silences at least this long are removed.
     pub min_silence_ms: u32,
@@ -506,7 +508,7 @@ impl Default for AutocutSettings {
     fn default() -> Self {
         Self {
             auto_run_after_take: false,
-            track: None,
+            tracks: Vec::new(),
             threshold_db: -35.0,
             min_silence_ms: 400,
             padding_ms: 120,

@@ -359,8 +359,8 @@ fn apply_edit(p: &mut Project, edit: &Edit, ids: &mut Ids, state: &State) {
             let target = scene_mut(p, *scene);
             if !target.audio.is_empty() {
                 let removed = target.audio.remove(track.index(target.audio.len()));
-                if is_project && p.autocut.track.as_ref() == Some(&removed.id) {
-                    p.autocut.track = None;
+                if is_project {
+                    p.autocut.tracks.retain(|id| *id != removed.id);
                 }
             }
         }

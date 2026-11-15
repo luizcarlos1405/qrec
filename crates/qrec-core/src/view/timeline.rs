@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::autocut::{analysis_source, params_of, plan_clip};
+use crate::autocut::{TrackSilences, analysis_sources, params_of, plan_clip_on};
 use crate::ctx::FileFact;
 use crate::export_plan::shown_frame;
 use crate::ids::{ClipId, Frame, TakeId, TrackId};
@@ -870,7 +870,7 @@ pub struct Lane {
     pub track: TrackId,
     pub label: String,
     pub role: AudioRole,
-    /// Autocut listens to it (scissors): `autocut.track`, else a track the
+    /// Autocut listens to it (scissors): one of `autocut.tracks`, else a track the
     /// timeline's clips are analyzed on (`autocut::analyzed_tracks`: each
     /// take's first mic, else its first track; takes of other scenes may
     /// put the scissors on several lanes, R77's audit).
@@ -918,17 +918,17 @@ pub fn lanes(state: &State) -> Vec<Lane> {
         .collect()
 }
 
-/// The lanes with the scissors: `autocut.track`, else the tracks the dry
+/// The lanes with the scissors: `autocut.tracks`, else the tracks the dry
 /// run analyzes the timeline's clips on (`autocut::analyzed_tracks`), else,
 /// with no clip, the project scene's (what a take recorded from it is
 /// analyzed on). The lanes' own rule (the first mic among every lane) put
 /// them on a track another take's clips aren't analyzed on (R77's audit).
 fn autocut_lanes(state: &State) -> Vec<TrackId> {
     let project = &state.project;
-    if let Some(track) = &project.autocut.track {
-        return vec![track.clone()];
+    if !project.autocut.tracks.is_empty() {
+        return project.autocut.tracks.clone();
     }
-    let analyzed = crate::autocut::analyzed_tracks(project, &project.timeline.clips, None);
+    let analyzed = crate::autocut::analyzed_tracks(project, &project.timeline.clips, &[]);
     if !analyzed.is_empty() {
         return analyzed;
     }
@@ -1176,17 +1176,17 @@ pub fn silence_files(state: &State) -> Vec<String> {
             continue;
         }
         if let Some(take) = project.takes.get(&clip.take)
-            && let Ok((_, stream)) = analysis_source(project, &clip.take, take, None)
+            && let Ok(sources) = analysis_sources(project, &clip.take, take, &[])
         {
-            files.insert(stream.file.clone());
+            files.extend(sources.tracks.iter().map(|(_, s)| s.file.clone()));
         }
     }
     files.into_iter().collect()
 }
 
-/// The hatches of the autocut track's lane (S08): what autocut would cut
+/// The hatches of the autocut tracks' lanes (S08): what autocut would cut
 /// at the project's settings and the padding it keeps beside each cut,
-/// planned (`autocut::plan_clip`) from `runtime.silence` and the cached
+/// planned (`autocut::plan_clip_on`) from `runtime.silence` and the cached
 /// analyses, keyed with the files' facts; per clip in time order. A clip
 /// autocut would leave as it is shows none, so after a cut the lane is
 /// clean and a hatch always means `c` removes it.
@@ -1210,23 +1210,34 @@ pub fn silence_spans(
         let Some(take) = project.takes.get(&clip.take) else {
             continue;
         };
-        let Ok((track, stream)) = analysis_source(project, &clip.take, take, None) else {
+        let Ok(sources) = analysis_sources(project, &clip.take, take, &[]) else {
             continue;
         };
-        let Some(fact) = files.get(&stream.file) else {
+        let mut tracks = Vec::with_capacity(sources.tracks.len());
+        for &(track, stream) in &sources.tracks {
+            let Some(fact) = files.get(&stream.file) else {
+                break;
+            };
+            let key = SilenceKey::compute(
+                &stream.file,
+                fact.bytes,
+                fact.mtime_ns,
+                settings.threshold_db,
+                settings.min_silence_ms,
+            );
+            let Some(found) = state.runtime.silence.get(&key).or_else(|| cached.get(&key)) else {
+                break;
+            };
+            tracks.push(TrackSilences {
+                track,
+                stream,
+                silences: found,
+            });
+        }
+        if tracks.len() < sources.tracks.len() {
             continue;
-        };
-        let key = SilenceKey::compute(
-            &stream.file,
-            fact.bytes,
-            fact.mtime_ns,
-            settings.threshold_db,
-            settings.min_silence_ms,
-        );
-        let Some(found) = state.runtime.silence.get(&key).or_else(|| cached.get(&key)) else {
-            continue;
-        };
-        let cut = plan_clip(clip, stream, track, found, &params, fps);
+        }
+        let cut = plan_clip_on(clip, &tracks, &params, fps);
         if !cut.changes(clip) {
             continue;
         }
@@ -1236,13 +1247,15 @@ pub fn silence_spans(
             .chain(pads.into_iter().map(|r| (r, HatchKind::Padding)))
             .collect();
         runs.sort_by_key(|([a, _], _)| *a);
-        spans.extend(runs.into_iter().map(|([a, b], kind)| SilenceSpan {
-            clip: clip.id.clone(),
-            track: track.id.clone(),
-            from: pos + (a - clip.in_),
-            to: pos + (b - clip.in_),
-            kind,
-        }));
+        for t in &tracks {
+            spans.extend(runs.iter().map(|&([a, b], kind)| SilenceSpan {
+                clip: clip.id.clone(),
+                track: t.track.id.clone(),
+                from: pos + (a - clip.in_),
+                to: pos + (b - clip.in_),
+                kind,
+            }));
+        }
     }
     spans
 }

@@ -15,6 +15,7 @@ use crate::apply::Outcome;
 use crate::ctx::Ctx;
 use crate::error::{CoreError, ErrorCode};
 use crate::history::{commit, persist};
+use crate::ids::TrackId;
 use crate::model::{AutocutSettings, Canvas, Color, EncoderPref, Fps, Project, ProjectDefaults};
 use crate::protocol::command::{AutocutPatch, CanvasSpec, Command, Nullable};
 use crate::protocol::reply::CmdResult;
@@ -413,7 +414,7 @@ pub fn autocut_settings(
     .to_json();
     let AutocutPatch {
         auto_run_after_take,
-        track,
+        tracks,
         threshold_db,
         min_silence_ms,
         padding_ms,
@@ -421,7 +422,7 @@ pub fn autocut_settings(
         edges_only,
     } = patch;
     if auto_run_after_take.is_none()
-        && track.is_keep()
+        && tracks.is_none()
         && threshold_db.is_none()
         && min_silence_ms.is_none()
         && padding_ms.is_none()
@@ -429,7 +430,7 @@ pub fn autocut_settings(
         && edges_only.is_none()
     {
         return Err(CoreError::usage("nothing to change").with_hint(
-            "qrec autocut settings [--auto-run BOOL] [--track A1|auto] [--threshold-db DB] \
+            "qrec autocut settings [--auto-run BOOL] [--track A1|auto]… [--threshold-db DB] \
              [--min-silence-ms MS] [--padding-ms MS] [--min-keep-ms MS] [--edges-only BOOL]",
         ));
     }
@@ -438,8 +439,17 @@ pub fn autocut_settings(
     if let Some(v) = auto_run_after_take {
         settings.auto_run_after_take = v;
     }
-    let track_given = !track.is_keep();
-    settings.track = track.apply(settings.track);
+    let tracks_given = tracks.is_some();
+    if let Some(mut tracks) = tracks {
+        // Each once, in the order given.
+        let mut seen = Vec::new();
+        tracks.retain(|id| {
+            let first = !seen.contains(id);
+            seen.push(id.clone());
+            first
+        });
+        settings.tracks = tracks;
+    }
     if let Some(v) = threshold_db {
         settings.threshold_db = v;
     }
@@ -460,9 +470,12 @@ pub fn autocut_settings(
     }
     let project = &state.project;
     let mut warning = None;
-    if let Some(id) = settings.track.as_ref().filter(|_| track_given)
-        && project.scene.track(id).is_none()
-    {
+    let given = if tracks_given {
+        settings.tracks.as_slice()
+    } else {
+        &[]
+    };
+    for id in given.iter().filter(|id| project.scene.track(id).is_none()) {
         if !project.takes.values().any(|t| t.scene.track(id).is_some()) {
             let ids: Vec<&str> = project.scene.audio.iter().map(|t| t.id.as_str()).collect();
             return Err(
@@ -474,7 +487,7 @@ pub fn autocut_settings(
                 );
         }
         warning = Some(format!(
-            "{id} isn't in the project scene; takes without it are skipped"
+            "{id} isn't in the project scene; takes without it use the other tracks, or are skipped"
         ));
     }
 
@@ -488,12 +501,18 @@ pub fn autocut_settings(
         };
         changes.push(format!("auto-run {on}"));
     }
-    if settings.track != before.track {
-        let track = settings
-            .track
-            .as_ref()
-            .map_or("auto (first mic)".to_owned(), |t| t.to_string());
-        changes.push(format!("track {track}"));
+    if settings.tracks != before.tracks {
+        changes.push(match settings.tracks.as_slice() {
+            [] => "track auto (first mic)".to_owned(),
+            [one] => format!("track {one}"),
+            many => format!(
+                "tracks {}",
+                many.iter()
+                    .map(TrackId::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            ),
+        });
     }
     if settings.threshold_db != before.threshold_db {
         changes.push(format!("threshold {} dB", settings.threshold_db));
@@ -721,7 +740,7 @@ mod tests {
         );
         assert_eq!(p.autocut.threshold_db, -40.0);
         assert!(p.autocut.auto_run_after_take);
-        assert_eq!(p.autocut.track, None);
+        assert!(p.autocut.tracks.is_empty());
         assert_eq!(p.next_take_number, 1);
         assert!(p.scene.is_empty() && p.takes.is_empty() && p.timeline.clips.is_empty());
         assert_eq!(out.state.history, History::new());
@@ -1244,7 +1263,7 @@ mod tests {
         let state = with_takes();
         let patch = AutocutPatch {
             auto_run_after_take: Some(true),
-            track: Nullable::Set(track("A1")),
+            tracks: Some(vec![track("A1")]),
             threshold_db: Some(-40.0),
             min_silence_ms: Some(500),
             padding_ms: Some(100),
@@ -1255,7 +1274,7 @@ mod tests {
         let a = &out.state.project.autocut;
         assert!(a.auto_run_after_take);
         assert!(a.edges_only);
-        assert_eq!(a.track, Some(track("A1")));
+        assert_eq!(a.tracks, [track("A1")]);
         assert_eq!(
             (
                 a.threshold_db,
@@ -1273,14 +1292,14 @@ mod tests {
         );
         assert_eq!(entry.cmd["cmd"], "autocutSettings");
         assert_eq!(reply(&out).result["edgesOnly"], true);
-        assert_eq!(reply(&out).result["track"], "A1");
+        assert_eq!(reply(&out).result["tracks"], json!(["A1"]));
 
         let patch = AutocutPatch {
-            track: Nullable::Clear,
+            tracks: Some(Vec::new()),
             ..Default::default()
         };
         let out = autocut_settings(&out.state, &ctx(), patch).unwrap();
-        assert_eq!(out.state.project.autocut.track, None);
+        assert!(out.state.project.autocut.tracks.is_empty());
         assert_eq!(
             reply(&out).message,
             "Changed autocut settings: track auto (first mic)"
@@ -1314,7 +1333,7 @@ mod tests {
         };
         assert_eq!(code(patch), ErrorCode::Usage);
         let patch = AutocutPatch {
-            track: Nullable::Set(track("A9")),
+            tracks: Some(vec![track("A1"), track("A9")]),
             ..Default::default()
         };
         let err = autocut_settings(&state, &ctx(), patch).unwrap_err();
@@ -1325,15 +1344,20 @@ mod tests {
         let mut state = state;
         state.project.scene.audio.clear();
         let patch = AutocutPatch {
-            track: Nullable::Set(track("A1")),
+            tracks: Some(vec![track("A1"), track("A1")]),
             ..Default::default()
         };
         let out = autocut_settings(&state, &ctx(), patch).unwrap();
-        assert_eq!(out.state.project.autocut.track, Some(track("A1")));
+        assert_eq!(
+            out.state.project.autocut.tracks,
+            [track("A1")],
+            "each track once"
+        );
         let message = &reply(&out).message;
         assert!(
             message.ends_with(
-                "(warning: A1 isn't in the project scene; takes without it are skipped)"
+                "(warning: A1 isn't in the project scene; takes without it use the other \
+                 tracks, or are skipped)"
             ),
             "{message}"
         );

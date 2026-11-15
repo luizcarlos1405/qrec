@@ -48,10 +48,16 @@ expression: "serde_json::json!({\"knobs\": knobs, \"tracks\": track_items(&state
   "tracks": [
     {
       "label": "A1 · Yeti Nano (mic)",
+      "name": "A1 · Yeti Nano",
+      "role": "mic",
+      "title": "Yeti Nano",
       "track": "A1"
     },
     {
       "label": "A2 · System audio (system)",
+      "name": "A2 · System audio",
+      "role": "system",
+      "title": "System audio",
       "track": "A2"
     }
   ]

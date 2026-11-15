@@ -154,7 +154,7 @@ fn change_the_fps() {
 #[test]
 fn autocut_settings_and_remove_a_track() {
     let e = entry(|p| {
-        p.autocut.track = Some("A1".parse().unwrap());
+        p.autocut.tracks = vec!["A1".parse().unwrap()];
         p.autocut.threshold_db = -40.0;
         p.scene.audio.remove(1);
     });

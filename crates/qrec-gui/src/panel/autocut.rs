@@ -67,7 +67,13 @@ struct Inner {
     ctx: Ctx,
     root: gtk::Box,
     subtitle: gtk::Label,
-    dropdown: gtk::DropDown,
+    /// "Detect silence on": a dropdown-like button whose menu checks the
+    /// tracks (issue #15, board 03).
+    dropdown: gtk::MenuButton,
+    value: gtk::Label,
+    /// The menu's rows, one per track item, rebuilt when the items change.
+    track_list: gtk::Box,
+    track_checks: RefCell<Vec<(TrackId, gtk::CheckButton)>>,
     tracks: RefCell<Vec<TrackId>>,
     knobs: Vec<KnobView>,
     /// "Trim edges only" (the draft's `edges_only`).
@@ -133,6 +139,81 @@ pub fn sheet_step(open: bool, was_narrow: bool, local: &LocalUi) -> SheetStep {
     }
 }
 
+/// "Detect silence on" (issue #15, board 03): a field-like button showing
+/// the checked tracks, whose menu has a check box per track of the scope,
+/// "Detect silence on" above and what checking several means below. The
+/// menu is an overlay: Esc closes it, not the page (R32). Returns the
+/// button, its value label and the menu's list of rows.
+fn track_picker(ctx: &Ctx) -> (gtk::MenuButton, gtk::Label, gtk::Box) {
+    let value = label("", &["autocut-track-value"]);
+    value.set_hexpand(true);
+    value.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    let chevron = gtk::Image::from_icon_name("qrec-chevron-down-symbolic");
+    chevron.add_css_class("muted");
+    let face = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    face.append(&value);
+    face.append(&chevron);
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    list.add_css_class("autocut-track-list");
+    let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    menu.add_css_class("autocut-track-menu");
+    menu.append(&label(DETECT_ON, &["menu-label"]));
+    menu.append(&list);
+    menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    let caption = label(
+        autocut::DETECT_ON_CAPTION,
+        &["t-caption", "muted", "menu-caption"],
+    );
+    caption.set_wrap(true);
+    caption.set_max_width_chars(40);
+    menu.append(&caption);
+    let popover = gtk::Popover::new();
+    popover.add_css_class("menu");
+    popover.add_css_class("autocut-track-popover");
+    popover.set_has_arrow(false);
+    popover.set_child(Some(&menu));
+    let store = ctx.store.clone();
+    popover.connect_map(guarded!("autocut: the track menu opens", move |_| {
+        store.update_local(|l| l.overlays.push(Overlay::Menu));
+    }));
+    let store = ctx.store.clone();
+    popover.connect_unmap(guarded!("autocut: the track menu closes", move |_| {
+        store.update_local(|l| {
+            if let Some(at) = l.overlays.iter().rposition(|o| *o == Overlay::Menu) {
+                l.overlays.remove(at);
+            }
+        });
+    }));
+    let button = crate::widgets::button::popover_button(&popover, &face, &[], DETECT_ON);
+    button.add_css_class("autocut-track");
+    button.set_widget_name("autocut-track");
+    button.set_hexpand(true);
+    (button, value, list)
+}
+
+/// One row of the track menu: a check box with the role's icon, the
+/// track's name and its id chip ("🎤 Yeti Nano A1").
+fn track_row(item: &autocut::TrackItem) -> gtk::CheckButton {
+    let icon = gtk::Image::from_icon_name(match item.role {
+        qrec_core::model::AudioRole::Mic => "qrec-mic-symbolic",
+        qrec_core::model::AudioRole::System => "qrec-volume-2-symbolic",
+    });
+    let name = label(&item.title, &["track-name"]);
+    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    let chip = label(item.track.as_str(), &["id-chip", "t-mono-xs"]);
+    chip.set_valign(gtk::Align::Center);
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    row.append(&icon);
+    row.append(&name);
+    row.append(&chip);
+    let check = gtk::CheckButton::new();
+    check.set_child(Some(&row));
+    check.add_css_class("autocut-track-row");
+    check.set_widget_name(&format!("autocut-track-{}", item.track));
+    check.update_property(&[gtk::accessible::Property::Label(&item.label)]);
+    check
+}
+
 impl std::fmt::Debug for AutocutPage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AutocutPage")
@@ -188,13 +269,7 @@ impl AutocutPage {
         let detect = gtk::Box::new(gtk::Orientation::Vertical, 4);
         detect.add_css_class("autocut-block");
         detect.append(&label(DETECT_ON, &["t-caption", "muted", "field-caption"]));
-        let dropdown = gtk::DropDown::from_strings(&[]);
-        dropdown.add_css_class("autocut-track");
-        dropdown.set_widget_name("autocut-track");
-        dropdown.set_hexpand(true);
-        dropdown.update_property(&[gtk::accessible::Property::Label(DETECT_ON)]);
-        // Its open list is a menu: Esc closes the list, not the page (R32).
-        super::menus::track_dropdown(ctx, &dropdown);
+        let (dropdown, value, track_list) = track_picker(ctx);
         detect.append(&dropdown);
         content.append(&detect);
         let mut knobs = Vec::new();
@@ -384,6 +459,9 @@ impl AutocutPage {
                 root,
                 subtitle,
                 dropdown,
+                value,
+                track_list,
+                track_checks: RefCell::new(Vec::new()),
                 tracks: RefCell::new(Vec::new()),
                 knobs,
                 edges,
@@ -465,24 +543,6 @@ impl AutocutPage {
                 }
             });
         }
-        let weak = Rc::downgrade(inner);
-        inner
-            .dropdown
-            .connect_selected_notify(guarded!("autocut: track", move |dropdown| {
-                let Some(inner) = weak.upgrade() else { return };
-                if inner.setting.get() {
-                    return;
-                }
-                let track = inner
-                    .tracks
-                    .borrow()
-                    .get(dropdown.selected() as usize)
-                    .cloned();
-                let page = AutocutPage { inner };
-                let mut draft = page.inner.draft.borrow().clone();
-                draft.track = track;
-                page.set_draft(draft);
-            }));
         let weak = Rc::downgrade(inner);
         inner
             .edges
@@ -803,12 +863,7 @@ impl AutocutPage {
                                 &state,
                                 result.as_ref().map(|r| r.message.as_str()),
                             ),
-                            autocut::preview_spans_for(
-                                &plan,
-                                &state,
-                                draft.track.as_ref(),
-                                draft.padding_ms,
-                            ),
+                            autocut::preview_spans_for(&plan, &state, draft.padding_ms),
                         ),
                         None => (
                             nothing(&format::capitalized(
@@ -934,19 +989,52 @@ impl AutocutPage {
         let ids: Vec<TrackId> = items.iter().map(|i| i.track.clone()).collect();
         inner.setting.set(true);
         if *inner.tracks.borrow() != ids {
-            let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-            inner
-                .dropdown
-                .set_model(Some(&gtk::StringList::new(&labels)));
-            *inner.tracks.borrow_mut() = ids.clone();
+            while let Some(child) = inner.track_list.first_child() {
+                inner.track_list.remove(&child);
+            }
+            let mut checks = Vec::with_capacity(items.len());
+            for item in &items {
+                let check = track_row(item);
+                inner.track_list.append(&check);
+                let weak = Rc::downgrade(inner);
+                let track = item.track.clone();
+                check.connect_toggled(guarded!("autocut: a track checked", move |_| {
+                    let Some(inner) = weak.upgrade() else { return };
+                    if inner.setting.get() {
+                        return;
+                    }
+                    let page = AutocutPage { inner };
+                    let state = page.inner.ctx.store.state();
+                    let mut draft = page.inner.draft.borrow().clone();
+                    match autocut::toggled_tracks(&state, &draft, &track) {
+                        Some(tracks) => {
+                            draft.tracks = tracks;
+                            page.set_draft(draft);
+                        }
+                        // The last checked track stays checked.
+                        None => page.show_tracks(&state),
+                    }
+                }));
+                checks.push((item.track.clone(), check));
+            }
+            *inner.track_checks.borrow_mut() = checks;
+            *inner.tracks.borrow_mut() = ids;
         }
-        let shown = autocut::shown_track(state, &inner.draft.borrow());
-        let index = shown
-            .and_then(|t| ids.iter().position(|i| *i == t))
-            .map_or(gtk::INVALID_LIST_POSITION, |i| i as u32);
-        if inner.dropdown.selected() != index {
-            inner.dropdown.set_selected(index);
+        let draft = inner.draft.borrow().clone();
+        let shown = autocut::shown_tracks(state, &draft);
+        for (track, check) in inner.track_checks.borrow().iter() {
+            let on = shown.contains(track);
+            if check.is_active() != on {
+                check.set_active(on);
+            }
+            // The last checked track can't be unchecked.
+            check.set_sensitive(!(on && shown.len() == 1));
         }
+        let text = autocut::shown_label(state, &draft);
+        inner.value.set_text(&text);
+        inner
+            .dropdown
+            .update_property(&[gtk::accessible::Property::Description(&text)]);
         inner.setting.set(false);
     }
 

@@ -108,7 +108,7 @@ proptest! {
         let value = serde_json::to_value(&project).unwrap();
         let migrated = migrate::migrate(value.clone()).unwrap();
         prop_assert_eq!(&migrated.project, &project);
-        prop_assert_eq!(migrated.from_version, 1);
+        prop_assert_eq!(migrated.from_version, qrec_core::model::CURRENT_VERSION);
         prop_assert_eq!(migrate::parse_project(&value.to_string()).unwrap(), migrated);
 
         // Through a synthetic v1 → v2 step: upgrade ∘ downgrade = id.
@@ -129,13 +129,38 @@ proptest! {
     }
 
     #[test]
-    fn newer_versions_are_refused(project in arb_project(), newer in 2u32..1000) {
+    fn newer_versions_are_refused(project in arb_project(), newer in 3u32..1000) {
         let mut value = serde_json::to_value(&project).unwrap();
         value["version"] = json!(newer);
         let err = migrate::migrate(value).unwrap_err();
         prop_assert_eq!(err.code, qrec_core::ErrorCode::Invalid);
         let needle = format!("version {}", newer);
         prop_assert!(err.message.contains(&needle), "{}", err.message);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    /// The real v1 → v2 step (issue #15): a v1 file, `autocut.track` one
+    /// of the scene's tracks or `null`, reads as the v2 project with that
+    /// track as its `autocut.tracks`.
+    #[test]
+    fn v1_files_read_as_v2(project in arb_project(), pick in any::<Option<Index>>()) {
+        let mut project = project;
+        let tracks = &project.scene.audio;
+        project.autocut.tracks = match pick {
+            Some(i) if !tracks.is_empty() => vec![tracks[i.index(tracks.len())].id.clone()],
+            _ => Vec::new(),
+        };
+        let mut v1 = serde_json::to_value(&project).unwrap();
+        v1["version"] = json!(1);
+        let autocut = v1["autocut"].as_object_mut().unwrap();
+        let track = autocut.remove("tracks").unwrap()[0].clone();
+        autocut.insert("track".into(), track);
+        let migrated = migrate::parse_project(&v1.to_string()).unwrap();
+        prop_assert_eq!(migrated.from_version, 1);
+        prop_assert_eq!(&migrated.project, &project);
     }
 }
 
@@ -890,12 +915,12 @@ fn command_for_op(state: &State, op: &Op) -> Option<Command> {
             Command::AutocutSettings {
                 patch: AutocutPatch {
                     auto_run_after_take: None,
-                    track: match track {
+                    tracks: Some(match track {
                         Some(i) if !tracks.is_empty() => {
-                            Nullable::Set(tracks[i.index(tracks.len())].id.clone())
+                            vec![tracks[i.index(tracks.len())].id.clone()]
                         }
-                        _ => Nullable::Clear,
-                    },
+                        _ => Vec::new(),
+                    }),
                     threshold_db: Some(-f64::from(*threshold)),
                     min_silence_ms: Some(u32::from(*ms)),
                     padding_ms: Some(u32::from(*ms / 10)),

@@ -584,11 +584,23 @@ pub enum JobKind {
     },
 }
 
-/// One clip × track an autocut job analyzes.
+/// One clip an autocut job analyzes, with each track it listens to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutocutTarget {
     pub clip: ClipRef,
+    /// At least one; a region is cut only when silent on all of them.
+    pub tracks: Vec<AutocutSource>,
+    /// Named tracks the take couldn't use ("take 3 has no track A2: silence
+    /// detected on A1 only").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+/// One track of an [`AutocutTarget`] and the analysis of its audio file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutocutSource {
     pub track: TrackId,
     pub key: SilenceKey,
 }

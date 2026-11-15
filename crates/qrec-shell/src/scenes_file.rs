@@ -51,7 +51,7 @@ mod tests {
                 "Talk".into(),
                 chrono::Utc::now(),
                 &Scene::default(),
-                None,
+                &[],
             )],
             ..SavedScenes::default()
         };

@@ -236,7 +236,7 @@ pub(crate) fn parity_project() -> ParityProject {
         })
         .collect();
     let value = json!({
-        "version": 1,
+        "version": 2,
         "name": "parity",
         "createdAt": "2026-10-14T12:00:00Z",
         "canvas": {
@@ -246,7 +246,7 @@ pub(crate) fn parity_project() -> ParityProject {
         "scene": { "layers": layers.clone(), "audio": [] },
         "recording": { "countdownSecs": 0, "encoder": "auto", "vaapiDevice": null },
         "autocut": {
-            "autoRunAfterTake": false, "track": null, "thresholdDb": -35.0,
+            "autoRunAfterTake": false, "tracks": [], "thresholdDb": -35.0,
             "minSilenceMs": 400, "paddingMs": 120, "minKeepMs": 200,
         },
         "takes": {
@@ -563,7 +563,7 @@ fn ges_shows_the_nearest_frame_of_another_recorded_rate() {
         })
         .collect();
     let value = json!({
-        "version": 1,
+        "version": 2,
         "name": "rates",
         "createdAt": "2026-10-14T12:00:00Z",
         "canvas": {
@@ -573,7 +573,7 @@ fn ges_shows_the_nearest_frame_of_another_recorded_rate() {
         "scene": { "layers": layers.clone(), "audio": [] },
         "recording": { "countdownSecs": 0, "encoder": "auto", "vaapiDevice": null },
         "autocut": {
-            "autoRunAfterTake": false, "track": null, "thresholdDb": -35.0,
+            "autoRunAfterTake": false, "tracks": [], "thresholdDb": -35.0,
             "minSilenceMs": 400, "paddingMs": 120, "minKeepMs": 200,
         },
         "takes": {

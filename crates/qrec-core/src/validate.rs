@@ -123,8 +123,9 @@ impl Issues {
 ///   `frames` (at its own fps) are at most [`MAX_DURATION_NS`].
 ///
 /// Warnings: a take-scene layer or track without a stream ("missing
-/// media"); `autocut.track` not in the project scene ("takes lacking it are
-/// skipped").
+/// media"); an `autocut.tracks` id not in the project scene ("takes
+/// lacking it use the other tracks, or are skipped"). Error: an id listed
+/// twice.
 pub fn validate(project: &Project) -> Vec<Issue> {
     let mut issues = Issues::default();
     if project.version != CURRENT_VERSION {
@@ -283,17 +284,22 @@ fn scene(issues: &mut Issues, path: &str, scene: &Scene, take: Option<(&TakeId, 
 }
 
 fn autocut(issues: &mut Issues, autocut: &AutocutSettings, project_scene: &Scene) {
-    if let Some(track) = autocut
-        .track
-        .as_ref()
-        .filter(|t| project_scene.track(t).is_none())
-    {
-        issues.warning(
-            "/autocut/track",
-            format!(
-                "autocut track {track} isn't in the project scene; takes lacking it are skipped"
-            ),
-        );
+    for (i, track) in autocut.tracks.iter().enumerate() {
+        if project_scene.track(track).is_none() {
+            issues.warning(
+                format!("/autocut/tracks/{i}"),
+                format!(
+                    "autocut track {track} isn't in the project scene; takes lacking it use the \
+                     other tracks, or are skipped"
+                ),
+            );
+        }
+        if autocut.tracks[..i].contains(track) {
+            issues.error(
+                format!("/autocut/tracks/{i}"),
+                format!("autocut track {track} is listed twice"),
+            );
+        }
     }
     if !(MIN_THRESHOLD_DB..=0.0).contains(&autocut.threshold_db) {
         issues.error(
@@ -553,24 +559,26 @@ mod tests {
     #[test]
     fn project_level_errors_in_document_order() {
         let mut p = project();
-        p.version = 2;
+        p.version = 3;
         p.canvas.width = 1921;
         p.canvas.height = 8;
         p.canvas.fps = Fps::new(480, 1);
         p.recording.countdown_secs = 11;
         p.autocut.threshold_db = -95.0;
         p.autocut.padding_ms = 70_000;
-        p.autocut.track = Some(TrackId::numbered(9));
+        p.autocut.tracks = vec![TrackId::numbered(9), TrackId::numbered(9)];
         p.next_take_number = 2;
         assert_eq!(
             summary(&p),
             [
-                "error at /version: unsupported version 2 (this Qrec reads and writes version 1)",
+                "error at /version: unsupported version 3 (this Qrec reads and writes version 2)",
                 "error at /canvas/width: canvas width 1921 must be an even number from 16 to 8192",
                 "error at /canvas/height: canvas height 8 must be an even number from 16 to 8192",
                 "error at /canvas/fps: canvas fps 480 is above 240",
                 "error at /recording/countdownSecs: countdown of 11 s is above the maximum of 10 s",
-                "warning at /autocut/track: autocut track A9 isn't in the project scene; takes lacking it are skipped",
+                "warning at /autocut/tracks/0: autocut track A9 isn't in the project scene; takes lacking it use the other tracks, or are skipped",
+                "warning at /autocut/tracks/1: autocut track A9 isn't in the project scene; takes lacking it use the other tracks, or are skipped",
+                "error at /autocut/tracks/1: autocut track A9 is listed twice",
                 "error at /autocut/thresholdDb: autocut threshold -95 dB is outside -90 to 0 dB",
                 "error at /autocut/paddingMs: autocut paddingMs 70000 is above 60000",
                 "error at /nextTakeNumber: nextTakeNumber is 2 but take-0002 exists (it must be above every take number)",
@@ -587,9 +595,9 @@ mod tests {
         assert_eq!(err.code, crate::ErrorCode::Invalid);
         assert_eq!(
             err.message,
-            "invalid project: unsupported version 2 (this Qrec reads and writes version 1) (/version)"
+            "invalid project: unsupported version 3 (this Qrec reads and writes version 2) (/version)"
         );
-        assert_eq!(err.details.unwrap()["issues"].as_array().unwrap().len(), 9);
+        assert_eq!(err.details.unwrap()["issues"].as_array().unwrap().len(), 11);
     }
 
     #[test]

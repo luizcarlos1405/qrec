@@ -128,7 +128,7 @@ pub fn fixture_project(dir: &Path, takes: &[MediaSpec]) -> Value {
 
     let has_audio = takes.iter().any(|spec| spec.audio.is_some());
     let project = json!({
-        "version": 1,
+        "version": qrec_core::model::CURRENT_VERSION,
         "name": dir.file_name().and_then(|name| name.to_str()).unwrap_or("fixture"),
         "createdAt": RECORDED_AT,
         "canvas": {
@@ -141,7 +141,7 @@ pub fn fixture_project(dir: &Path, takes: &[MediaSpec]) -> Value {
         "recording": { "countdownSecs": 0, "encoder": "auto", "vaapiDevice": null },
         "autocut": {
             "autoRunAfterTake": false,
-            "track": if has_audio { json!("A1") } else { Value::Null },
+            "tracks": if has_audio { json!(["A1"]) } else { json!([]) },
             "thresholdDb": -35.0,
             "minSilenceMs": 400,
             "paddingMs": 120,
@@ -194,7 +194,7 @@ pub(super) fn link(source: &Path, target: &Path) {
 mod tests {
     use super::*;
     use crate::testkit::TestEnv;
-    use qrec_core::{Project, StreamKind, TakeId, TakeStatus};
+    use qrec_core::{Project, StreamKind, TakeId, TakeStatus, TrackId};
 
     /// Linking onto a file that is already there (a fixture written twice
     /// into one folder) stops with a clear message and leaves the cached
@@ -246,10 +246,7 @@ mod tests {
         assert_eq!(project.next_take_number, 4);
         assert_eq!(project.scene.layers.len(), 1);
         assert_eq!(project.scene.audio.len(), 1);
-        assert_eq!(
-            project.autocut.track.as_ref().map(|t| t.as_str()),
-            Some("A1")
-        );
+        assert_eq!(project.autocut.tracks, ["A1".parse::<TrackId>().unwrap()]);
 
         let take = |n| project.take(&TakeId::numbered(n)).unwrap();
         // Video at canvas fps: its frame count. Audio only: 1.5 s at 30 fps.

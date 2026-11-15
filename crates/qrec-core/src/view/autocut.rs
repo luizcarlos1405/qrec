@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::autocut::{ClipCut, db_label};
 use crate::ids::{Frame, TakeId, TrackId};
 use crate::model::{AudioTrack, Clip, Project};
-use crate::protocol::command::{AutocutOverrides, AutocutPatch, ClipScope, Command, Nullable};
+use crate::protocol::command::{AutocutOverrides, AutocutPatch, ClipScope, Command};
 use crate::protocol::reply::AutocutPlanView;
 use crate::state::State;
 use crate::time::{duration_label, frame_ns};
@@ -57,13 +57,18 @@ pub const NOTE: &str =
 pub const AUTO_RUN: &str = "Run autocut after every take";
 /// The dropdown's label (S12).
 pub const DETECT_ON: &str = "Detect silence on";
+/// Under the tracks in the dropdown's menu (issue #15, board 03).
+pub const DETECT_ON_CAPTION: &str =
+    "Cuts only where every checked track is silent. Sound on any of them is kept.";
 
 /// The page's settings while tuning: a draft, no history (D-15).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutocutDraft {
-    /// "Detect silence on".
-    pub track: Option<TrackId>,
+    /// "Detect silence on": the tracks named; empty leaves them to the
+    /// setting (which may change while the page is open).
+    #[serde(default)]
+    pub tracks: Vec<TrackId>,
     pub threshold_db: f64,
     pub min_silence_ms: u32,
     pub padding_ms: u32,
@@ -78,7 +83,7 @@ impl From<&Project> for AutocutDraft {
     fn from(project: &Project) -> Self {
         let a = &project.autocut;
         Self {
-            track: a.track.clone(),
+            tracks: a.tracks.clone(),
             threshold_db: a.threshold_db,
             min_silence_ms: a.min_silence_ms,
             padding_ms: a.padding_ms,
@@ -231,6 +236,11 @@ pub struct TrackItem {
     pub track: TrackId,
     /// "A1 · Yeti Nano (mic)".
     pub label: String,
+    /// "A1 · Yeti Nano": how the value names it among several.
+    pub name: String,
+    /// The track's label alone ("Yeti Nano") and role, for the menu's row.
+    pub title: String,
+    pub role: crate::model::AudioRole,
 }
 
 /// The dropdown's items (S12): every track of the project scene, then a
@@ -240,7 +250,7 @@ pub struct TrackItem {
 pub fn track_items(state: &State) -> Vec<TrackItem> {
     let project = &state.project;
     let mut tracks: Vec<&AudioTrack> = project.scene.audio.iter().collect();
-    for id in crate::autocut::analyzed_tracks(project, scope_clips(state), None) {
+    for id in crate::autocut::analyzed_tracks(project, scope_clips(state), &[]) {
         if tracks.iter().any(|t| t.id == id) {
             continue;
         }
@@ -256,29 +266,90 @@ pub fn track_items(state: &State) -> Vec<TrackItem> {
         .map(|t| TrackItem {
             track: t.id.clone(),
             label: format!("{} \u{b7} {} ({})", t.id, t.label, t.role.as_str()),
+            name: format!("{} \u{b7} {}", t.id, t.label),
+            title: t.label.clone(),
+            role: t.role,
         })
         .collect()
 }
 
-/// The track the dropdown shows for `draft`: its own, else the project's
-/// setting (a draft that names no track leaves it to the setting, which
-/// may change while the page is open), else the track the dry run
-/// analyzes its scope's first clip on (each take's
+/// The tracks the dropdown checks for `draft`: its own, else the
+/// project's setting (a draft that names none leaves them to the setting,
+/// which may change while the page is open), else the tracks the dry run
+/// analyzes its scope's clips on (each take's
 /// [`default_track`](crate::autocut::default_track):
 /// [`analyzed_tracks`](crate::autocut::analyzed_tracks)), else, with no
 /// clip, the project scene's.
-pub fn shown_track(state: &State, draft: &AutocutDraft) -> Option<TrackId> {
+pub fn shown_tracks(state: &State, draft: &AutocutDraft) -> Vec<TrackId> {
     let project = &state.project;
-    draft
-        .track
-        .clone()
-        .or_else(|| project.autocut.track.clone())
-        .or_else(|| {
-            crate::autocut::analyzed_tracks(project, scope_clips(state), None)
-                .into_iter()
-                .next()
-        })
-        .or_else(|| crate::autocut::default_track(&project.scene).map(|t| t.id.clone()))
+    if !draft.tracks.is_empty() {
+        return draft.tracks.clone();
+    }
+    if !project.autocut.tracks.is_empty() {
+        return project.autocut.tracks.clone();
+    }
+    default_tracks(state)
+}
+
+/// What a draft and a setting that name no track analyze: each take's
+/// first mic ([`analyzed_tracks`](crate::autocut::analyzed_tracks) of the
+/// scope), else, with no clip, the project scene's.
+fn default_tracks(state: &State) -> Vec<TrackId> {
+    let project = &state.project;
+    let analyzed = crate::autocut::analyzed_tracks(project, scope_clips(state), &[]);
+    if !analyzed.is_empty() {
+        return analyzed;
+    }
+    crate::autocut::default_track(&project.scene)
+        .map(|t| vec![t.id.clone()])
+        .unwrap_or_default()
+}
+
+/// The dropdown's value: the item's label for one track ("A1 · Yeti Nano
+/// (mic)"), "A1 · Yeti Nano + A2 · System audio" for several.
+pub fn shown_label(state: &State, draft: &AutocutDraft) -> String {
+    let items = track_items(state);
+    let shown = shown_tracks(state, draft);
+    let name = |id: &TrackId| {
+        items
+            .iter()
+            .find(|i| &i.track == id)
+            .map(|i| i.name.clone())
+            .unwrap_or_else(|| id.to_string())
+    };
+    match shown.as_slice() {
+        [one] => items
+            .iter()
+            .find(|i| &i.track == one)
+            .map_or_else(|| one.to_string(), |i| i.label.clone()),
+        many => many.iter().map(name).collect::<Vec<_>>().join(" + "),
+    }
+}
+
+/// The draft's tracks once `track` is checked or unchecked in the
+/// dropdown, in the dropdown's order. The last checked track stays (its
+/// box is disabled): `None`. A list equal to what naming none analyzes
+/// goes back to naming none, while the setting names none too.
+pub fn toggled_tracks(
+    state: &State,
+    draft: &AutocutDraft,
+    track: &TrackId,
+) -> Option<Vec<TrackId>> {
+    let mut shown = shown_tracks(state, draft);
+    if shown.contains(track) {
+        if shown.len() == 1 {
+            return None;
+        }
+        shown.retain(|id| id != track);
+    } else {
+        shown.push(track.clone());
+    }
+    let order: Vec<TrackId> = track_items(state).into_iter().map(|i| i.track).collect();
+    shown.sort_by_key(|id| order.iter().position(|o| o == id).unwrap_or(usize::MAX));
+    if state.project.autocut.tracks.is_empty() && shown == default_tracks(state) {
+        return Some(Vec::new());
+    }
+    Some(shown)
 }
 
 /// The clips the page analyzes ([`scope`]), in timeline order.
@@ -304,7 +375,7 @@ pub fn scope(state: &State) -> ClipScope {
 /// The draft as one-off overrides.
 pub fn overrides(draft: &AutocutDraft) -> AutocutOverrides {
     AutocutOverrides {
-        track: draft.track.clone(),
+        tracks: draft.tracks.clone(),
         threshold_db: Some(draft.threshold_db),
         min_silence_ms: Some(draft.min_silence_ms),
         padding_ms: Some(draft.padding_ms),
@@ -326,21 +397,21 @@ pub fn dry_run(state: &State, draft: &AutocutDraft) -> Command {
 /// command doesn't carry (R40, R76). The timeline's clips: the summary,
 /// the regions and the hatches are their frames, and a trim, a move, an
 /// undo or another client's edit under the same selection changes them.
-/// And the project's `autocut.track` while the draft names no track: the
-/// track the core then analyzes.
+/// And the project's `autocut.tracks` while the draft names none: the
+/// tracks the core then analyzes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DryRunKey {
     pub cmd: Command,
     pub clips: Vec<Clip>,
-    /// The setting's track when the draft leaves the track to it.
-    pub setting_track: Option<TrackId>,
+    /// The setting's tracks when the draft leaves the tracks to it.
+    pub setting_tracks: Vec<TrackId>,
 }
 
 impl DryRunKey {
     /// A plan shown for `self` no longer matches `next`'s timeline (or
     /// track): its frames are out of date, not only its draft or scope.
     pub fn stale_for(&self, next: &DryRunKey) -> bool {
-        self.clips != next.clips || self.setting_track != next.setting_track
+        self.clips != next.clips || self.setting_tracks != next.setting_tracks
     }
 }
 
@@ -350,9 +421,10 @@ pub fn dry_run_key(state: &State, draft: &AutocutDraft) -> DryRunKey {
     DryRunKey {
         cmd: dry_run(state, draft),
         clips: state.project.timeline.clips.clone(),
-        setting_track: match &draft.track {
-            Some(_) => None,
-            None => state.project.autocut.track.clone(),
+        setting_tracks: if draft.tracks.is_empty() {
+            state.project.autocut.tracks.clone()
+        } else {
+            Vec::new()
         },
     }
 }
@@ -362,11 +434,7 @@ pub fn changed(state: &State, draft: &AutocutDraft) -> AutocutPatch {
     let saved = AutocutDraft::from(&state.project);
     AutocutPatch {
         auto_run_after_take: None,
-        track: match &draft.track {
-            Some(t) if draft.track != saved.track => Nullable::Set(t.clone()),
-            None if saved.track.is_some() => Nullable::Clear,
-            _ => Nullable::Keep,
-        },
+        tracks: (draft.tracks != saved.tracks).then(|| draft.tracks.clone()),
         threshold_db: (draft.threshold_db != saved.threshold_db).then_some(draft.threshold_db),
         min_silence_ms: (draft.min_silence_ms != saved.min_silence_ms)
             .then_some(draft.min_silence_ms),
@@ -656,19 +724,15 @@ fn default_reason(plan: &AutocutPlanView, state: &State) -> String {
 /// cut: each clip minus what it keeps (`HatchKind::Cut`, tagged "−1.6 s"),
 /// and the project's padding beside each cut (`HatchKind::Padding`).
 pub fn preview_spans(plan: &AutocutPlanView, state: &State) -> Vec<AutocutPreviewSpan> {
-    let settings = &state.project.autocut;
-    preview_spans_for(plan, state, settings.track.as_ref(), settings.padding_ms)
+    preview_spans_for(plan, state, state.project.autocut.padding_ms)
 }
 
-/// [`preview_spans`] on the lane of the track the dry run analyzes for
-/// each clip's take: `track` (the draft's), else the setting, else the
-/// take scene's first mic, else its first track
-/// ([`choose_track`](crate::autocut::choose_track)); with the padding the
-/// dry run kept, `padding_ms` (the draft's).
+/// [`preview_spans`] on the lane of each track the dry run analyzed the
+/// clip on (`tracks` of its plan; the tag on the first one only, as one
+/// cut); with the padding the dry run kept, `padding_ms` (the draft's).
 pub fn preview_spans_for(
     plan: &AutocutPlanView,
     state: &State,
-    track: Option<&TrackId>,
     padding_ms: u32,
 ) -> Vec<AutocutPreviewSpan> {
     let fps = state.project.canvas.fps;
@@ -690,13 +754,6 @@ pub fn preview_spans_for(
         if !cut.changes(clip) {
             continue;
         }
-        let lane = state
-            .project
-            .take(&clip.take)
-            .and_then(|take| crate::autocut::choose_track(&state.project, take, track));
-        let Some(lane) = lane else {
-            continue;
-        };
         let start = position_of(clips, index);
         let mut runs: Vec<([Frame; 2], HatchKind)> = cut
             .removed(clip)
@@ -709,22 +766,24 @@ pub fn preview_spans_for(
             )
             .collect();
         runs.sort_by_key(|([a, _], _)| *a);
-        for ([a, b], kind) in runs {
-            let tag = match kind {
-                HatchKind::Cut => {
-                    let ns = frame_ns(b as i64, fps) - frame_ns(a as i64, fps);
-                    format!("{MINUS}{}", duration_label(ns))
-                }
-                HatchKind::Padding => String::new(),
-            };
-            spans.push(AutocutPreviewSpan {
-                clip: clip.id.clone(),
-                track: lane.clone(),
-                from: start + (a - clip.in_),
-                to: start + (b - clip.in_),
-                kind,
-                tag,
-            });
+        for (n, lane) in view.tracks.iter().enumerate() {
+            for &([a, b], kind) in &runs {
+                let tag = match kind {
+                    HatchKind::Cut if n == 0 => {
+                        let ns = frame_ns(b as i64, fps) - frame_ns(a as i64, fps);
+                        format!("{MINUS}{}", duration_label(ns))
+                    }
+                    _ => String::new(),
+                };
+                spans.push(AutocutPreviewSpan {
+                    clip: clip.id.clone(),
+                    track: lane.clone(),
+                    from: start + (a - clip.in_),
+                    to: start + (b - clip.in_),
+                    kind,
+                    tag,
+                });
+            }
         }
     }
     spans
@@ -833,18 +892,18 @@ mod tests {
                 state,
                 Command::AutocutSettings {
                     patch: AutocutPatch {
-                        track: Nullable::Set("A2".parse().unwrap()),
+                        tracks: Some(vec!["A2".parse().unwrap()]),
                         ..AutocutPatch::default()
                     },
                 },
             )
         };
         let mut unnamed = draft.clone();
-        unnamed.track = None;
+        unnamed.tracks.clear();
         let a2 = set_a2(&before);
         assert!(dry_run_key(&before, &unnamed).stale_for(&dry_run_key(&a2, &unnamed)));
         let mut named = draft.clone();
-        named.track = Some("A1".parse().unwrap());
+        named.tracks = vec!["A1".parse().unwrap()];
         assert_eq!(dry_run_key(&a2, &named), dry_run_key(&before, &named));
     }
 
@@ -855,6 +914,8 @@ mod tests {
         AutocutPlanView {
             clips: vec![AutocutClipView {
                 clip: id("c3e9"),
+                tracks: vec![TrackId::numbered(1)],
+                warning: None,
                 kept: vec![
                     [0, 556],
                     [604, 1284],
@@ -925,6 +986,8 @@ mod tests {
         let plan = AutocutPlanView {
             clips: vec![AutocutClipView {
                 clip: id("c3e9"),
+                tracks: vec![TrackId::numbered(1)],
+                warning: None,
                 kept: vec![[66, 3078]],
                 removed_frames: 93,
                 silences: 2,
@@ -948,6 +1011,8 @@ mod tests {
         let none = AutocutPlanView {
             clips: vec![AutocutClipView {
                 clip: id("c3e9"),
+                tracks: vec![TrackId::numbered(1)],
+                warning: None,
                 kept: vec![[0, 3105]],
                 removed_frames: 0,
                 silences: 0,
@@ -976,6 +1041,8 @@ mod tests {
         let plan = AutocutPlanView {
             clips: vec![AutocutClipView {
                 clip: id("c3e9"),
+                tracks: vec![TrackId::numbered(1)],
+                warning: None,
                 kept: vec![[0, 3105]],
                 removed_frames: 0,
                 silences: 0,
@@ -1025,6 +1092,8 @@ mod tests {
             0,
             AutocutClipView {
                 clip: id("c2d0"),
+                tracks: vec![TrackId::numbered(1)],
+                warning: None,
                 kept: vec![[12, 120], [158, 288], [303, 1104]],
                 removed_frames: 53,
                 silences: 2,
@@ -1032,6 +1101,8 @@ mod tests {
         );
         plan.clips.push(AutocutClipView {
             clip: id("c7f3"),
+            tracks: vec![TrackId::numbered(1)],
+            warning: None,
             kept: vec![[0, 410]],
             removed_frames: 0,
             silences: 0,
@@ -1046,7 +1117,11 @@ mod tests {
         assert_eq!(subtitle(&state), "Previewing all 10 clips");
         state.ui.selection = vec![id("c2d0"), id("c2d1"), id("c3e9"), id("c1b6")];
         assert_eq!(subtitle(&state), "Previewing 4 clips");
-        let spans = preview_spans_for(&plan, &state, Some(&TrackId::numbered(2)), 0);
+        // The lanes are the plan's tracks (the dry run's).
+        for clip in &mut plan.clips {
+            clip.tracks = vec![TrackId::numbered(2)];
+        }
+        let spans = preview_spans_for(&plan, &state, 0);
         assert_eq!(spans.len(), 6);
         assert!(spans.iter().all(|s| s.track == TrackId::numbered(2)));
         // c2d0 starts at frame 2084 (00:01:09:14): its first span is
@@ -1107,7 +1182,7 @@ mod tests {
         // Two changes: the settings first (only those fields), then the cut.
         let tuned = Knob::Padding.set(&Knob::Threshold.set(&draft, -42.4), 87.0);
         let tuned = AutocutDraft {
-            track: Some(TrackId::numbered(2)),
+            tracks: vec![TrackId::numbered(1), TrackId::numbered(2)],
             ..tuned
         };
         insta::assert_json_snapshot!(
@@ -1125,7 +1200,7 @@ mod tests {
         let back = Knob::Threshold.set(&tuned, -35.0);
         let back = Knob::Padding.set(&back, 120.0);
         let back = AutocutDraft {
-            track: Some(TrackId::numbered(1)),
+            tracks: vec![TrackId::numbered(1)],
             ..back
         };
         assert_eq!(changed(&state, &back), AutocutPatch::default());
@@ -1142,21 +1217,21 @@ mod tests {
             }
         );
         assert_eq!(overrides(&edges).edges_only, Some(true));
-        // A draft that unsets the track clears it.
+        // A draft that names no track clears the setting's.
         let mut cleared = state.clone();
-        cleared.project.autocut.track = None;
+        cleared.project.autocut.tracks.clear();
         let unset = AutocutDraft::from(&cleared.project);
         assert_eq!(changed(&cleared, &unset), AutocutPatch::default());
         assert_eq!(
             changed(
                 &state,
                 &AutocutDraft {
-                    track: None,
+                    tracks: Vec::new(),
                     ..draft.clone()
                 }
             )
-            .track,
-            Nullable::Clear
+            .tracks,
+            Some(Vec::new())
         );
         // Scope: every clip without a selection.
         let mut all = state.clone();
@@ -1202,15 +1277,78 @@ mod tests {
         assert_eq!(Knob::MinSilence.set(&draft, 5000.0).min_silence_ms, 2000);
         assert_eq!(Knob::MinSilence.set(&draft, 0.0).min_silence_ms, 100);
         assert_eq!(Knob::MinSilence.set(&draft, f64::NAN).min_silence_ms, 400);
-        assert_eq!(shown_track(&state, &draft), Some(TrackId::numbered(1)));
+        assert_eq!(shown_tracks(&state, &draft), [TrackId::numbered(1)]);
         let none = AutocutDraft {
-            track: None,
+            tracks: Vec::new(),
             ..draft
         };
         assert_eq!(
-            shown_track(&state, &none),
-            Some(TrackId::numbered(1)),
+            shown_tracks(&state, &none),
+            [TrackId::numbered(1)],
+            "the setting's"
+        );
+    }
+
+    /// The dropdown's check boxes (issue #15): checking adds in the
+    /// dropdown's order, the last checked one stays, and a list equal to
+    /// the default goes back to naming none.
+    #[test]
+    fn checking_tracks_in_the_dropdown() {
+        let mut state = s12();
+        state.project.autocut.tracks.clear();
+        let (a1, a2) = (TrackId::numbered(1), TrackId::numbered(2));
+        let draft = AutocutDraft::from(&state.project);
+        assert_eq!(
+            shown_tracks(&state, &draft),
+            std::slice::from_ref(&a1),
             "the first mic"
+        );
+        assert_eq!(shown_label(&state, &draft), "A1 \u{b7} Yeti Nano (mic)");
+        let both = toggled_tracks(&state, &draft, &a2).unwrap();
+        assert_eq!(both, [a1.clone(), a2.clone()]);
+        let draft = AutocutDraft {
+            tracks: both,
+            ..draft
+        };
+        assert_eq!(
+            shown_label(&state, &draft),
+            "A1 \u{b7} Yeti Nano + A2 \u{b7} System audio"
+        );
+        assert_eq!(overrides(&draft).tracks, [a1.clone(), a2.clone()]);
+        assert_eq!(
+            changed(&state, &draft).tracks,
+            Some(vec![a1.clone(), a2.clone()])
+        );
+        // Unchecking A2: back to the first mic, named by none.
+        assert_eq!(toggled_tracks(&state, &draft, &a2), Some(vec![]));
+        // A2 alone, then A1 added back: the dropdown's order.
+        let a2_only = AutocutDraft {
+            tracks: vec![a2.clone()],
+            ..draft.clone()
+        };
+        assert_eq!(
+            toggled_tracks(&state, &a2_only, &a2),
+            None,
+            "the last one stays"
+        );
+        assert_eq!(
+            toggled_tracks(&state, &a2_only, &a1),
+            Some(vec![a1.clone(), a2.clone()])
+        );
+        // With a setting, the list is kept as it is.
+        state.project.autocut.tracks = vec![a2.clone()];
+        let draft = AutocutDraft::from(&state.project);
+        assert_eq!(
+            toggled_tracks(&state, &draft, &a1),
+            Some(vec![a1.clone(), a2.clone()])
+        );
+        let both = AutocutDraft {
+            tracks: vec![a1.clone(), a2],
+            ..draft
+        };
+        assert_eq!(
+            toggled_tracks(&state, &both, &TrackId::numbered(2)),
+            Some(vec![a1])
         );
     }
 
@@ -1225,6 +1363,8 @@ mod tests {
         let plan = AutocutPlanView {
             clips: vec![AutocutClipView {
                 clip: id("c0a1"),
+                tracks: vec![TrackId::numbered(1)],
+                warning: None,
                 kept: vec![[0, 40], [60, 100]],
                 removed_frames: 20,
                 silences: 1,
@@ -1249,47 +1389,54 @@ mod tests {
                     .clip("c0a1", "take-0001", 0, 100)
                     .build();
                 // The setting unset, or on each track.
-                let settings =
-                    std::iter::once(None).chain((1..=n).map(|i| Some(TrackId::numbered(i))));
+                // The setting unset, on each track, or on all of them.
+                let settings = std::iter::once(Vec::new())
+                    .chain((1..=n).map(|i| vec![TrackId::numbered(i)]))
+                    .chain((n > 1).then(|| (1..=n).map(TrackId::numbered).collect()));
                 for setting in settings {
                     let mut project = base.clone();
-                    project.autocut.track = setting.clone();
+                    project.autocut.tracks = setting.clone();
                     let state = testkit::state(project);
                     let take = state.project.take(&TakeId::numbered(1)).unwrap();
-                    let analyzed = crate::autocut::choose_track(&state.project, take, None);
-                    assert!(analyzed.is_some(), "{n} tracks, mics {mics:b}");
+                    let analyzed = crate::autocut::choose_tracks(&state.project, take, &[]);
+                    assert!(!analyzed.is_empty(), "{n} tracks, mics {mics:b}");
                     let case = format!("{n} tracks, mics {mics:b}, setting {setting:?}");
                     let draft = AutocutDraft::from(&state.project);
                     assert_eq!(
-                        shown_track(&state, &draft),
+                        shown_tracks(&state, &draft),
                         analyzed,
                         "the dropdown: {case}"
                     );
                     // A draft that names no track: the dry run's override
                     // is unset, so it analyzes what the setting says.
                     let unset = AutocutDraft {
-                        track: None,
+                        tracks: Vec::new(),
                         ..draft.clone()
                     };
-                    assert_eq!(shown_track(&state, &unset), analyzed, "unset: {case}");
+                    assert_eq!(shown_tracks(&state, &unset), analyzed, "unset: {case}");
                     let tagged: Vec<TrackId> =
                         crate::view::panel::audio_rows(&state, &Default::default())
                             .into_iter()
                             .filter(|r| r.autocut)
                             .map(|r| r.track)
                             .collect();
-                    assert_eq!(Some(tagged), analyzed.clone().map(|t| vec![t]), "{case}");
+                    let mut sorted = analyzed.clone();
+                    sorted.sort();
+                    assert_eq!(tagged, sorted, "{case}");
                     let scissors: Vec<TrackId> = crate::view::timeline::lanes(&state)
                         .into_iter()
                         .filter(|l| l.autocut)
                         .map(|l| l.track)
                         .collect();
-                    assert_eq!(Some(scissors), analyzed.clone().map(|t| vec![t]), "{case}");
-                    for draft in [&draft, &unset] {
-                        let spans = preview_spans_for(&plan, &state, draft.track.as_ref(), 0);
-                        assert_eq!(spans.len(), 1, "the hatch: {case}");
-                        assert_eq!(Some(&spans[0].track), analyzed.as_ref(), "{case}");
-                    }
+                    assert_eq!(scissors, sorted, "{case}");
+                    // The dry run's plan names the tracks it analyzed.
+                    let mut plan = plan.clone();
+                    plan.clips[0].tracks = analyzed.clone();
+                    let spans = preview_spans_for(&plan, &state, 0);
+                    let lanes: Vec<TrackId> = spans.iter().map(|s| s.track.clone()).collect();
+                    assert_eq!(lanes, analyzed, "the hatches: {case}");
+                    let tags = spans.iter().filter(|s| !s.tag.is_empty()).count();
+                    assert_eq!(tags, 1, "one tag: {case}");
                 }
             }
         }
@@ -1318,6 +1465,8 @@ mod tests {
         let plan = AutocutPlanView {
             clips: vec![AutocutClipView {
                 clip: id("c0a1"),
+                tracks: vec![a2.clone()],
+                warning: None,
                 kept: vec![[0, 40], [60, 100]],
                 removed_frames: 20,
                 silences: 1,
@@ -1327,8 +1476,8 @@ mod tests {
         };
         let mut state = testkit::state(project);
         let take = state.project.take(&TakeId::numbered(1)).unwrap();
-        let analyzed = crate::autocut::choose_track(&state.project, take, None);
-        assert_eq!(analyzed.as_ref(), Some(&a2), "the dry run's track");
+        let analyzed = crate::autocut::choose_tracks(&state.project, take, &[]);
+        assert_eq!(analyzed, std::slice::from_ref(&a2), "the dry run's track");
         for mode in [CanvasMode::Live, CanvasMode::Program] {
             state.ui.canvas_mode = mode;
             state.ui.selection = match mode {
@@ -1337,7 +1486,7 @@ mod tests {
             };
             let draft = AutocutDraft::from(&state.project);
             assert_eq!(
-                shown_track(&state, &draft),
+                shown_tracks(&state, &draft),
                 analyzed,
                 "the dropdown in {mode:?}"
             );
@@ -1349,7 +1498,7 @@ mod tests {
                 .map(|l| l.track)
                 .collect();
             assert_eq!(scissors, vec![a2.clone()], "the scissors in {mode:?}");
-            let spans = preview_spans_for(&plan, &state, draft.track.as_ref(), 0);
+            let spans = preview_spans_for(&plan, &state, 0);
             assert_eq!(
                 spans.iter().map(|s| &s.track).collect::<Vec<_>>(),
                 [&a2],
@@ -1368,7 +1517,7 @@ mod tests {
         }
         // A second take analyzed on A1 (its scene has no mic): the scissors
         // on both lanes, each clip's hatch on its own track; the dropdown
-        // shows its scope's first clip's.
+        // checks its scope's.
         let mut project = state.project.clone();
         let mut second = project.takes[&TakeId::numbered(1)].clone();
         second.scene.audio.retain(|t| t.id == a1);
@@ -1388,27 +1537,29 @@ mod tests {
             .collect();
         assert_eq!(scissors, [a1.clone(), a2.clone()], "both lanes");
         let draft = AutocutDraft::from(&state.project);
-        assert_eq!(shown_track(&state, &draft).as_ref(), Some(&a2));
+        assert_eq!(shown_tracks(&state, &draft), [a2.clone(), a1.clone()]);
         state.ui.selection = vec![id("c0b1")];
-        assert_eq!(shown_track(&state, &draft).as_ref(), Some(&a1));
+        assert_eq!(shown_tracks(&state, &draft), std::slice::from_ref(&a1));
         let both = AutocutPlanView {
             clips: vec![
                 plan.clips[0].clone(),
                 AutocutClipView {
                     clip: id("c0b1"),
+                    tracks: vec![TrackId::numbered(1)],
+                    warning: None,
                     ..plan.clips[0].clone()
                 },
             ],
             skipped: vec![],
             edges_only: false,
         };
-        let spans = preview_spans_for(&both, &state, None, 0);
+        let spans = preview_spans_for(&both, &state, 0);
         assert_eq!(
             spans.iter().map(|s| &s.track).collect::<Vec<_>>(),
             [&a2, &a1]
         );
         // The setting names the track: every view shows it.
-        state.project.autocut.track = Some(a1.clone());
+        state.project.autocut.tracks = vec![a1.clone()];
         let lanes: Vec<TrackId> = crate::view::timeline::lanes(&state)
             .into_iter()
             .filter(|l| l.autocut)
@@ -1416,7 +1567,7 @@ mod tests {
             .collect();
         assert_eq!(lanes, vec![a1.clone()]);
         let draft = AutocutDraft::from(&state.project);
-        assert_eq!(shown_track(&state, &draft), Some(a1));
+        assert_eq!(shown_tracks(&state, &draft), [a1]);
     }
 
     #[test]

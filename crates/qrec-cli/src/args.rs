@@ -157,7 +157,7 @@ pub enum Cmd {
     Clip(ClipCmd),
     /// Remove silences from clips (every clip unless --clips); `autocut settings` changes the defaults.
     ///
-    /// Finds silences on one audio track with ffmpeg silencedetect, keeps
+    /// Finds silences on the chosen audio tracks with ffmpeg silencedetect, keeps
     /// --padding-ms of audio around speech, and cuts the rest: each clip becomes
     /// several clips of the same take, in one undoable step. Kept fragments
     /// shorter than --min-keep-ms are dropped; a clip that is silent throughout
@@ -815,9 +815,10 @@ pub struct AutocutScopeArgs {
 /// One-run overrides of the project's autocut settings.
 #[derive(Clone, Debug, Default, PartialEq, Args)]
 pub struct AutocutParamArgs {
-    /// Audio track that drives detection, e.g. A1 (default: the setting, else the take's first mic).
-    #[arg(long, value_name = "TRACK")]
-    pub track: Option<TrackId>,
+    /// Audio track silence is detected on, e.g. A1; repeat it to listen to several (a region is
+    /// cut only when silent on all of them). Default: the setting, else the take's first mic.
+    #[arg(long, value_name = "TRACK", value_delimiter = ',')]
+    pub track: Vec<TrackId>,
     /// Silence threshold in dB, -90 to 0, e.g. -35.
     #[arg(long, value_name = "DB", allow_negative_numbers = true)]
     pub threshold_db: Option<f64>,
@@ -849,9 +850,10 @@ pub struct AutocutSettingsArgs {
     /// Autocut each new take right after recording (true or false).
     #[arg(long, value_name = "BOOL")]
     pub auto_run: Option<bool>,
-    /// Audio track that drives detection, e.g. A1, or `auto` for each take's first mic track.
-    #[arg(long, value_name = "TRACK|auto", value_parser = parse_track_or_auto)]
-    pub track: Option<AutoOr<TrackId>>,
+    /// Audio track silence is detected on, e.g. A1 (repeat it for several: a region is cut only
+    /// when silent on all of them), or `auto` for each take's first mic track.
+    #[arg(long, value_name = "TRACK|auto", value_parser = parse_track_or_auto, value_delimiter = ',')]
+    pub track: Vec<AutoOr<TrackId>>,
     /// Silence threshold in dB, -90 to 0, e.g. -35.
     #[arg(long, value_name = "DB", allow_negative_numbers = true)]
     pub threshold_db: Option<f64>,

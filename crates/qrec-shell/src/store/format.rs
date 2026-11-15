@@ -116,12 +116,17 @@ pub fn history_bytes<'a>(entries: impl IntoIterator<Item = &'a HistoryEntry>) ->
     entries.into_iter().flat_map(entry_line).collect()
 }
 
-/// Reads `history.base.json` (wrapped or bare). `None` when it doesn't parse.
+/// Reads `history.base.json` (wrapped or bare), its project migrated to the
+/// current schema (`migrate::upgrade_base`). `None` when it doesn't parse.
 pub fn parse_base(bytes: &[u8]) -> Option<(Option<u64>, Project)> {
-    if let Ok(base) = serde_json::from_slice::<BaseFile>(bytes) {
-        return Some((Some(base.base_seq), base.project));
+    let mut value: Value = serde_json::from_slice(bytes).ok()?;
+    if let Some(project) = value.get_mut("project") {
+        *project = qrec_core::migrate::upgrade_base(project.take());
+        if let Ok(base) = serde_json::from_value::<BaseFile>(value.clone()) {
+            return Some((Some(base.base_seq), base.project));
+        }
     }
-    serde_json::from_slice::<Project>(bytes)
+    serde_json::from_value::<Project>(qrec_core::migrate::upgrade_base(value))
         .ok()
         .map(|project| (None, project))
 }
@@ -207,8 +212,14 @@ pub fn parse_history(bytes: &[u8]) -> Result<ParsedHistory, CoreError> {
             continue;
         }
         let number = i + 1;
-        let entry: HistoryEntry = match serde_json::from_slice(line) {
-            Ok(entry) => entry,
+        let entry: HistoryEntry = match serde_json::from_slice::<HistoryEntry>(line) {
+            // Lines written under an older schema replay on a migrated
+            // project (A§7.3; a no-op on current lines).
+            Ok(mut entry) => {
+                qrec_core::migrate::upgrade_patch(&mut entry.forward);
+                qrec_core::migrate::upgrade_patch(&mut entry.inverse);
+                entry
+            }
             // The last line can be torn even with its newline (a crash
             // that left zeroes behind): drop it unless a torn tail follows.
             Err(_) if Some(i) == last_content && !dropped_torn => {
@@ -315,11 +326,51 @@ mod tests {
         );
     }
 
+    /// Issue #15's schema v2: a history written under v1 reads in the
+    /// current shape (its base migrated, its patches rewritten).
+    #[test]
+    fn a_v1_history_reads_as_current() {
+        let project = sample_project();
+        let mut v1 = serde_json::to_value(&project).unwrap();
+        v1["version"] = serde_json::json!(1);
+        let autocut = v1["autocut"].as_object_mut().unwrap();
+        let tracks = autocut.remove("tracks").unwrap();
+        autocut.insert("track".into(), tracks[0].clone());
+        let base = serde_json::json!({"baseSeq": 3, "project": v1});
+        let read = parse_base(base.to_string().as_bytes()).expect("the base reads");
+        assert_eq!(read, (Some(3), project.clone()));
+        let bare = parse_base(base["project"].to_string().as_bytes()).expect("a bare base");
+        assert_eq!(bare, (None, project));
+
+        let line = serde_json::json!({
+            "seq": 4, "ts": "2026-10-14T12:00:00Z", "label": "Autocut settings: track A1",
+            "cmd": {"cmd": "autocutSettings"},
+            "forward": [
+                {"op": "test", "path": "/autocut/track", "value": null},
+                {"op": "replace", "path": "/autocut/track", "value": "A1"}
+            ],
+            "inverse": [
+                {"op": "test", "path": "/autocut/track", "value": "A1"},
+                {"op": "replace", "path": "/autocut/track", "value": null}
+            ],
+            "afterHash": "x"
+        });
+        let parsed = parse_history(format!("{line}\n").as_bytes()).unwrap();
+        let forward = serde_json::to_value(&parsed.entries[0].forward).unwrap();
+        assert_eq!(
+            forward,
+            serde_json::json!([
+                {"op": "test", "path": "/autocut/tracks", "value": []},
+                {"op": "replace", "path": "/autocut/tracks", "value": ["A1"]}
+            ])
+        );
+    }
+
     #[test]
     fn projects_parse_with_versions_checked() {
         let project = sample_project();
         let text = String::from_utf8(project_bytes(&project)).unwrap();
-        assert!(text.ends_with("}\n") && text.contains("\n  \"version\": 1,"));
+        assert!(text.ends_with("}\n") && text.contains("\n  \"version\": 2,"));
         let migrated = parse_project_text(&text).unwrap();
         assert_eq!(migrated.project, project);
         assert_eq!(migrated.from_version, CURRENT_VERSION);

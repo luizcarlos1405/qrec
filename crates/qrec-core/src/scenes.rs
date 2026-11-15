@@ -37,15 +37,34 @@ impl Default for SavedScenes {
 }
 
 /// One saved scene: the layers and tracks with their own ids, and which of
-/// its tracks is the autocut track.
+/// its tracks autocut listens to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SavedScene {
     pub name: String,
     pub saved_at: DateTime<Utc>,
     pub scene: Scene,
+    /// The autocut track when it is one (as before autocut listened to
+    /// several: a library with one track per scene reads the same in older
+    /// builds).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autocut_track: Option<TrackId>,
+    /// The autocut tracks when there are several.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub autocut_tracks: Vec<TrackId>,
+}
+
+impl SavedScene {
+    /// The tracks autocut listens to (empty = the first mic).
+    pub fn autocut(&self) -> Vec<TrackId> {
+        let mut tracks: Vec<TrackId> = self.autocut_track.iter().cloned().collect();
+        for id in &self.autocut_tracks {
+            if !tracks.contains(id) {
+                tracks.push(id.clone());
+            }
+        }
+        tracks
+    }
 }
 
 /// `scenes.json` as the shell read it.
@@ -155,12 +174,12 @@ pub fn copy_name(scenes: &[SavedScene], name: &str) -> String {
 }
 
 /// What the project scene becomes saved: `missing` cleared, and the autocut
-/// track only when it is a track of the scene.
+/// tracks that are tracks of the scene.
 pub fn saved_from(
     name: String,
     at: DateTime<Utc>,
     scene: &Scene,
-    autocut: Option<&TrackId>,
+    autocut: &[TrackId],
 ) -> SavedScene {
     let mut scene = scene.clone();
     for layer in &mut scene.layers {
@@ -169,12 +188,21 @@ pub fn saved_from(
     for track in &mut scene.audio {
         track.missing = false;
     }
-    let autocut_track = autocut.filter(|id| scene.track(id).is_some()).cloned();
+    let mut tracks: Vec<TrackId> = autocut
+        .iter()
+        .filter(|id| scene.track(id).is_some())
+        .cloned()
+        .collect();
+    let (autocut_track, autocut_tracks) = match tracks.len() {
+        0 | 1 => (tracks.pop(), Vec::new()),
+        _ => (None, tracks),
+    };
     SavedScene {
         name,
         saved_at: at,
         scene,
         autocut_track,
+        autocut_tracks,
     }
 }
 
@@ -208,13 +236,18 @@ fn same_track(a: &AudioTrack, b: &AudioTrack) -> bool {
         && a.sync_offset_ms == b.sync_offset_ms
 }
 
-/// Whether the project scene (with its autocut track) has the saved
+/// Whether the project scene (with its autocut tracks) has the saved
 /// scene's layout: the same layers and tracks in the same order, equal but
-/// for ids and source labels, and the autocut track at the same position.
-pub fn same_layout(scene: &Scene, autocut: Option<&TrackId>, saved: &SavedScene) -> bool {
+/// for ids and source labels, and the autocut tracks at the same positions.
+pub fn same_layout(scene: &Scene, autocut: &[TrackId], saved: &SavedScene) -> bool {
     let other = &saved.scene;
-    let position = |scene: &Scene, id: Option<&TrackId>| {
-        id.and_then(|id| scene.audio.iter().position(|t| &t.id == id))
+    let position = |scene: &Scene, ids: &[TrackId]| {
+        let mut at: Vec<usize> = ids
+            .iter()
+            .filter_map(|id| scene.audio.iter().position(|t| &t.id == id))
+            .collect();
+        at.sort_unstable();
+        at
     };
     scene.layers.len() == other.layers.len()
         && scene.audio.len() == other.audio.len()
@@ -228,7 +261,7 @@ pub fn same_layout(scene: &Scene, autocut: Option<&TrackId>, saved: &SavedScene)
             .iter()
             .zip(&other.audio)
             .all(|(a, b)| same_track(a, b))
-        && position(scene, autocut) == position(other, saved.autocut_track.as_ref())
+        && position(scene, autocut) == position(other, &saved.autocut())
 }
 
 /// The saved scene the project uses (SPEC §5.6).
@@ -247,7 +280,7 @@ pub struct SceneStatus {
 pub fn status(
     scenes: &[SavedScene],
     scene: &Scene,
-    autocut: Option<&TrackId>,
+    autocut: &[TrackId],
     last: Option<&str>,
 ) -> SceneStatus {
     let last = last.and_then(|name| find(scenes, name)).map(|i| &scenes[i]);
@@ -280,13 +313,13 @@ pub fn status(
 /// The project scene a saved scene becomes: a layer or track whose source
 /// the current scene has keeps that id; the others get new ids from
 /// `next_layer` / `next_track` (the first free numbers, counted up). Also
-/// the autocut track's id in the new scene.
+/// the autocut tracks' ids in the new scene.
 pub fn into_project(
     saved: &SavedScene,
     current: &Scene,
     next_layer: LayerId,
     next_track: TrackId,
-) -> (Scene, Option<TrackId>) {
+) -> (Scene, Vec<TrackId>) {
     let mut layer_n = next_layer.number().unwrap_or(1);
     let mut track_n = next_track.number().unwrap_or(1);
     let mut used_layers: BTreeSet<LayerId> = BTreeSet::new();
@@ -314,7 +347,8 @@ pub fn into_project(
             }
         })
         .collect();
-    let mut autocut = None;
+    let wanted = saved.autocut();
+    let mut autocut = vec![None; wanted.len()];
     let audio = saved
         .scene
         .audio
@@ -331,8 +365,8 @@ pub fn into_project(
                 id
             });
             used_tracks.insert(id.clone());
-            if saved.autocut_track.as_ref() == Some(&track.id) {
-                autocut = Some(id.clone());
+            if let Some(i) = wanted.iter().position(|w| *w == track.id) {
+                autocut[i] = Some(id.clone());
             }
             AudioTrack {
                 id,
@@ -341,7 +375,10 @@ pub fn into_project(
             }
         })
         .collect();
-    (Scene { layers, audio }, autocut)
+    (
+        Scene { layers, audio },
+        autocut.into_iter().flatten().collect(),
+    )
 }
 
 /// A take's scene with a saved scene's layout (A§9.11): the take's layers
@@ -464,7 +501,7 @@ pub fn view(state: &crate::state::State, file: Option<&ScenesFile>) -> ScenesVie
     let current = status(
         scenes,
         &project.scene,
-        project.autocut.track.as_ref(),
+        &project.autocut.tracks,
         state.ui.scene.as_deref(),
     );
     let rows = scenes
@@ -566,12 +603,12 @@ mod tests {
         assert!(clean_name("   ").is_err());
         assert!(clean_name("a\nb").is_err());
         assert!(clean_name(&"x".repeat(81)).is_err());
-        let lib = [saved_from("Talk".into(), at(), &Scene::default(), None)];
+        let lib = [saved_from("Talk".into(), at(), &Scene::default(), &[])];
         assert_eq!(find(&lib, "talk"), Some(0));
         assert_eq!(copy_name(&lib, "Talk"), "Talk copy");
         let lib = [
             lib[0].clone(),
-            saved_from("Talk copy".into(), at(), &Scene::default(), None),
+            saved_from("Talk copy".into(), at(), &Scene::default(), &[]),
         ];
         assert_eq!(copy_name(&lib, "Talk"), "Talk copy 2");
     }
@@ -582,7 +619,7 @@ mod tests {
             "Screen + camera".into(),
             at(),
             &screen_camera(),
-            Some(&TrackId::numbered(1)),
+            &[TrackId::numbered(1)],
         );
         let mut other = screen_camera();
         other.layers[0].id = LayerId::numbered(7);
@@ -590,19 +627,19 @@ mod tests {
         if let VideoSource::Screen { label, .. } = &mut other.layers[0].source {
             *label = "Another name".into();
         }
-        assert!(same_layout(&other, Some(&TrackId::numbered(4)), &saved));
+        assert!(same_layout(&other, &[TrackId::numbered(4)], &saved));
         assert!(
-            !same_layout(&other, None, &saved),
+            !same_layout(&other, &[], &saved),
             "the autocut track counts"
         );
         other.layers[1].rect.x = 1180;
-        assert!(!same_layout(&other, Some(&TrackId::numbered(4)), &saved));
+        assert!(!same_layout(&other, &[TrackId::numbered(4)], &saved));
     }
 
     #[test]
     fn status_names_the_scene_in_use_and_whether_it_was_edited() {
         let lib = vec![
-            saved_from("Screen + camera".into(), at(), &screen_camera(), None),
+            saved_from("Screen + camera".into(), at(), &screen_camera(), &[]),
             saved_from(
                 "Camera only".into(),
                 at(),
@@ -610,20 +647,20 @@ mod tests {
                     layers: vec![camera(1, FULL)],
                     audio: vec![],
                 },
-                None,
+                &[],
             ),
         ];
         let current = screen_camera();
-        let clean = status(&lib, &current, None, None);
+        let clean = status(&lib, &current, &[], None);
         assert_eq!(clean.name.as_deref(), Some("Screen + camera"));
         assert!(!clean.edited);
         let mut moved = current.clone();
         moved.layers[1].rect.x = 1180;
-        let edited = status(&lib, &moved, None, Some("screen + camera"));
+        let edited = status(&lib, &moved, &[], Some("screen + camera"));
         assert_eq!(edited.name.as_deref(), Some("Screen + camera"));
         assert!(edited.edited);
-        assert_eq!(status(&lib, &moved, None, None).name, None);
-        assert_eq!(status(&lib, &moved, None, Some("gone")).name, None);
+        assert_eq!(status(&lib, &moved, &[], None).name, None);
+        assert_eq!(status(&lib, &moved, &[], Some("gone")).name, None);
     }
 
     #[test]
@@ -639,7 +676,7 @@ mod tests {
                 ],
                 audio: vec![mic(1)],
             },
-            Some(&TrackId::numbered(1)),
+            &[TrackId::numbered(1)],
         );
         let current = Scene {
             layers: vec![camera(5, FULL)],
@@ -651,7 +688,7 @@ mod tests {
         assert_eq!(ids, ["L6", "L7", "L5"], "the camera keeps L5");
         assert_eq!(scene.layers[2].rect, CORNER);
         assert_eq!(scene.audio[0].id, TrackId::numbered(3));
-        assert_eq!(autocut, Some(TrackId::numbered(3)));
+        assert_eq!(autocut, [TrackId::numbered(3)]);
     }
 
     #[test]
@@ -666,22 +703,60 @@ mod tests {
                     ..mic(1)
                 }],
             },
-            None,
+            &[],
         );
         let (take, matched) = onto_take(&saved, &screen_camera());
         assert_eq!(matched, 1);
         assert!(!take.layers[0].visible, "the screen isn't in the scene");
         assert_eq!(take.layers[1].rect, FULL);
         assert_eq!(take.audio[0].gain_db, -6.0);
-        let none = saved_from("Other".into(), at(), &Scene::default(), None);
+        let none = saved_from("Other".into(), at(), &Scene::default(), &[]);
         assert_eq!(onto_take(&none, &screen_camera()).1, 0);
+    }
+
+    /// Several autocut tracks: written as a list (one is still written as
+    /// `autocutTrack`, as before), compared as positions, carried over.
+    #[test]
+    fn several_autocut_tracks_round_trip() {
+        let scene = Scene {
+            layers: vec![],
+            audio: vec![mic(1), mic(2)],
+        };
+        let (a1, a2) = (TrackId::numbered(1), TrackId::numbered(2));
+        let one = saved_from("One".into(), at(), &scene, std::slice::from_ref(&a2));
+        assert_eq!(
+            (one.autocut_track.as_ref(), one.autocut_tracks.len()),
+            (Some(&a2), 0)
+        );
+        let both = saved_from("Both".into(), at(), &scene, &[a2.clone(), a1.clone()]);
+        assert_eq!(both.autocut_track, None);
+        assert_eq!(both.autocut(), [a2.clone(), a1.clone()]);
+        assert!(same_layout(&scene, &[a1.clone(), a2.clone()], &both));
+        assert!(!same_layout(&scene, std::slice::from_ref(&a1), &both));
+        let lib = SavedScenes {
+            version: VERSION,
+            scenes: vec![one, both.clone()],
+        };
+        let text = lib.to_text();
+        assert!(text.contains("\"autocutTrack\": \"A2\""), "{text}");
+        assert!(text.contains("\"autocutTracks\""), "{text}");
+        assert_eq!(ScenesFile::parse(&text), ScenesFile::Read(lib));
+        let current = Scene {
+            layers: vec![],
+            audio: vec![mic(2)],
+        };
+        // Saved A1 takes the current A2 (same source), saved A2 a new A3;
+        // the list keeps its order (A2 first, then A1).
+        let (_, autocut) =
+            into_project(&both, &current, LayerId::numbered(1), TrackId::numbered(3));
+        assert_eq!(autocut, [TrackId::numbered(3), TrackId::numbered(2)]);
     }
 
     #[test]
     fn the_file_reads_back_and_refuses_what_it_cant_read() {
         let lib = SavedScenes {
             version: VERSION,
-            scenes: vec![saved_from("A".into(), at(), &screen_camera(), None)],
+            scenes: vec![saved_from("A".into(), at(), &screen_camera(), &[])],
         };
         assert_eq!(
             ScenesFile::parse(&lib.to_text()),
@@ -697,7 +772,7 @@ mod tests {
 
     #[test]
     fn the_summary_names_the_sources() {
-        let saved = saved_from("A".into(), at(), &screen_camera(), None);
+        let saved = saved_from("A".into(), at(), &screen_camera(), &[]);
         assert_eq!(summary(&saved), "DP-4 · Logitech C920 · 1 audio");
     }
 }

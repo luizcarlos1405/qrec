@@ -62,7 +62,9 @@ expression: cmds
   {
     "cmd": "autocutSettings",
     "patch": {
-      "track": "A2"
+      "tracks": [
+        "A2"
+      ]
     }
   },
   {

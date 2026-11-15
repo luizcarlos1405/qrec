@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "name": "my-video",
   "createdAt": "2026-10-14T12:00:00Z",
   "canvas": {
@@ -55,7 +55,7 @@
   "recording": { "countdownSecs": 0, "encoder": "auto", "vaapiDevice": null },
   "autocut": {
     "autoRunAfterTake": false,
-    "track": "A1",
+    "tracks": ["A1"],
     "thresholdDb": -35.0,
     "minSilenceMs": 400,
     "paddingMs": 120,

@@ -18,7 +18,7 @@ use std::collections::BTreeSet;
 use serde_json::{Value, json};
 
 use crate::apply::Outcome;
-use crate::autocut::{analysis_source, db_label, params_of};
+use crate::autocut::{analysis_sources, db_label, params_of};
 use crate::ctx::Ctx;
 use crate::error::CoreError;
 use crate::ids::{ClipId, ReqId, TrackId};
@@ -28,7 +28,9 @@ use crate::on_event::autocut::{self as events, Snapshot};
 use crate::protocol::command::{AutocutOverrides, ClipScope, Command};
 use crate::protocol::effect::{Effect, LogLevel};
 use crate::protocol::reply::AutocutSkipView;
-use crate::state::{AutocutParams, AutocutTarget, ClipRef, Job, JobKind, SilenceKey, State};
+use crate::state::{
+    AutocutParams, AutocutSource, AutocutTarget, ClipRef, Job, JobKind, SilenceKey, State,
+};
 
 pub use crate::on_event::autocut::apply_ready_autocuts;
 
@@ -54,7 +56,7 @@ pub fn autocut(
         events::flush_ready(state, ctx)
     };
     let clips = clips_in_scope(&base.project, &scope)?;
-    if let Some(track) = &overrides.track {
+    for track in &overrides.tracks {
         let takes = clips.iter().filter_map(|c| base.project.take(&c.take));
         ensure_track_known(&base.project, track, takes)?;
     }
@@ -68,7 +70,7 @@ pub fn autocut(
         cmd,
         clips,
         params,
-        track: overrides.track,
+        tracks: overrides.tracks,
         dry_run,
         req: ctx.req.clone(),
     };
@@ -118,7 +120,7 @@ pub fn start_auto_run(state: &State, ctx: &Ctx, clip: &ClipId) -> Outcome {
         cmd: json!({"event": "autoRunAfterTake", "take": target.take, "clip": target.id}),
         clips: vec![target],
         params,
-        track: None,
+        tracks: Vec::new(),
         dry_run: false,
         req: None,
     };
@@ -140,8 +142,8 @@ struct Request {
     /// In timeline order.
     clips: Vec<Clip>,
     params: AutocutParams,
-    /// The override track, if any.
-    track: Option<TrackId>,
+    /// The override tracks (empty = the settings').
+    tracks: Vec<TrackId>,
     dry_run: bool,
     req: Option<ReqId>,
 }
@@ -167,12 +169,12 @@ fn start(state: &State, ctx: &Ctx, request: Request) -> Started {
     let mut skipped = Vec::new();
     // Keys in first-use order, with the file each one analyzes.
     let mut files: Vec<(SilenceKey, String)> = Vec::new();
-    for clip in &request.clips {
-        let source = project
+    'clips: for clip in &request.clips {
+        let sources = project
             .take(&clip.take)
             .ok_or_else(|| format!("take {} doesn't exist", clip.take))
-            .and_then(|take| analysis_source(project, &clip.take, take, request.track.as_ref()));
-        let (track, stream) = match source {
+            .and_then(|take| analysis_sources(project, &clip.take, take, &request.tracks));
+        let sources = match sources {
             Ok(found) => found,
             Err(reason) => {
                 skipped.push(AutocutSkipView {
@@ -182,27 +184,34 @@ fn start(state: &State, ctx: &Ctx, request: Request) -> Started {
                 continue;
             }
         };
-        let Some(fact) = ctx.facts.files.get(&stream.file) else {
-            skipped.push(AutocutSkipView {
-                clip: clip.id.clone(),
-                reason: format!("audio file {} not found", stream.file),
+        let mut tracks = Vec::with_capacity(sources.tracks.len());
+        for (track, stream) in &sources.tracks {
+            let Some(fact) = ctx.facts.files.get(&stream.file) else {
+                skipped.push(AutocutSkipView {
+                    clip: clip.id.clone(),
+                    reason: format!("audio file {} not found", stream.file),
+                });
+                continue 'clips;
+            };
+            let key = SilenceKey::compute(
+                &stream.file,
+                fact.bytes,
+                fact.mtime_ns,
+                params.threshold_db,
+                params.min_silence_ms,
+            );
+            if !files.iter().any(|(k, _)| *k == key) {
+                files.push((key.clone(), stream.file.clone()));
+            }
+            tracks.push(AutocutSource {
+                track: track.id.clone(),
+                key,
             });
-            continue;
-        };
-        let key = SilenceKey::compute(
-            &stream.file,
-            fact.bytes,
-            fact.mtime_ns,
-            params.threshold_db,
-            params.min_silence_ms,
-        );
-        if !files.iter().any(|(k, _)| *k == key) {
-            files.push((key.clone(), stream.file.clone()));
         }
         targets.push(AutocutTarget {
             clip: ClipRef::of(clip),
-            track: track.id.clone(),
-            key,
+            tracks,
+            warning: sources.warning,
         });
     }
 
@@ -508,7 +517,7 @@ mod tests {
     use super::fixtures::{self, MIC1, MIC2, SYSTEM1, ms};
     use super::*;
     use crate::error::ErrorCode;
-    use crate::ids::JobId;
+    use crate::ids::{JobId, TakeId};
     use crate::protocol::effect::HistoryOp;
     use crate::protocol::reply::{AutocutPlanView, CmdResult};
     use crate::state::RecordPhase;
@@ -645,7 +654,7 @@ mod tests {
             targets[0].clip,
             ClipRef::of(&state.project.timeline.clips[0])
         );
-        assert_eq!(targets[0].track.as_str(), "A1");
+        assert_eq!(targets[0].tracks[0].track.as_str(), "A1");
         assert_eq!(cmd["cmd"], "autocut");
         assert!(cmd.get("skipped").is_none());
         assert!(out.effects.iter().any(|e| matches!(
@@ -847,7 +856,7 @@ mod tests {
         let ctx = fixtures::ctx(&project);
         let state = testkit::state(project);
         let overrides = AutocutOverrides {
-            track: Some("A2".parse().unwrap()),
+            tracks: vec!["A2".parse().unwrap()],
             threshold_db: Some(-42.5),
             min_silence_ms: Some(700),
             padding_ms: Some(50),
@@ -884,13 +893,42 @@ mod tests {
                 edges_only: false,
             }
         );
-        assert_eq!(targets[0].track.as_str(), "A2");
+        assert_eq!(targets[0].tracks[0].track.as_str(), "A2");
         let original = Command::Autocut {
             scope,
             overrides,
             dry_run: false,
         };
         assert_eq!(cmd, &original.to_json());
+    }
+
+    /// Issue #15: two tracks cut only where both are silent; a take that
+    /// lacks one uses the other, and the run says so.
+    #[test]
+    fn several_tracks_cut_where_all_are_silent() {
+        let mut project = fixtures::project();
+        // Take 2 was recorded without system audio.
+        let take2 = project.takes.get_mut(&TakeId::numbered(2)).unwrap();
+        take2.scene.audio.retain(|t| t.id.as_str() == "A1");
+        let ctx = fixtures::ctx(&project);
+        let state = fixtures::cached(testkit::state(project), &ctx, &fixtures::params());
+        let both = AutocutOverrides {
+            tracks: vec!["A1".parse().unwrap(), "A2".parse().unwrap()],
+            ..Default::default()
+        };
+        let out = autocut(&state, &ctx, ClipScope::All, both, true).unwrap();
+        let reply = out.reply.clone().expect("completes now").unwrap();
+        let plan = plan(&reply);
+        // Take 1: only 8–9 s is silent on the mic and on system audio.
+        assert_eq!(plan.clips[0].kept, vec![[0, 244], [266, 300]]);
+        assert_eq!(plan.clips[0].tracks.len(), 2);
+        assert_eq!(plan.clips[0].warning, None);
+        // Take 2: the mic alone.
+        assert_eq!(plan.clips[1].kept, vec![[0, 34], [50, 150]]);
+        assert_eq!(plan.clips[1].tracks, ["A1".parse::<TrackId>().unwrap()]);
+        let warning = "take 2 has no track A2: silence detected on A1 only";
+        assert_eq!(plan.clips[1].warning.as_deref(), Some(warning));
+        assert!(reply.message.ends_with(warning), "{}", reply.message);
     }
 
     #[test]
@@ -942,7 +980,7 @@ mod tests {
             ),
             (
                 AutocutOverrides {
-                    track: Some("A9".parse().unwrap()),
+                    tracks: vec!["A9".parse().unwrap()],
                     ..Default::default()
                 },
                 ErrorCode::NotFound,
@@ -954,7 +992,7 @@ mod tests {
             assert_eq!((err.code, err.message.as_str()), (code, text));
         }
         let err = with(AutocutOverrides {
-            track: Some("A9".parse().unwrap()),
+            tracks: vec!["A9".parse().unwrap()],
             ..Default::default()
         })
         .unwrap_err();
@@ -1128,8 +1166,11 @@ mod tests {
                 cmd: json!({"cmd": "autocut", "scope": {"clips": ["c002"]}, "overrides": {}, "dryRun": false}),
                 targets: vec![AutocutTarget {
                     clip: ClipRef::of(&state.project.timeline.clips[1]),
-                    track: "A1".parse().unwrap(),
-                    key: fixtures::key(&ctx, MIC2, &p),
+                    tracks: vec![AutocutSource {
+                        track: "A1".parse().unwrap(),
+                        key: fixtures::key(&ctx, MIC2, &p),
+                    }],
+                    warning: None,
                 }],
                 params: p.clone(),
                 dry_run: false,

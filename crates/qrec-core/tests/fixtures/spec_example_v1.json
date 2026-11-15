@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "name": "my-video",
+  "createdAt": "2026-10-14T12:00:00Z",
+  "canvas": {
+    "width": 1920,
+    "height": 1080,
+    "fps": { "num": 30, "den": 1 },
+    "background": "#000000"
+  },
+  "scene": {
+    "layers": [
+      {
+        "id": "L1",
+        "name": "Main screen",
+        "visible": true,
+        "opacity": 1.0,
+        "source": { "kind": "screen", "output": "DP-4", "label": "GIGA-BYTE GS27QA" },
+        "rect": { "x": 0, "y": 0, "w": 1920, "h": 1080 },
+        "crop": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
+        "fit": "contain"
+      },
+      {
+        "id": "L2",
+        "name": "Face",
+        "visible": true,
+        "opacity": 1.0,
+        "source": { "kind": "camera", "device": "/dev/video0", "label": "Logitech C920" },
+        "rect": { "x": 1500, "y": 760, "w": 384, "h": 288 },
+        "crop": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
+        "fit": "cover"
+      }
+    ],
+    "audio": [
+      {
+        "id": "A1",
+        "role": "mic",
+        "source": "alsa_input.usb-Blue_Microphones_Yeti_Nano…",
+        "label": "Yeti Nano",
+        "gainDb": 0.0,
+        "muted": false,
+        "syncOffsetMs": 0
+      },
+      {
+        "id": "A2",
+        "role": "system",
+        "source": "alsa_output.…analog-stereo.monitor",
+        "label": "System audio",
+        "gainDb": -6.0,
+        "muted": false,
+        "syncOffsetMs": 0
+      }
+    ]
+  },
+  "recording": { "countdownSecs": 0, "encoder": "auto", "vaapiDevice": null },
+  "autocut": {
+    "autoRunAfterTake": false,
+    "track": "A1",
+    "thresholdDb": -35.0,
+    "minSilenceMs": 400,
+    "paddingMs": 120,
+    "minKeepMs": 200
+  },
+  "takes": {
+    "take-0001": {
+      "status": "ok",
+      "recordedAt": "2026-10-14T12:03:10Z",
+      "durationFrames": 912,
+      "scene": {
+        "layers": [
+          {
+            "id": "L1",
+            "name": "Main screen",
+            "visible": true,
+            "opacity": 1.0,
+            "source": { "kind": "screen", "output": "DP-4", "label": "GIGA-BYTE GS27QA" },
+            "rect": { "x": 0, "y": 0, "w": 1920, "h": 1080 },
+            "crop": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
+            "fit": "contain"
+          },
+          {
+            "id": "L2",
+            "name": "Face",
+            "visible": true,
+            "opacity": 1.0,
+            "source": { "kind": "camera", "device": "/dev/video0", "label": "Logitech C920" },
+            "rect": { "x": 1500, "y": 760, "w": 384, "h": 288 },
+            "crop": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
+            "fit": "cover"
+          }
+        ],
+        "audio": [
+          {
+            "id": "A1",
+            "role": "mic",
+            "source": "alsa_input.usb-Blue_Microphones_Yeti_Nano…",
+            "label": "Yeti Nano",
+            "gainDb": 0.0,
+            "muted": false,
+            "syncOffsetMs": 0
+          },
+          {
+            "id": "A2",
+            "role": "system",
+            "source": "alsa_output.…analog-stereo.monitor",
+            "label": "System audio",
+            "gainDb": -6.0,
+            "muted": false,
+            "syncOffsetMs": 0
+          }
+        ]
+      },
+      "streams": [
+        {
+          "id": "L1",
+          "kind": "video",
+          "file": "takes/take-0001/L1-screen-DP-4.mkv",
+          "width": 2560,
+          "height": 1440,
+          "startOffsetNs": 0
+        },
+        {
+          "id": "L2",
+          "kind": "video",
+          "file": "takes/take-0001/L2-camera-0.mkv",
+          "width": 1280,
+          "height": 720,
+          "startOffsetNs": 41000000
+        },
+        {
+          "id": "A1",
+          "kind": "audio",
+          "file": "takes/take-0001/A1-mic.mka",
+          "sampleRate": 48000,
+          "channels": 1,
+          "startOffsetNs": 3000000
+        },
+        {
+          "id": "A2",
+          "kind": "audio",
+          "file": "takes/take-0001/A2-system.mka",
+          "sampleRate": 48000,
+          "channels": 2,
+          "startOffsetNs": 2500000
+        }
+      ]
+    }
+  },
+  "nextTakeNumber": 2,
+  "timeline": {
+    "clips": [
+      { "id": "c7f3", "take": "take-0001", "in": 0, "out": 410 },
+      { "id": "c8a1", "take": "take-0001", "in": 455, "out": 912 }
+    ]
+  }
+}

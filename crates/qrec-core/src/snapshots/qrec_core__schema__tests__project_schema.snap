@@ -1,6 +1,5 @@
 ---
 source: crates/qrec-core/src/schema.rs
-assertion_line: 582
 expression: project_schema()
 ---
 {
@@ -99,20 +98,17 @@ expression: project_schema()
           "minimum": -90.0,
           "type": "number"
         },
-        "track": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TrackId"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The audio track used for silence detection. `null` = the take's first mic track."
+        "tracks": {
+          "description": "The audio tracks silence is detected on: a region is cut only when\nit is silent on every one of them. Empty = the take's first mic\ntrack. (Schema v1 had one `track`, `null` for the first mic.)",
+          "items": {
+            "$ref": "#/$defs/TrackId"
+          },
+          "type": "array"
         }
       },
       "required": [
         "autoRunAfterTake",
+        "tracks",
         "thresholdDb",
         "minSilenceMs",
         "paddingMs",
@@ -706,7 +702,7 @@ expression: project_schema()
       "$ref": "#/$defs/Timeline"
     },
     "version": {
-      "const": 1,
+      "const": 2,
       "format": "uint32",
       "minimum": 0,
       "type": "integer"

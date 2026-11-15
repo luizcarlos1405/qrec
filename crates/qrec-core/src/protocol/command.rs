@@ -82,7 +82,7 @@ pub enum Command {
         track: TrackId,
         patch: AudioPatch,
     },
-    /// U. Removing the `autocut.track` track also sets it to null.
+    /// U. Removing a track also takes it out of `autocut.tracks`.
     AudioRemove { target: SceneTarget, track: TrackId },
     /// U. Copies layout fields between scenes, matched by id.
     SceneApply { from: SceneTarget, to: SceneDest },
@@ -790,9 +790,9 @@ pub struct AudioPatch {
 pub struct AutocutPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_run_after_take: Option<bool>,
-    /// `null` = the take's first mic track.
-    #[serde(default, skip_serializing_if = "Nullable::is_keep")]
-    pub track: Nullable<TrackId>,
+    /// The tracks silence is detected on; empty = the take's first mic track.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracks: Option<Vec<TrackId>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold_db: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -809,8 +809,9 @@ pub struct AutocutPatch {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutocutOverrides {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub track: Option<TrackId>,
+    /// Detect silence on these tracks for this run (empty = the settings').
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracks: Vec<TrackId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold_db: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -2247,16 +2247,21 @@ fn the_track_list_keeps_its_keys() {
         Some("500"),
         "the tuning stays"
     );
-    // Down and Enter pick A2 in the list; the playhead stays.
+    // Down and Enter check A2 in the menu (issue #15: it stays open for
+    // more), Esc closes it; the playhead stays.
     open_list(&mut nested);
     nested.keys(&["-k", "Down", "-k", "Return"]);
-    closed(&mut nested, "the list closed by its pick");
+    nested.window(0).wait_idle();
+    nested.keys(&["-k", "Escape"]);
+    closed(&mut nested, "the menu closed by Esc");
     let status = nested.cli_json(&project, &["status"]);
     assert_eq!(status["data"]["ui"]["playhead"], 4842, "no seek: {status}");
     let labels = panel_labels(nested.window(0));
     assert!(
-        labels.iter().any(|l| l.starts_with("A2 \u{b7} ")),
-        "A2 picked: {labels:#?}"
+        labels
+            .iter()
+            .any(|l| l.starts_with("A1 \u{b7} ") && l.contains(" + A2 \u{b7} ")),
+        "A2 checked too: {labels:#?}"
     );
     // The list closed, Esc is the page's Cancel.
     nested.keys(&["-k", "Escape"]);

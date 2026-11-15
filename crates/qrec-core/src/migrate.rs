@@ -6,8 +6,19 @@
 //! shell writes [`backup_path`] (`.qrec/qrec.v{N}.json.bak`, never
 //! overwritten) before saving a migrated project; read-only commands
 //! migrate in memory only. Validation is separate (`validate::ensure_valid`).
+//!
+//! The history was written in the schema of its time: [`upgrade_base`]
+//! migrates `history.base.json`'s project and [`upgrade_patch`] rewrites
+//! each entry's patches, so an old history replays on a migrated project.
+//!
+//! Steps:
+//! - v1 → v2 (issue #15): `autocut.track` (one track id, or `null` for the
+//!   take's first mic) became `autocut.tracks` (a list; empty = the first
+//!   mic).
 
-use serde_json::Value;
+use json_patch::jsonptr::PointerBuf;
+use json_patch::{Patch, PatchOperation};
+use serde_json::{Value, json};
 
 use crate::error::CoreError;
 use crate::model::{CURRENT_VERSION, Project};
@@ -20,9 +31,82 @@ pub const FIRST_VERSION: u32 = 1;
 pub type Step = fn(Value) -> Result<Value, CoreError>;
 
 /// `STEPS[i]` migrates version `FIRST_VERSION + i` to `FIRST_VERSION + i + 1`,
-/// so `FIRST_VERSION + STEPS.len() == CURRENT_VERSION`. Empty while v1 is
-/// the only schema.
-pub const STEPS: &[Step] = &[];
+/// so `FIRST_VERSION + STEPS.len() == CURRENT_VERSION`.
+pub const STEPS: &[Step] = &[v1_to_v2];
+
+/// v1 → v2: `autocut.track` becomes `autocut.tracks`.
+fn v1_to_v2(mut value: Value) -> Result<Value, CoreError> {
+    if let Some(autocut) = value.get_mut("autocut") {
+        autocut_v2(autocut);
+    }
+    value["version"] = json!(2);
+    Ok(value)
+}
+
+/// A v1 `autocut` object as v2: `"track": "A1"` → `"tracks": ["A1"]`,
+/// `"track": null` → `"tracks": []`. Anything else is left alone.
+fn autocut_v2(autocut: &mut Value) {
+    let Some(object) = autocut.as_object_mut() else {
+        return;
+    };
+    let Some(track) = object.remove("track") else {
+        return;
+    };
+    let tracks = match track {
+        Value::Null => json!([]),
+        id => json!([id]),
+    };
+    object.insert("tracks".to_owned(), tracks);
+}
+
+/// `history.base.json`'s project at `CURRENT_VERSION` (a base without a
+/// `version`, or an unknown one, is returned as it is: deserializing it
+/// says what's wrong).
+pub fn upgrade_base(project: Value) -> Value {
+    match upgrade(project.clone(), STEPS) {
+        Ok((value, _)) => value,
+        Err(_) => project,
+    }
+}
+
+/// Rewrites a history patch written under an older schema for the current
+/// one: what each step renamed, in the paths and in the values of `add`,
+/// `replace` and `test` ops (an op may carry the whole `autocut` object, or
+/// the whole document). Idempotent: a current patch comes back unchanged,
+/// since no current path or value has the old shape.
+pub fn upgrade_patch(patch: &mut Patch) {
+    for op in &mut patch.0 {
+        let (path, value) = match op {
+            PatchOperation::Add(op) => (&mut op.path, Some(&mut op.value)),
+            PatchOperation::Replace(op) => (&mut op.path, Some(&mut op.value)),
+            PatchOperation::Test(op) => (&mut op.path, Some(&mut op.value)),
+            PatchOperation::Remove(op) => (&mut op.path, None),
+            PatchOperation::Move(_) | PatchOperation::Copy(_) => continue,
+        };
+        match path.as_str() {
+            "/autocut/track" => {
+                *path = PointerBuf::parse("/autocut/tracks").expect("a valid pointer");
+                if let Some(value) = value {
+                    *value = match value.take() {
+                        Value::Null => json!([]),
+                        id => json!([id]),
+                    };
+                }
+            }
+            "/autocut" => {
+                if let Some(value) = value {
+                    autocut_v2(value);
+                }
+            }
+            "" => {
+                if let Some(autocut) = value.and_then(|v| v.get_mut("autocut")) {
+                    autocut_v2(autocut);
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 /// A project read from disk, at `CURRENT_VERSION`.
 #[derive(Debug, Clone, PartialEq)]
@@ -144,6 +228,8 @@ mod tests {
     use serde_json::json;
 
     const SPEC_EXAMPLE: &str = include_str!("../tests/fixtures/spec_example.json");
+    /// The SPEC example as schema v1 wrote it (`autocut.track`).
+    const SPEC_EXAMPLE_V1: &str = include_str!("../tests/fixtures/spec_example_v1.json");
 
     #[test]
     fn the_step_table_reaches_the_current_version() {
@@ -154,7 +240,7 @@ mod tests {
     #[test]
     fn current_files_load_unchanged() {
         let migrated = parse_project(SPEC_EXAMPLE).unwrap();
-        assert_eq!(migrated.from_version, 1);
+        assert_eq!(migrated.from_version, 2);
         assert!(!migrated.was_migrated());
         let expected: Project = serde_json::from_str(SPEC_EXAMPLE).unwrap();
         assert_eq!(migrated.project, expected);
@@ -169,11 +255,11 @@ mod tests {
             value["version"] = v;
             value
         };
-        let err = migrate(with_version(json!(2))).unwrap_err();
+        let err = migrate(with_version(json!(3))).unwrap_err();
         assert_eq!(err.code, ErrorCode::Invalid);
         assert_eq!(
             err.message,
-            "qrec.json is schema version 2, but this Qrec reads up to version 1"
+            "qrec.json is schema version 3, but this Qrec reads up to version 2"
         );
         assert!(err.hint.unwrap().contains("update Qrec"));
         for bad in [
@@ -192,7 +278,7 @@ mod tests {
                 err.message
             );
         }
-        let mut value = with_version(json!(1));
+        let mut value = with_version(json!(2));
         value.as_object_mut().unwrap().remove("version");
         assert_eq!(
             migrate(value).unwrap_err().message,
@@ -254,6 +340,7 @@ mod tests {
 
     fn v1_document() -> Value {
         let mut value: Value = serde_json::from_str(SPEC_EXAMPLE).unwrap();
+        value["version"] = json!(1);
         value["canvas"]["fps"] = json!("30000/1001");
         let timeline = value.as_object_mut().unwrap().remove("timeline").unwrap();
         value["edit"] = timeline;
@@ -285,5 +372,70 @@ mod tests {
             err.message,
             "can't migrate qrec.json from version 1 to 2: canvas.fps must be a string in v1"
         );
+    }
+
+    // ------------------------------------------------- the real steps
+
+    /// v1 → v2: `autocut.track` becomes `autocut.tracks`, and nothing else
+    /// changes.
+    #[test]
+    fn v1_track_becomes_tracks() {
+        let migrated = parse_project(SPEC_EXAMPLE_V1).unwrap();
+        assert_eq!(migrated.from_version, 1);
+        assert!(migrated.was_migrated());
+        let current: Project = serde_json::from_str(SPEC_EXAMPLE).unwrap();
+        assert_eq!(migrated.project, current);
+        // `null` (the first mic) becomes the empty list.
+        let mut v1: Value = serde_json::from_str(SPEC_EXAMPLE_V1).unwrap();
+        v1["autocut"]["track"] = Value::Null;
+        let migrated = migrate(v1).unwrap();
+        assert!(migrated.project.autocut.tracks.is_empty());
+        assert_eq!(migrated.project.version, CURRENT_VERSION);
+    }
+
+    /// A v1 history replays on a migrated project: its patches' paths and
+    /// values are rewritten, and current patches are left alone.
+    #[test]
+    fn v1_history_patches_are_upgraded() {
+        let patch = |value: Value| -> Patch { serde_json::from_value(value).unwrap() };
+        let mut v1 = patch(json!([
+            {"op": "test", "path": "/autocut/track", "value": null},
+            {"op": "replace", "path": "/autocut/track", "value": "A2"},
+            {"op": "test", "path": "/autocut", "value": {"track": "A1", "thresholdDb": -35.0}},
+            {"op": "replace", "path": "/autocut", "value": {"track": null, "edgesOnly": true}},
+            {"op": "replace", "path": "/name", "value": "talk"},
+        ]));
+        upgrade_patch(&mut v1);
+        let upgraded = patch(json!([
+            {"op": "test", "path": "/autocut/tracks", "value": []},
+            {"op": "replace", "path": "/autocut/tracks", "value": ["A2"]},
+            {"op": "test", "path": "/autocut", "value": {"tracks": ["A1"], "thresholdDb": -35.0}},
+            {"op": "replace", "path": "/autocut", "value": {"tracks": [], "edgesOnly": true}},
+            {"op": "replace", "path": "/name", "value": "talk"},
+        ]));
+        assert_eq!(v1, upgraded);
+        let mut again = upgraded.clone();
+        upgrade_patch(&mut again);
+        assert_eq!(again, upgraded, "idempotent");
+
+        // Applied to the migrated project, the upgraded patch works.
+        let mut doc =
+            serde_json::to_value(parse_project(SPEC_EXAMPLE_V1).unwrap().project).unwrap();
+        let mut forward = patch(json!([
+            {"op": "test", "path": "/autocut/track", "value": "A1"},
+            {"op": "replace", "path": "/autocut/track", "value": null},
+        ]));
+        upgrade_patch(&mut forward);
+        json_patch::patch(&mut doc, &forward).unwrap();
+        assert_eq!(doc["autocut"]["tracks"], json!([]));
+    }
+
+    #[test]
+    fn history_bases_are_upgraded() {
+        let v1: Value = serde_json::from_str(SPEC_EXAMPLE_V1).unwrap();
+        let current: Value = serde_json::from_str(SPEC_EXAMPLE).unwrap();
+        assert_eq!(upgrade_base(v1), current);
+        assert_eq!(upgrade_base(current.clone()), current);
+        assert_eq!(upgrade_base(json!({"version": 9})), json!({"version": 9}));
     }
 }

@@ -190,7 +190,7 @@ fn all_commands() -> Vec<Command> {
         Command::AutocutSettings {
             patch: AutocutPatch {
                 auto_run_after_take: Some(true),
-                track: Nullable::Set(TrackId::numbered(1)),
+                tracks: Some(vec![TrackId::numbered(1), TrackId::numbered(2)]),
                 threshold_db: Some(-40.0),
                 min_silence_ms: Some(500),
                 padding_ms: Some(100),
@@ -200,7 +200,7 @@ fn all_commands() -> Vec<Command> {
         },
         Command::AutocutSettings {
             patch: AutocutPatch {
-                track: Nullable::Clear,
+                tracks: Some(Vec::new()),
                 ..Default::default()
             },
         },
@@ -286,7 +286,7 @@ fn all_commands() -> Vec<Command> {
         Command::Autocut {
             scope: ClipScope::All,
             overrides: AutocutOverrides {
-                track: Some(TrackId::numbered(1)),
+                tracks: vec![TrackId::numbered(1)],
                 threshold_db: Some(-35.0),
                 min_silence_ms: Some(400),
                 padding_ms: Some(120),
@@ -494,13 +494,13 @@ fn command_json_forms() {
     };
     insta::assert_snapshot!(json(&on_take), @r#"{"cmd":"layerSet","target":"take-0001","layer":"L1","patch":{"opacity":0.5}}"#);
 
-    let clear_track = Command::AutocutSettings {
+    let clear_tracks = Command::AutocutSettings {
         patch: AutocutPatch {
-            track: Nullable::Clear,
+            tracks: Some(Vec::new()),
             ..Default::default()
         },
     };
-    insta::assert_snapshot!(json(&clear_track), @r#"{"cmd":"autocutSettings","patch":{"track":null}}"#);
+    insta::assert_snapshot!(json(&clear_tracks), @r#"{"cmd":"autocutSettings","patch":{"tracks":[]}}"#);
 
     let fit = Command::SetUi {
         patch: UiPatch {
@@ -553,23 +553,32 @@ fn command_json_forms() {
 fn command_parsing_rules() {
     // Absent / null / value for a Nullable field.
     let parse = |s: &str| serde_json::from_str::<Command>(s).unwrap();
+    let Command::SetUi { patch } = parse(r#"{"cmd":"setUi","patch":{}}"#) else {
+        panic!()
+    };
+    assert_eq!(patch.zoom, Nullable::Keep);
+    let Command::SetUi { patch } = parse(r#"{"cmd":"setUi","patch":{"zoom":null}}"#) else {
+        panic!()
+    };
+    assert_eq!(patch.zoom, Nullable::Clear);
+    // Absent / empty / a list for the autocut tracks.
     let Command::AutocutSettings { patch } = parse(r#"{"cmd":"autocutSettings","patch":{}}"#)
     else {
         panic!()
     };
-    assert_eq!(patch.track, Nullable::Keep);
+    assert_eq!(patch.tracks, None);
     let Command::AutocutSettings { patch } =
-        parse(r#"{"cmd":"autocutSettings","patch":{"track":null}}"#)
+        parse(r#"{"cmd":"autocutSettings","patch":{"tracks":[]}}"#)
     else {
         panic!()
     };
-    assert_eq!(patch.track, Nullable::Clear);
+    assert_eq!(patch.tracks, Some(vec![]));
     let Command::AutocutSettings { patch } =
-        parse(r#"{"cmd":"autocutSettings","patch":{"track":"A2"}}"#)
+        parse(r#"{"cmd":"autocutSettings","patch":{"tracks":["A2"]}}"#)
     else {
         panic!()
     };
-    assert_eq!(patch.track, Nullable::Set(TrackId::numbered(2)));
+    assert_eq!(patch.tracks, Some(vec![TrackId::numbered(2)]));
 
     // bool and Vec fields default; Options may be omitted.
     assert_eq!(
@@ -1126,8 +1135,11 @@ fn state_and_outcome_round_trip() {
                         in_: 0,
                         out: 410,
                     },
-                    track: TrackId::numbered(1),
-                    key: SilenceKey("k".into()),
+                    tracks: vec![AutocutSource {
+                        track: TrackId::numbered(1),
+                        key: SilenceKey("k".into()),
+                    }],
+                    warning: None,
                 }],
                 params: AutocutParams {
                     threshold_db: -35.0,
@@ -1256,6 +1268,8 @@ fn views_and_plans_round_trip() {
     round_trip(&AutocutPlanView {
         clips: vec![AutocutClipView {
             clip: clip("c7f3"),
+            tracks: vec![TrackId::numbered(1), TrackId::numbered(2)],
+            warning: Some("take 1 has no track A3: silence detected on A1 and A2 only".into()),
             kept: vec![[0, 120], [180, 410]],
             removed_frames: 60,
             silences: 1,

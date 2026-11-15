@@ -11,7 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use proptest::prelude::*;
 
 use qrec_core::apply::history::{redo_checked, undo_checked};
-use qrec_core::autocut::{ClipCut, analysis_source, cut_clip, kept_spans, plan_clip};
+use qrec_core::autocut::{
+    ClipCut, TrackSilences, analysis_sources, cut_clip, intersect_silences, kept_spans,
+    plan_clip_on,
+};
 use qrec_core::ctx::{Ctx, FileFact};
 use qrec_core::history::ops::unchecked;
 use qrec_core::parse::silencedetect::{parse_silencedetect, parse_silencedetect_until};
@@ -333,6 +336,35 @@ proptest! {
     }
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// Several tracks (issue #15): a region is cut only when silent on
+    /// every track, so adding a track never cuts more. What {A, B} keeps
+    /// contains what {A} keeps and what {B} keeps, edges only or not.
+    #[test]
+    fn adding_a_track_never_cuts_more(
+        fps in strategies::arb_fps(),
+        clip in arb_clip(),
+        a in arb_silences(),
+        b in arb_silences(),
+        params in arb_params(),
+        edges_only in any::<bool>(),
+    ) {
+        let params = AutocutParams { edges_only, ..params };
+        let cut = |lists: &[Vec<Interval>]| {
+            cut_clip(&clip, &intersect_silences(lists, params.min_silence_ms), &params, fps)
+        };
+        let both = cut(&[a.clone(), b.clone()]);
+        let inside = |small: &[[u64; 2]], big: &[[u64; 2]]| {
+            small.iter().all(|&[x, y]| big.iter().any(|&[c, d]| c <= x && y <= d))
+        };
+        for one in [cut(std::slice::from_ref(&a)), cut(std::slice::from_ref(&b))] {
+            prop_assert!(inside(&one.kept, &both.kept), "{:?} ⊄ {:?}", one.kept, both.kept);
+        }
+    }
+}
+
 // --------------------------------------------------------------- the flow
 
 /// Silences (file time) for each audio file of `project`, cycled from `pool`.
@@ -439,9 +471,18 @@ proptest! {
         let mut expected: Vec<(Option<ClipId>, TakeId, u64, u64)> = Vec::new();
         for clip in &project.timeline.clips {
             let take = project.take(&clip.take).unwrap();
-            let kept = match analysis_source(project, &clip.take, take, None) {
-                Ok((track, stream)) => {
-                    let cut = plan_clip(clip, stream, track, &silences[&stream.file], &params, fps);
+            let kept = match analysis_sources(project, &clip.take, take, &[]) {
+                Ok(sources) => {
+                    let tracks: Vec<TrackSilences<'_>> = sources
+                        .tracks
+                        .iter()
+                        .map(|&(track, stream)| TrackSilences {
+                            track,
+                            stream,
+                            silences: &silences[&stream.file],
+                        })
+                        .collect();
+                    let cut = plan_clip_on(clip, &tracks, &params, fps);
                     if cut.keeps_nothing() { vec![[clip.in_, clip.out]] } else { cut.kept }
                 }
                 Err(_) => vec![[clip.in_, clip.out]],

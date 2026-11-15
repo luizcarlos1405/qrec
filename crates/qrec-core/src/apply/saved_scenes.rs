@@ -68,7 +68,7 @@ pub fn scene_save(state: &State, ctx: &Ctx, name: Option<String>) -> Result<Outc
             let status = scenes::status(
                 &lib.scenes,
                 &project.scene,
-                project.autocut.track.as_ref(),
+                &project.autocut.tracks,
                 state.ui.scene.as_deref(),
             );
             status.name.ok_or_else(|| {
@@ -81,7 +81,7 @@ pub fn scene_save(state: &State, ctx: &Ctx, name: Option<String>) -> Result<Outc
         name.clone(),
         ctx.now,
         &project.scene,
-        project.autocut.track.as_ref(),
+        &project.autocut.tracks,
     );
     let replaced = lib.find(&name);
     let text = match replaced {
@@ -139,7 +139,7 @@ pub fn scene_use(state: &State, ctx: &Ctx, name: Option<String>) -> Result<Outco
     );
     let mut next = state.clone();
     next.project.scene = scene;
-    next.project.autocut.track = autocut;
+    next.project.autocut.tracks = autocut;
     next.ui.scene = Some(saved.name.clone());
     next.ui.selected_layer = None;
     if let ScenesFile::Read(_) = file {
@@ -451,7 +451,7 @@ mod tests {
                     layers: vec![camera(9, Rect::new(0, 0, 1920, 1080))],
                     audio: vec![mic(4)],
                 },
-                Some(&TrackId::numbered(4)),
+                &[TrackId::numbered(4)],
             )],
         };
         let out = scene_use(
@@ -467,7 +467,7 @@ mod tests {
             LayerId::numbered(2),
             "the camera keeps L2"
         );
-        assert_eq!(out.state.project.autocut.track, Some(TrackId::numbered(1)));
+        assert_eq!(out.state.project.autocut.tracks, [TrackId::numbered(1)]);
         assert_eq!(out.state.ui.scene.as_deref(), Some("Camera only"));
         assert_eq!(
             out.state.history.entries.len(),
@@ -488,13 +488,13 @@ mod tests {
                     "Talk".into(),
                     testkit::ctx(testkit::CREATED_AT, 7).now,
                     &state.project.scene,
-                    None,
+                    &[],
                 ),
                 scenes::saved_from(
                     "Other".into(),
                     testkit::ctx(testkit::CREATED_AT, 7).now,
                     &Scene::default(),
-                    None,
+                    &[],
                 ),
             ],
         };

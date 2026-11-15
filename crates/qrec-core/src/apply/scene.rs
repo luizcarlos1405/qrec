@@ -628,8 +628,9 @@ pub fn audio_set(
     ))
 }
 
-/// `qrec scene audio remove <id> [--take T]`. Removing the project track
-/// that `autocut.track` names also sets it to null, in the same entry (a
+/// `qrec scene audio remove <id> [--take T]`. Removing a project track
+/// `autocut.tracks` names also takes it out of the list (empty = each
+/// take's first mic), in the same entry (a
 /// take's snapshot doesn't change what the other takes use).
 pub fn audio_remove(
     state: &State,
@@ -662,10 +663,15 @@ pub fn audio_remove(
             ),
         ),
     };
-    if target == SceneTarget::Project && next.project.autocut.track.as_ref() == Some(&track) {
-        next.project.autocut.track = None;
-        label.push_str(" (autocut track reset)");
-        message.push_str("; autocut now uses each take's first mic track");
+    if target == SceneTarget::Project && next.project.autocut.tracks.contains(&track) {
+        next.project.autocut.tracks.retain(|id| *id != track);
+        if next.project.autocut.tracks.is_empty() {
+            label.push_str(" (autocut track reset)");
+            message.push_str("; autocut now uses each take's first mic track");
+        } else {
+            label.push_str(" (autocut no longer listens to it)");
+            message.push_str("; autocut no longer listens to it");
+        }
     }
     let committed = commit(state, ctx, label, cmd, next);
     Ok(Outcome::done(
@@ -2013,10 +2019,10 @@ mod tests {
     #[test]
     fn removing_the_autocut_track_resets_it_in_the_same_entry() {
         let mut state = studio();
-        state.project.autocut.track = Some(tid("A1"));
+        state.project.autocut.tracks = vec![tid("A1")];
         let out = audio_remove(&state, &ctx(), SceneTarget::Project, tid("A1")).unwrap();
         assert_eq!(track_ids(&out.state.project.scene), ["A2"]);
-        assert_eq!(out.state.project.autocut.track, None);
+        assert!(out.state.project.autocut.tracks.is_empty());
         assert_eq!(out.state.history.entries.len(), 1);
         assert_eq!(
             out.state.history.entries[0].label,
@@ -2031,14 +2037,23 @@ mod tests {
 
         // Another track, or a take's snapshot, leaves the setting alone.
         let out = audio_remove(&state, &ctx(), SceneTarget::Project, tid("A2")).unwrap();
-        assert_eq!(out.state.project.autocut.track, Some(tid("A1")));
+        assert_eq!(out.state.project.autocut.tracks, [tid("A1")]);
         let out = audio_remove(&state, &ctx(), SceneTarget::Take(take(1)), tid("A1")).unwrap();
-        assert_eq!(out.state.project.autocut.track, Some(tid("A1")));
+        assert_eq!(out.state.project.autocut.tracks, [tid("A1")]);
         let t1 = &out.state.project.takes[&take(1)];
         assert_eq!(track_ids(&t1.scene), ["A2"]);
         assert!(t1.stream("A1").is_some(), "the stream stays");
         let err = audio_remove(&state, &ctx(), SceneTarget::Project, tid("A7")).unwrap_err();
         assert_eq!(err.code, ErrorCode::NotFound);
+
+        // One of two autocut tracks: the other stays.
+        state.project.autocut.tracks = vec![tid("A1"), tid("A2")];
+        let out = audio_remove(&state, &ctx(), SceneTarget::Project, tid("A1")).unwrap();
+        assert_eq!(out.state.project.autocut.tracks, [tid("A2")]);
+        assert_eq!(
+            out.state.history.entries[0].label,
+            "Remove audio track A1 (Mic) (autocut no longer listens to it)"
+        );
     }
 
     // ----------------------------------------------------------- scene apply

@@ -1326,7 +1326,7 @@ fn autocut_dry_runs_show_the_plan() {
     let tmp = Tmp::new();
     let project = tmp.project("p");
     let plan = json!({
-        "clips": [{"clip": "c001", "kept": [[0, 20], [40, 60]], "removedFrames": 20, "silences": 1}],
+        "clips": [{"clip": "c001", "tracks": ["A1"], "kept": [[0, 20], [40, 60]], "removedFrames": 20, "silences": 1}],
         "skipped": [{"clip": "c002", "reason": "entirely silent at -35 dB"}]
     });
     let mut fake = Fake::new(&tmp.dir("cfg"))
@@ -1345,7 +1345,7 @@ fn autocut_dry_runs_show_the_plan() {
     let dry = run(&mut fake, &project, "qrec -q autocut --dry-run");
     assert_eq!(
         dry.out,
-        "CLIP  SILENCES  REMOVED  KEPT (take frames)\nc001         1      20f  0-20 40-60\nskipped c002: entirely silent at -35 dB\nAutocut preview: 1 silence (0.7 s)\n"
+        "CLIP  TRACKS  SILENCES  REMOVED  KEPT (take frames)\nc001  A1             1      20f  0-20 40-60\nskipped c002: entirely silent at -35 dB\nAutocut preview: 1 silence (0.7 s)\n"
     );
     let real = run(&mut fake, &project, "qrec autocut");
     assert_eq!(

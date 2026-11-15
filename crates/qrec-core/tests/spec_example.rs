@@ -7,7 +7,7 @@ const SPEC_EXAMPLE: &str = include_str!("fixtures/spec_example.json");
 #[test]
 fn spec_example_round_trips() {
     let project: Project = serde_json::from_str(SPEC_EXAMPLE).expect("spec example parses");
-    assert_eq!(project.version, 1);
+    assert_eq!(project.version, 2);
     assert_eq!(project.scene.layers.len(), 2);
     assert_eq!(project.timeline.clips.len(), 2);
     let take = project.take(&TakeId::numbered(1)).expect("take-0001");

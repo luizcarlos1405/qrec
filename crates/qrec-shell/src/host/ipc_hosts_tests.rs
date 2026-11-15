@@ -971,14 +971,14 @@ fn a_host_started_on_a_lock_just_dropped_waits_for_forked_copies() {
 /// A project with one 300-frame take placed as clip `c001`.
 fn one_clip_project() -> qrec_core::Project {
     serde_json::from_value(json!({
-        "version": 1,
+        "version": 2,
         "name": "swamp",
         "createdAt": "2026-10-14T12:00:00Z",
         "canvas": { "width": 1920, "height": 1080, "fps": { "num": 30, "den": 1 }, "background": "#000000" },
         "scene": { "layers": [], "audio": [] },
         "recording": { "countdownSecs": 0, "encoder": "auto", "vaapiDevice": null },
         "autocut": {
-            "autoRunAfterTake": false, "track": null, "thresholdDb": -35.0,
+            "autoRunAfterTake": false, "tracks": [], "thresholdDb": -35.0,
             "minSilenceMs": 400, "paddingMs": 120, "minKeepMs": 200,
         },
         "takes": {

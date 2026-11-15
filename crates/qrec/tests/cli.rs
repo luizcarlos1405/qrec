@@ -17,7 +17,9 @@ use std::time::{Duration, Instant, SystemTime};
 use qrec_core::error::NOT_MY_SWAMP;
 use qrec_core::keymap::{NIRI_SNIPPET, global_snippet};
 use qrec_core::platform::{Desktop, QREC};
-use qrec_shell::testkit::{MediaSpec, TestEnv, ffprobe, fixture_project, run_tool};
+use qrec_shell::testkit::{
+    MediaSpec, TestEnv, ffprobe, fixture, fixture_project, run_tool, write_project,
+};
 use serde_json::{Value, json};
 
 /// What one `qrec` run printed.
@@ -1372,6 +1374,122 @@ fn autocut_dry_run_then_apply() {
     assert_eq!(rows[1]["in"].as_u64(), Some(second_start));
     qrec(&env, &dir, &["undo"]).ok();
     assert_eq!(clip_ids(&env, &dir), ["c001"]);
+}
+
+/// Issue #15: with two tracks a region is cut only when silent on both.
+/// The mic pauses 1.5-2.5 s while system audio plays 1.8-2.2 s: the pause
+/// stays (the overlaps, 300 ms each, are under Min silence), the silences
+/// at both ends go.
+#[test]
+fn autocut_listens_to_several_tracks() {
+    let env = TestEnv::new();
+    let spec =
+        MediaSpec::video(320, 180, 30, 120).with_audio(48_000, 1, &[(500, 1500), (2500, 3500)]);
+    let dir = project_with(&env, "two-tracks", &[spec]);
+    // Add system audio A2 to the project and to take 1, with its file.
+    let system = MediaSpec::audio(48_000, 1, 4000, &[(1800, 2200)]);
+    fs::copy(fixture(&system), dir.join("takes/take-0001/A2-system.mka")).unwrap();
+    let text = fs::read_to_string(dir.join("qrec.json")).unwrap();
+    let mut project: Value = serde_json::from_str(&text).unwrap();
+    let a2 = json!({
+        "id": "A2", "role": "system", "source": "alsa_output.fake.monitor",
+        "label": "Fake system", "gainDb": 0.0, "muted": false, "syncOffsetMs": 0,
+    });
+    project["scene"]["audio"]
+        .as_array_mut()
+        .unwrap()
+        .push(a2.clone());
+    let take = &mut project["takes"]["take-0001"];
+    take["scene"]["audio"].as_array_mut().unwrap().push(a2);
+    take["streams"].as_array_mut().unwrap().push(json!({
+        "id": "A2", "kind": "audio", "file": "takes/take-0001/A2-system.mka",
+        "sampleRate": 48_000, "channels": 1, "startOffsetNs": 0, "durationNs": 4_000_000_000i64,
+    }));
+    write_project(&dir, &project);
+
+    let mic = qrec(&env, &dir, &["autocut", "--dry-run", "--json"]);
+    mic.ok();
+    let plan = &mic.reply()["data"]["result"];
+    assert_eq!(plan["clips"][0]["silences"], 3, "{plan}");
+    assert_eq!(plan["clips"][0]["tracks"], json!(["A1"]), "{plan}");
+
+    let both = qrec(
+        &env,
+        &dir,
+        &[
+            "autocut",
+            "--track",
+            "A1",
+            "--track",
+            "A2",
+            "--dry-run",
+            "--json",
+        ],
+    );
+    both.ok();
+    let plan = &both.reply()["data"]["result"];
+    assert_eq!(plan["clips"][0]["tracks"], json!(["A1", "A2"]), "{plan}");
+    assert_eq!(plan["clips"][0]["silences"], 2, "the pause stays: {plan}");
+
+    // As a setting: saved as the list, and a plain run uses it.
+    qrec(&env, &dir, &["autocut", "settings", "--track", "A1,A2"]).ok();
+    let saved: Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("qrec.json")).unwrap()).unwrap();
+    assert_eq!(saved["autocut"]["tracks"], json!(["A1", "A2"]));
+    let apply = qrec(&env, &dir, &["autocut", "--json"]);
+    apply.ok();
+    let message = apply.reply()["data"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(message.contains("removed 2 silences"), "{message}");
+    qrec(&env, &dir, &["autocut", "settings", "--track", "auto"]).ok();
+    let saved: Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("qrec.json")).unwrap()).unwrap();
+    assert_eq!(saved["autocut"]["tracks"], json!([]));
+}
+
+/// A schema v1 project (`autocut.track`) opens: read-only commands leave
+/// the file alone, and the first change writes it as v2 (`autocut.tracks`)
+/// after backing up the original (SPEC §6.3).
+#[test]
+fn a_v1_project_is_migrated_on_its_first_change() {
+    let env = TestEnv::new();
+    let dir = project_with(&env, "v1", &[video(30)]);
+    let text = fs::read_to_string(dir.join("qrec.json")).unwrap();
+    let mut project: Value = serde_json::from_str(&text).unwrap();
+    project["version"] = json!(1);
+    let autocut = project["autocut"].as_object_mut().unwrap();
+    autocut.remove("tracks");
+    autocut.insert("track".into(), json!("A1"));
+    write_project(&dir, &project);
+    let v1 = fs::read(dir.join("qrec.json")).unwrap();
+
+    qrec(&env, &dir, &["status"]).ok();
+    assert_eq!(
+        fs::read(dir.join("qrec.json")).unwrap(),
+        v1,
+        "status writes nothing"
+    );
+
+    qrec(&env, &dir, &["autocut", "settings", "--padding-ms", "100"]).ok();
+    let saved: Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("qrec.json")).unwrap()).unwrap();
+    assert_eq!(saved["version"], 2);
+    assert_eq!(saved["autocut"]["tracks"], json!(["A1"]));
+    assert!(saved["autocut"].get("track").is_none());
+    assert_eq!(saved["autocut"]["paddingMs"], 100);
+    assert_eq!(
+        fs::read(dir.join(".qrec/qrec.v1.json.bak")).unwrap(),
+        v1,
+        "the original is kept"
+    );
+    // The settings change undoes on the migrated project.
+    qrec(&env, &dir, &["undo"]).ok();
+    let undone: Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("qrec.json")).unwrap()).unwrap();
+    assert_eq!(undone["autocut"]["paddingMs"], 120);
+    assert_eq!(undone["autocut"]["tracks"], json!(["A1"]));
 }
 
 /// Issue #15: edges only trims the silence before the first sound and
