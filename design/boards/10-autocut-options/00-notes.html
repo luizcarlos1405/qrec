@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Autocut options · notes</title>
+  <meta name="description" content="Issue #15: trim edges only, keep a previewed cut, detect silence on several tracks. The boards, the decisions taken, and what's left to choose.">
+  <meta name="htmlboard" content="width=880">
+  <link rel="stylesheet" href="../styles.css">
+  <style>
+    body { padding: 40px 48px 48px; }
+    h1 { font-family: var(--display); font-weight: 600; font-size: 32px; line-height: 38px; }
+    h2 { font-family: var(--ui); font-weight: 700; font-size: 12px; line-height: 16px; margin: 32px 0 8px; color: var(--qrec-accent-text); text-transform: uppercase; letter-spacing: 0.06em; }
+    p, li { max-width: 72ch; }
+    ol, ul { padding-left: 20px; display: grid; gap: 8px; }
+    li::marker { color: var(--qrec-muted); }
+    code { font-family: var(--mono); font-size: 12px; background: var(--qrec-field); padding: 1px 5px; border-radius: var(--qrec-radius-sm); }
+    b { font-weight: 600; }
+    .lede { margin-top: 8px; color: var(--qrec-muted); }
+    .q { padding: 12px 16px; border: 1px solid var(--qrec-border); border-radius: var(--qrec-radius-md); background: var(--qrec-surface); }
+    .q + .q { margin-top: 8px; }
+    .q .rec { display: block; margin-top: 4px; color: var(--qrec-muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>Autocut options</h1>
+  <p class="lede">Issue #15: three options for autocut (SPEC §9) on the autocut page (S12) and Settings › Autocut. Not approved yet. The boards are S12 with only what changes; everything else on the page is as built.</p>
+
+  <h2>What's on the board</h2>
+  <ol>
+    <li><b>S12 · Keep a previewed cut</b>: every region row gets a check box (checked = cut). Silence 2 was clicked on the timeline (or unchecked in the list): it draws as kept, the summary says <i>Removes 3 silences (4.8 s) · 1 kept</i>, and the Take and Timeline lines count it back. The pointer is on silence 3, with its tooltip.</li>
+    <li><b>S12 · Trim edges only</b>: the new check box under the sliders, on. Only the silence before the first sound and after the last is hatched (2.2 s and 0.9 s); the four pauses inside stay. The summary says <i>Trims 2 edges (3.1 s)</i>.</li>
+    <li><b>S12 · Two tracks · dropdown</b>: <i>Detect silence on</i> stays a dropdown; its menu has a check box per track in the scope. The value reads <i>A1 · Yeti Nano + A2 · System audio</i>. Silence 3 is no longer cut, because System audio plays a sound there. Both lanes are hatched, the tag shows once, and A2's header gets the scissors.</li>
+    <li><b>S12 · Two tracks · inline</b>: the same, but the tracks are listed as check boxes on the page. It's one click less, but it takes a row per track.</li>
+    <li><b>Span states</b> at 48 px/s: cut, cut with the pointer on it, kept, kept with the pointer on it. Also the region rows: selected, kept, and a box with keyboard focus.</li>
+    <li><b>Settings › Autocut</b>: a <i>Trim edges only</i> switch for new projects. Other settings in the dialog are saved at once, so this one is a switch here and a check box (a draft until Apply) on S12.</li>
+  </ol>
+
+  <h2>Decided (2026-11-15)</h2>
+  <ul>
+    <li><b>Exceptions survive a slider change.</b> The core first plans without them, marks every span that overlaps a <code>keep</code> range as kept (the whole span), then plans again with those spans as sound. A kept range that no longer overlaps any span is dropped. The GUI sends ranges that are exactly a span; the CLI's <code>--keep &lt;clip&gt;:&lt;in&gt;-&lt;out&gt;</code> takes any range.</li>
+    <li><b>One threshold for all chosen tracks.</b> A threshold per track waits for issue #1 (detecting the threshold).</li>
+    <li><b>Intersected silences are checked against Min silence again</b>, so a 100 ms overlap of two long silences isn't cut.</li>
+    <li>Exceptions are part of the page's draft: Cancel or <code>Esc</code> drops them, and "Run autocut after every take" never uses them. Edges only and the tracks do apply after every take.</li>
+  </ul>
+
+  <h2>For you to pick</h2>
+  <div class="q"><b>1. Track picker: dropdown (board 3) or inline (board 4)?</b>
+    <span class="rec">I'd pick the dropdown. The page is already tall, most takes have two or three tracks, and the value line shows what's chosen. The last checked track can't be unchecked (its box is disabled).</span></div>
+  <div class="q"><b>2. Tracks in Settings › Autocut?</b> The issue says Settings should get the tracks too. Track ids (A1, A2…) belong to a project's scene, and Settings holds the defaults for new projects, which have no tracks yet.
+    <span class="rec">I'd leave tracks out of Settings: a new project listens to its first mic, as it does now, and you choose tracks per project on S12. The alternative is a choice by role (<i>Mics</i> / <i>Mics and system audio</i>), which adds a setting <code>qrec.json</code> doesn't have.</span></div>
+  <div class="q"><b>3. A key for the span at the playhead?</b> The boards make it keyboard-reachable through the region list's boxes (Tab, then Space).
+    <span class="rec">I'd stop there and not add a key. If you want one, <code>K</code> (keep / cut the region under the playhead) is free on the page.</span></div>
+  <div class="q"><b>4. Wording.</b> <i>Trim edges only</i> · “Keeps the pauses inside each clip.” · <i>Trims 2 edges (3.1 s)</i> · <i>· 1 kept</i> · the tooltips <i>Click to keep this silence</i> / <i>Click to cut this silence</i> · the history label <i>Autocut take 3: trimmed 2 edges (3.1 s)</i>.
+    <span class="rec">Change any of these freely.</span></div>
+</body>
+</html>

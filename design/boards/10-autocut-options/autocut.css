@@ -1,0 +1,85 @@
+/* Issue #15 boards: the controls and span states the autocut options add to S12 and
+   Settings › Autocut. Spliced into ported pen markup, so only theme tokens. */
+
+/* Checkbox (a draft value: Apply saves it, unlike the switches) */
+.ao-cb { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px;
+  border: 1px solid var(--qrec-border-strong); border-radius: var(--qrec-radius-sm); background: var(--qrec-field); }
+.ao-cb.on { background: var(--qrec-accent); border-color: var(--qrec-accent); }
+.ao-cb.on::after { content: ""; width: 12px; height: 12px; background: var(--qrec-text-on-accent);
+  -webkit-mask: var(--i) center / contain no-repeat; mask: var(--i) center / contain no-repeat; }
+.ao-cb.dis { opacity: 0.45; }
+.ao-cb.focus { box-shadow: 0 0 0 2px var(--qrec-bg), 0 0 0 4px var(--qrec-focus-ring); }
+
+.ao-group { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.ao-label { font-size: 12px; line-height: 16px; color: var(--qrec-muted); }
+.ao-select { width: 100%; padding: 0 8px; }
+.ao-select .v { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ao-select .plus { color: var(--qrec-muted); }
+.ao-select.open { border-color: var(--qrec-accent); box-shadow: 0 0 0 1px var(--qrec-accent); }
+
+/* A track as the picker lists it */
+.ao-track { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border-radius: var(--qrec-radius-md); }
+.ao-track.hover { background: var(--qrec-hover); }
+.ao-track .name { font-weight: 600; font-size: 13px; }
+.ao-chip { display: inline-flex; align-items: center; height: 16px; padding: 0 4px; border: 1px solid var(--qrec-border);
+  border-radius: var(--qrec-radius-sm); font-family: var(--mono); font-weight: 500; font-size: 11px; line-height: 14px; color: var(--qrec-muted); }
+.ao-tracklist { display: flex; flex-direction: column; gap: 0; margin: 0 -8px; }
+
+.ao-check-row { display: flex; align-items: flex-start; gap: 10px; width: 100%; }
+.ao-check-row .ao-cb { margin-top: 2px; }
+.ao-check-row .t { display: flex; flex-direction: column; gap: 2px; }
+
+/* Summary and region list */
+.ao-summary { display: flex; flex-direction: column; gap: 4px; }
+.ao-summary .title .n { font-family: var(--mono); }
+.ao-summary .title .kept { color: var(--qrec-muted); font-weight: 400; }
+.ao-regions { display: flex; flex-direction: column; width: 100%; }
+.ao-region { display: flex; align-items: center; gap: 12px; height: 32px; padding: 0 12px; border-radius: var(--qrec-radius-md);
+  border: 1px solid transparent; font-family: var(--mono); font-weight: 500; font-size: 12px; line-height: 16px; }
+.ao-region .idx, .ao-region .meta { color: var(--qrec-muted); white-space: nowrap; }
+.ao-region .when { flex: 1; white-space: nowrap; }
+.ao-region.sel { background: var(--qrec-selected); border-color: var(--qrec-accent); }
+.ao-region.sel .idx, .ao-region.sel .meta { color: var(--qrec-text); }
+.ao-region.kept .when, .ao-region.kept .idx { color: var(--qrec-muted); }
+.ao-region.kept .meta { color: var(--qrec-muted); font-family: var(--ui); font-style: italic; }
+.ao-region.hover { background: var(--qrec-hover); }
+
+/* Timeline overlays, in a lane's coordinates (the clip starts at 0) */
+.ao-quiet { position: absolute; top: 0; height: 56px; z-index: 1;
+  background: linear-gradient(var(--qrec-selected), var(--qrec-selected)), linear-gradient(var(--qrec-take-fairy-tint), var(--qrec-take-fairy-tint)), var(--qrec-bg); }
+.ao-quiet::after { content: ""; position: absolute; left: 0; right: 0; top: 27.5px; height: 1px; background: var(--qrec-muted); opacity: 0.7; }
+.ao-pad { position: absolute; top: 0; height: 56px; background: var(--qrec-padding-fill); z-index: 5; }
+.ao-dim { position: absolute; background: var(--qrec-bg-55); z-index: 4; }
+.ao-hatch { position: absolute; top: 0; height: 56px; z-index: 6;
+  border-left: 1px solid var(--qrec-warning); border-right: 1px solid var(--qrec-warning);
+  background: repeating-linear-gradient(-45deg, var(--qrec-warning) 0 1.4px, transparent 1.4px 6px); }
+.ao-hatch.hover { outline: 2px solid var(--qrec-warning); outline-offset: 0;
+  background: var(--qrec-warning-20) repeating-linear-gradient(-45deg, var(--qrec-warning) 0 1.6px, transparent 1.6px 5px); }
+.ao-hatch.kept { background: none; border: 1px dashed var(--qrec-muted); }
+.ao-hatch.kept.hover { outline: none; border: 1px dashed var(--qrec-text); background: var(--qrec-hover); }
+.ao-tag { position: absolute; left: 0; top: -22px; display: inline-flex; align-items: center; height: 18px; padding: 0 5px;
+  border-radius: var(--qrec-radius-sm); background: var(--qrec-video-scrim); color: var(--qrec-warning-text);
+  font-family: var(--mono); font-weight: 500; font-size: 11px; line-height: 14px; white-space: nowrap; }
+.ao-tag.end { left: auto; right: 0; }
+.ao-hatch.kept .ao-tag { color: var(--qrec-video-text); opacity: 0.6; }
+.ao-hatch.hover .ao-tag { background: var(--qrec-warning); color: var(--qrec-text-on-accent); }
+.ao-hatch.kept.hover .ao-tag { background: var(--qrec-video-scrim); color: var(--qrec-video-text); opacity: 1; }
+
+/* Tooltip (C-series: raised, e2) */
+.ao-tip { position: absolute; z-index: 9; padding: 6px 10px; background: var(--qrec-raised); border: 1px solid var(--qrec-border);
+  border-radius: var(--qrec-radius-md); box-shadow: var(--e2); white-space: nowrap; font-size: 13px; line-height: 18px; }
+.ao-tip .caption { color: var(--qrec-muted); }
+
+/* Settings rows (S21's pattern) */
+.ao-srows { display: flex; flex-direction: column; width: 100%; border-top: 1px solid var(--qrec-border); }
+.ao-srow { display: flex; align-items: center; gap: 24px; min-height: 60px; padding: 10px 0; border-bottom: 1px solid var(--qrec-border); }
+.ao-srow .t { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.ao-switch { flex: none; position: relative; width: 40px; height: 22px; border-radius: 999px; background: var(--qrec-raised);
+  border: 1px solid var(--qrec-border-strong); }
+.ao-switch::after { content: ""; position: absolute; left: 2px; top: 1px; width: 18px; height: 18px; border-radius: 50%; background: var(--qrec-muted); }
+.ao-switch.on { background: var(--qrec-accent); border-color: var(--qrec-accent); }
+.ao-switch.on::after { left: 19px; background: var(--qrec-text-on-accent); }
+.ao-num { width: 104px; justify-content: flex-end; font-family: var(--mono); font-weight: 500; font-size: 13px; }
+.ao-num .u { color: var(--qrec-muted); }
+.ao-new { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; margin-left: 8px; border-radius: var(--qrec-radius-pill);
+  background: var(--qrec-accent-2-20); color: var(--qrec-accent-2); font-size: 11px; font-weight: 700; vertical-align: 1px; }
