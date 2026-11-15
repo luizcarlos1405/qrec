@@ -159,7 +159,7 @@ Tests live with their owner: unit tests in the module, properties in
 
 ---
 
-## A§2 Project model (`qrec.json`, schema v1)
+## A§2 Project model (`qrec.json`, schema v2)
 
 The model is implemented in `crates/qrec-core/src/model.rs` and round-trips
 the SPEC §6.3 example byte for byte (`tests/spec_example.rs`). Serde rules,
@@ -186,8 +186,21 @@ Additions to the SPEC §6.3 shape (all optional, omitted when default):
 They stay in schema v1: each came before the first release, without a
 `version` bump. `Take.recovered` came last (for the GUI's bin): a dev
 build from before it rejects a file that has it (`deny_unknown_fields`),
-which is accepted before the first release. The first schema change after
-the first release bumps `version` with a migration (SPEC §6.3, A§13).
+which is accepted before the first release.
+
+**Schema v2** (issue #15, the first change after the first release):
+`autocut.track` (one id, `null` = the first mic) became `autocut.tracks`
+(a list, empty = the first mic). `migrate::STEPS` has the step
+(`"A1"` → `["A1"]`, `null` → `[]`). The history keeps the schema it was
+written in: `history.base.json`'s project goes through the same steps
+(`migrate::upgrade_base`) and each line's patches are rewritten when read
+(`migrate::upgrade_patch`: the `/autocut/track` path, and the `autocut`
+object inside `/autocut` and whole-document values), so undo and redo
+work across the migration. A file is rewritten as v2 (after the
+`.qrec/qrec.v1.json.bak` backup) on its first change, never by a
+read-only command. The `afterHash` of lines written before the migration
+was taken over the v1 shape: only the crash-recovery paths compare it
+(A§7.6), which then fall back to assuming the last entry.
 
 `Stream` is one flat struct (`id, kind, file, width?, height?, sampleRate?,
 channels?, startOffsetNs, durationNs?, frames?, fps?`); media fields are
@@ -199,7 +212,7 @@ absent while the take is recording.
 | --- | --- |
 | canvas | 1920×1080 @ 30/1, `#000000`; overridden by config `[canvas]` |
 | recording | countdown from config (`recording.countdown_secs`, default 0), `encoder: "auto"`, `vaapiDevice: null` (init never copies a device into a project) |
-| autocut | from config `[autocut]`: autoRun false, track null, −35 dB, 400/120/200 ms |
+| autocut | from config `[autocut]`: autoRun false, tracks `[]`, −35 dB, 400/120/200 ms |
 | new screen layer | name `Screen <output>`, label from `Facts.screens`, rect = full canvas, fit `contain` |
 | new camera layer | name `Camera`, label from `Facts.cameras`, 20 % of canvas width at 4:3, bottom-right with a 2 % margin, fit `cover` |
 | new audio track | source from `Facts.default_mic` / `default_monitor` unless given; label = device description, else `Mic` / `System audio`; gain 0, not muted, offset 0 |
@@ -260,7 +273,8 @@ Errors make a project invalid:
   project, however it was edited.
 
 Warnings: a take-scene layer/track without a stream ("missing media");
-`autocut.track` not in the project scene ("takes lacking it are skipped").
+an `autocut.tracks` id not in the project scene ("takes lacking it use the
+other tracks, or are skipped"). An id listed twice is an error.
 
 ---
 
@@ -355,7 +369,9 @@ pub enum JobKind {
     FrameSave { out: String, files: BTreeSet<String> },
     Purge { takes: Vec<TakeId> },
 }
-pub struct AutocutTarget { pub clip: ClipRef, pub track: TrackId, pub key: SilenceKey }
+pub struct AutocutTarget { pub clip: ClipRef, pub tracks: Vec<AutocutSource> /* ≥ 1 */,
+                           pub warning: Option<String> /* named tracks the take couldn't use */ }
+pub struct AutocutSource { pub track: TrackId, pub key: SilenceKey }  // one analysis per track
 pub struct AutocutParams { pub threshold_db: f64, pub min_silence_ms: u32, pub padding_ms: u32, pub min_keep_ms: u32,
                            pub edges_only: bool /* serde default */ }
 pub struct SilenceKey(pub String);       // sha256_hex("{file}\n{size}\n{mtime_ns}\n{threshold_db:.2}\n{min_silence_ms}")
@@ -542,7 +558,7 @@ need confirmation, `G` = GUI host only, `R` = allowed while recording (A§5.3).
 | `SceneDelete` | `name` | `!` | `qrec scene rm <name> --yes` |
 | `SceneApplySaved` | `name`, `take` | U | `qrec scene apply --scene <name> --take T` |
 | `ScenesReload` | – | G, R | — (the settings watcher saw `scenes.json` change) |
-| `AutocutSettings` | `patch: AutocutPatch` | U | `qrec autocut settings [--auto-run] [--track] [--threshold-db] …` |
+| `AutocutSettings` | `patch: AutocutPatch` | U | `qrec autocut settings [--auto-run] [--track A1\|auto]… [--threshold-db] …` |
 | `RecordStart` | `mode: RecordModeArg`, `countdown: Option<u32>`, `wait` | A | `qrec record start [--over <clip>… \| --over-selection] [--countdown N] [--wait]` |
 | `RecordStop` / `RecordCancel` | – | A, R | `qrec record stop` / `cancel` |
 | `RecordToggle` | `wait` | A, R | `qrec record toggle [--wait]` |
@@ -553,7 +569,7 @@ need confirmation, `G` = GUI host only, `R` = allowed while recording (A§5.3).
 | `ClipTrim` | `clip`, `start: Option<TimeArg>`, `end: Option<TimeArg>`, `timeline` | U | `qrec clip trim <clip> [--start T] [--end T] [--timeline]` |
 | `ClipSplit` | `clip: Option<ClipId>`, `at: TimeArg`, `timeline` | U | `qrec clip split <clip> --at T` / `--timeline --at T` |
 | `ClipRemove` | `clips` | U | `qrec clip remove <clip>…` |
-| `Autocut` | `scope: ClipScope`, `overrides: AutocutOverrides`, `dryRun` | U, A | `qrec autocut [--clips …\|--all] [--track] [--threshold-db] [--min-silence-ms] [--padding-ms] [--min-keep-ms] [--edges-only[=BOOL]] [--dry-run]` |
+| `Autocut` | `scope: ClipScope`, `overrides: AutocutOverrides`, `dryRun` | U, A | `qrec autocut [--clips …\|--all] [--track A1]… [--threshold-db] [--min-silence-ms] [--padding-ms] [--min-keep-ms] [--edges-only[=BOOL]] [--dry-run]` |
 | `Undo` / `Redo` | `steps: u32` | | `qrec undo [N]` / `qrec redo [N]` |
 | `HistoryRestore` | `seq` | `!` | `qrec history restore <seq> --yes` |
 | `HistoryClear` | – | `!` | `qrec history clear --yes` |
@@ -574,10 +590,11 @@ pub enum VideoSourceArg { Screen { output: String }, Camera { device: String } }
 pub struct CanvasSpec { pub width: u32, pub height: u32, pub fps: Fps } // "1920x1080@30", "@29.97", "@30000/1001"
 pub struct LayerPatch { name, visible, opacity, rect, crop, fit, locked: Option<…> }
 pub struct AudioPatch { label, source, gain_db, muted, sync_offset_ms: Option<…> }
-pub struct AutocutPatch { auto_run_after_take: Option<bool>, track: Nullable<TrackId>,
+pub struct AutocutPatch { auto_run_after_take: Option<bool>,
+                          tracks: Option<Vec<TrackId>> /* Some([]) = each take's first mic */,
                           threshold_db, min_silence_ms, padding_ms, min_keep_ms, edges_only: Option<…> }
-pub struct AutocutOverrides { track: Option<TrackId>, threshold_db, min_silence_ms, padding_ms, min_keep_ms,
-                              edges_only: Option<…> }
+pub struct AutocutOverrides { tracks: Vec<TrackId> /* empty = the settings' */, threshold_db,
+                              min_silence_ms, padding_ms, min_keep_ms, edges_only: Option<…> }
 pub enum RecordModeArg { Append, Over(Vec<ClipId>), OverSelection }
 pub enum InsertAt { End, Index(usize), After(ClipId), AfterSelection }
 pub enum MoveTo { Index(usize), By(i64), Before(ClipId), After(ClipId) }
@@ -607,8 +624,9 @@ opacity, visible, fit`, z-order of matched layers; `gainDb, muted,
 syncOffsetMs` of tracks); it never copies `missing` or sources, adds to a
 take only the layers and tracks it has a stream for (their `missing` says
 whether that stream has media), and `AllTakes` skips takes still
-recording. `AudioRemove` of the project-scene track named by
-`autocut.track` also sets it to null in the same entry. `LayerOrder` past
+recording. `AudioRemove` of a project-scene track named in
+`autocut.tracks` also takes it out of the list in the same entry (empty
+= each take's first mic). `LayerOrder` past
 the top means the top.
 
 Seek rules (GUI G§3.10 step 3): every `Seek` that lands bumps
@@ -1018,9 +1036,15 @@ take was purged.
 
 ### A§5.7 Autocut
 
-Plan (pure, `autocut.rs`), per clip and track:
-1. Silences arrive in **file time**; shift to take time
-   `t = x + startOffsetNs + syncOffsetMs·10⁶`.
+Plan (pure, `autocut.rs`), per clip, over the tracks it listens to:
+1. Silences arrive in **file time**, one analysis per track (its own
+   file, `SilenceKey` and cache entry); shift each track's to take time
+   `t = x + startOffsetNs + syncOffsetMs·10⁶` with its own offsets. With
+   several tracks, intersect them (a region is silence only when every
+   track is silent there: sound on any keeps it), then drop the
+   intersections shorter than `minSilenceMs` (each track's silences are
+   that long, their overlap may not be; `autocut::combined_silences`). One
+   track's silences are used as they are. One threshold for all tracks.
 2. Merge overlapping or touching silences (shrinking them one by one would
    leave fake speech where they meet), then shrink each by `paddingMs` on
    both sides; drop empty ones.
@@ -1042,8 +1066,14 @@ Plan (pure, `autocut.rs`), per clip and track:
    "Autocut take 3: trimmed 2 edges (3.1 s)", "Nothing to trim: no silence
    long enough at the clips' edges at −35 dB".
 
-Track: override → `autocut.track` → first `mic` of the take scene → first
-track; a take without it is skipped (warning in the result).
+Tracks: the override's (`--track`, repeated) when it names any → else
+`autocut.tracks` → else the take scene's first `mic` → first track
+(`autocut::choose_tracks`). A take that has only some of the named tracks
+uses those, with a warning (`AutocutClipView.warning`, "take 3 has no track
+A2: silence detected on A1 only", also in the reply's message); one that
+has none of them is skipped. `AutocutClipView.tracks` names the tracks
+each clip was planned on: the preview hatches each one's lane (the tag on
+the first only).
 
 Flow: `Autocut` snapshots params and targets (`AutocutTarget` with a
 `ClipRef`), emits `DetectSilence` for keys not in `runtime.silence`
@@ -3373,7 +3403,8 @@ the last project, with `projects.open_last` on and only if it still holds
 ```rust
 pub struct SavedScenes { pub version: u32, pub scenes: Vec<SavedScene> }  // scenes.json, camelCase; saved order
 pub struct SavedScene { pub name: String, pub saved_at: DateTime<Utc>, pub scene: Scene,
-                        pub autocut_track: Option<TrackId> }             // the scene's own ids
+                        pub autocut_track: Option<TrackId>,             // one autocut track (as before issue #15)
+                        pub autocut_tracks: Vec<TrackId> }              // several; the scene's own ids
 pub enum ScenesFile { Read(SavedScenes), Unreadable(String) }           // Facts::saved_scenes, Runtime::saved_scenes
 pub struct SceneStatus { pub name: Option<String>, pub edited: bool }   // view::scenes::status
 ```
@@ -3391,10 +3422,11 @@ there. `Runtime::saved_scenes` is the copy the views read.
   unique without case. `SceneSave` with a name that exists needs
   confirmation and replaces that entry in place (its position stays).
 - **What is saved:** the project scene with `missing` cleared, and the
-  autocut track (`autocut.track`) when it names a track of the scene.
+  autocut tracks (`autocut.tracks`) that are tracks of the scene: one as
+  `autocutTrack` (what older builds read), several as `autocutTracks`.
 - **Same layout** (`scenes::same_layout`): the layers in order, equal but
   for ids (source compared by kind and output/device, not label), the tracks
-  in order, equal but for ids, and the autocut track by position. Labels of
+  in order, equal but for ids, and the autocut tracks by position. Labels of
   sources don't count either (a camera's label comes from the machine).
 - **Status:** the first saved scene with the same layout as the project
   scene, preferring `ui.scene` when it matches, is in use, not edited. Else
@@ -3404,8 +3436,8 @@ there. `Runtime::saved_scenes` is the copy the views read.
 - **Use** (`SceneUse`, one history entry "Use scene X"): the saved layers
   and tracks replace the project scene's. One whose source the project
   scene has keeps that id; the others get new ids (`ctx::next_layer_id`,
-  `next_track_id`). `autocut.track` becomes the saved autocut track's new
-  id (null when the scene has none). `ui.scene` = the name, and
+  `next_track_id`). `autocut.tracks` becomes the saved autocut tracks' new
+  ids (empty when the scene has none). `ui.scene` = the name, and
   `ui.selected_layer` is cleared. Not while a take is recording or
   finalizing (`Busy`). `name: None` reverts to `ui.scene`.
 - **Apply saved** (`SceneApplySaved`): the take's layers matched by source

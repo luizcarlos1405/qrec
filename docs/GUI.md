@@ -196,7 +196,7 @@ requirement review's numbering; H-n are host and engine calls.
 | D-12 | Window close and `app.quit`. Countdown: `RecordCancel`. Starting or Recording: `RecordStop`; the window stays (finalizing) and closes once Idle. Export running: modal "Quit while exporting?" with Keep exporting (focused) and Cancel export and quit. Autocut analysis: dropped (the closing host doesn't wait for it and dropping its Session cancels it: nothing is cut, also for the "autocut after every take" analysis of the take just stopped). Recovery probe: wait (≤ 60 s; then the host stops waiting and the next open recovers the take). | WP0b, WP6 |
 | D-13 | A second GUI on a project a GUI holds gets the page "This project is open in another Qrec window" (pid) and Quit (exit 6). GUI hosts refuse the wire `shutdown` with `busy` "the Qrec window holds this project; close it there". | WP0a, WP0b |
 | D-14 | The GUI never adopts another folder's project: no live-host fallback and no ancestor project. A folder inside a project gets X2 with the extra line "It's inside the project <dir>; run qrec there." With no `--project` such a folder gets the project picker instead (G§4.12); X2 stays for `--project`. | WP0b |
-| D-15 | Autocut page (S12). The sliders are a draft: tuning writes no history. At most one dry run is in flight: a change made while one runs is kept and sent when its reply arrives (newest wins, 250 ms debounce). While a dry run runs, the summary title shows a 16 px spinner and "Analyzing…"; clip plates show the analyzing spinner only for `Autocut` jobs with `dry_run: false`. Apply = `AutocutSettings{patch}` with the changed fields (only if any changed), then `Autocut{scope, dry_run: false}`: two entries, the cut undoes first. Cancel and `Esc` dispatch nothing. "Run autocut after every take" dispatches `AutocutSettings{auto_run_after_take}` at once. "Detect silence on" is part of the draft (`track`). | WP5 |
+| D-15 | Autocut page (S12). The sliders are a draft: tuning writes no history. At most one dry run is in flight: a change made while one runs is kept and sent when its reply arrives (newest wins, 250 ms debounce). While a dry run runs, the summary title shows a 16 px spinner and "Analyzing…"; clip plates show the analyzing spinner only for `Autocut` jobs with `dry_run: false`. Apply = `AutocutSettings{patch}` with the changed fields (only if any changed), then `Autocut{scope, dry_run: false}`: two entries, the cut undoes first. Cancel and `Esc` dispatch nothing. "Run autocut after every take" dispatches `AutocutSettings{auto_run_after_take}` at once. "Detect silence on" is part of the draft (`tracks`: issue #15, its menu checks several). | WP5 |
 | D-16 | First run "Add N sources": N commands in one FIFO, screens first, then cameras, then the mic, then system audio (so the camera lands on top); N history entries. Checked by default: the first screen, the first camera, the default mic, the default monitor. | WP4 |
 | D-17 | **PO** Bin Preview plays the whole take (`plan_ges_take`) in the Program picture with the badge `TAKE 4` (C06 pill, film icon). In Live mode it first dispatches `SetCanvasMode{Program}`, and stays in Program afterwards. `Space` toggles it while `LocalUi.focus == Bin`; `Esc`, closing the bin or any timeline action ends it. GUI-local, no command. | WP4, WP7 |
 | D-18 | Bin secondary lines need one new fact, `Take.recovered` (set by startup recovery, G§4.8); the rest is derived. tooShort → "7 frames; takes need 10."; broken → mapped from `Take.error` (the EOS timeout reason → "Files didn't close within 10 s."); recovered → chip Recovered and "Recovered after Qrec closed mid-take."; status ok and never placed → "Cancelled with Esc."; another take's `replaced` holds its clip → "Replaced by take 5."; a history entry "Discard take N" at or before the cursor → "Discarded with D."; otherwise "Removed from the timeline." | WP0a, WP7 |
@@ -2782,7 +2782,7 @@ As built (WP6, round 3):
   enabled (`autocut::page_enabled`: owner's call, 2026-11-14).
 - **Headers** (C17): Video, "Thumbnails: Face (L2)" (the project scene's
   topmost visible layer); lanes: role icon, label, id chip, scissors on
-  `autocut.track` (unset: each lane a clip is analyzed on, G§4.7's
+  `autocut.tracks` (empty: each lane a clip is analyzed on, G§4.7's
   autocut page), `M` (D-08), `S` (`SetUi{solo}` toggle; tooltip "Solo
   A1 while playing (export unaffected)"). The header column and the named
   rows (`video-row`, `lane-A1`, …) stack at the canvas rows' whole px at
@@ -3004,10 +3004,10 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
   that the core refuses shows the name again (`panel::layer_rename_outcome`,
   `track_rename_outcome`); edits stopping (D-43: a recording) end one
   unsaved, as they drop a field's edit (review R46).
-- **Audio rows**: role icon, label, id chip, the "Autocut" tag on
-  `autocut.track`, `M` → `AudioSet{muted}`; overflow: Rename (`label`),
+- **Audio rows**: role icon, label, id chip, the "Autocut" tag on each of
+  `autocut.tracks`, `M` → `AudioSet{muted}`; overflow: Rename (`label`),
   Change source (submenu of devices, project scene only), Use for autocut
-  (`AutocutSettings{track}`), Remove (`AudioRemove`). Gain "0.0 dB"
+  (`AutocutSettings{tracks: [it]}`: that track alone), Remove (`AudioRemove`). Gain "0.0 dB"
   (−60…60, step 0.5, `AudioSet{gain_db}`); Sync "+0 ms" (−5000…5000,
   step 10, `AudioSet{sync_offset_ms}`). Device missing (Live: no `Live`
   status for its device): "Device not found. Plug it in, or pick another
@@ -3067,6 +3067,20 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     Settings › Autocut's rows show the same (`RowText.tooltip`). "Detect silence on": the project scene's tracks,
     "A1 · Yeti Nano (mic)", then a track the scope's clips are analyzed on
     that the project scene no longer has (a take recorded with it).
+    Issue #15 (`design/boards/10-autocut-options/03`): it is a menu button
+    drawn as the C29 dropdown; its menu ("Detect silence on" above, "Cuts
+    only where every checked track is silent. Sound on any of them is
+    kept." below) has a check box per track (role icon, name, id chip),
+    the last checked one disabled, and stays open while you check (`Esc`
+    closes the menu, not the page). The value names one track as its item
+    ("A1 · Yeti Nano (mic)"), several as "A1 · Yeti Nano + A2 · System
+    audio" (`autocut::shown_label`). Checking goes through
+    `autocut::toggled_tracks` (the menu's order; a list equal to what
+    naming none analyzes goes back to naming none). The draft's `tracks`
+    are the dry run's override; the hatches sit on each track the plan
+    names (`AutocutClipView.tracks`), the tag on the first. Settings ›
+    Autocut has no track choice: track ids belong to a project (decided
+    2026-11-15).
     "Trim edges only" (issue #15, `design/boards/10-autocut-options/02`):
     a C20 check box under the sliders with its caption "Keeps the pauses
     inside each clip.", the draft's `edges_only` (its toggle re-runs the
@@ -3106,12 +3120,12 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
   (S25 #6's copy from the reply, with Undo); a dry run's or Apply's error
   reads in the summary ("Nothing to cut" and the core's reason); the
   summary adds a "Skipped" row when the plan skipped clips; while
-  `autocut.track` is null the dropdown, the "Autocut" tag and the hatches
+  `autocut.tracks` is empty the dropdown, the "Autocut" tag and the hatches
   name the track the dry run analyzes (`autocut::default_track`: the
   scene's first mic, else its first track; review R77). Each take is
   analyzed on its own scene's (`autocut::analyzed_tracks`), so a take
   recorded with a track the project scene no longer has is analyzed on
-  it: the dropdown shows the track its scope's first clip is analyzed on,
+  it: the dropdown checks every track its scope's clips are analyzed on,
   each clip's hatch sits on its own, and the scissors on every lane a
   clip is analyzed on; the tag names the scene the panel shows (in
   Program the selected clip's take, in Live the project scene: what the

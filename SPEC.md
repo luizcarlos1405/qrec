@@ -459,8 +459,8 @@ other on the same computer.
 
 - **What a saved scene holds:** the layers (source, name, rect, crop,
   opacity, fit, z-order, visibility, lock) and the audio tracks (role,
-  source, label, gain, mute, sync offset), plus which track is the autocut
-  track. Not the canvas size or fps: those belong to the project.
+  source, label, gain, mute, sync offset), plus which tracks autocut
+  listens to. Not the canvas size or fps: those belong to the project.
 - **Where:** `~/.config/qrec/scenes.json` (§6.4), in the order they were
   saved. Names are unique, compared without case; they can't be empty.
 - **Save:** _Save scene as…_ stores the project scene under a new name. A
@@ -533,7 +533,7 @@ my-video/
     └── cache/                # waveforms, thumbnails, silencedetect results, export segments
 ```
 
-### 6.3 `qrec.json` (schema v1)
+### 6.3 `qrec.json` (schema v2)
 
 Times are **integer frames at canvas fps**. Clips use half-open ranges
 `[in, out)`. Ids are short, stable strings. UI-only state (selection,
@@ -542,7 +542,7 @@ and doesn't take part in undo.
 
 ```jsonc
 {
-  "version": 1,
+  "version": 2,
   "name": "my-video", // defaults to folder name
   "createdAt": "2026-10-14T12:00:00Z",
   "canvas": {
@@ -610,7 +610,7 @@ and doesn't take part in undo.
 
   "autocut": {
     "autoRunAfterTake": false,
-    "track": "A1", // audio track id used for silence detection
+    "tracks": ["A1"], // audio tracks silence is detected on ([] = each take's first mic)
     "thresholdDb": -35.0,
     "minSilenceMs": 400, // only silences at least this long are removed
     "paddingMs": 120, // kept on each side of speech
@@ -686,7 +686,11 @@ and doesn't take part in undo.
 
 **Versioning:** `version` is bumped on schema changes, and `qrec-core` ships
 pure migration functions `vN → vN+1`. Before migrating, Qrec writes a backup
-copy to `.qrec/qrec.v{N}.json.bak`.
+copy to `.qrec/qrec.v{N}.json.bak`. The project's history is read in the
+current schema too, so undo reaches past a migration.
+
+- **v2** (issue #15): `autocut.track` (one track id, `null` for the first
+  mic) became `autocut.tracks`, a list (`"A1"` → `["A1"]`, `null` → `[]`).
 
 ### 6.4 User config (`~/.config/qrec/`)
 
@@ -834,15 +838,24 @@ recording time and status, with actions:
 1. **Analysis (shell).**
    - Runs `ffmpeg -i <track file> -af
 silencedetect=noise=<thresholdDb>dB:d=<minSilence> -vn -f null -` on
-     the audio file chosen by `autocut.track` (requirement 23: you pick which
-     track drives detection).
+     the audio file of each track in `autocut.tracks` (requirement 23: you
+     pick which tracks drive detection; none named = the take's first mic),
+     each analyzed and cached on its own.
+   - **Several tracks** (an interview's two mics, a mic and a demo's system
+     audio): a region is cut only when it is silent on every chosen track;
+     sound on any of them keeps it. One threshold applies to all of them.
+     A take that lacks one of the tracks uses the ones it has, with a
+     warning; it is skipped only when it has none of them.
    - Results are cached in `.qrec/cache/silence/` keyed by file hash and
      parameters.
    - The analysis runs in the background. The UI shows a spinner on the
      affected clips.
 2. **Plan (core, pure):**
    - For each clip `[in, out)`, intersect it with the silence intervals
-     shifted by the stream's `startOffsetNs` and `syncOffsetMs`.
+     shifted by the stream's `startOffsetNs` and `syncOffsetMs`. With several
+     tracks, only the parts silent on all of them count, and those shorter
+     than `minSilenceMs` are dropped (each track's silences are that long,
+     their overlap may not be).
    - Shrink each silence by `paddingMs` on both sides.
    - Keep the complement.
    - Drop kept fragments with less than `minKeepMs` of sound. Padding
@@ -1173,9 +1186,9 @@ qrec clip trim <clip> [--start T] [--end T]
 qrec clip split <clip> --at T          # or: qrec clip split --timeline --at T
 qrec clip remove <clip>…
 
-qrec autocut [--clips <clip>… | --all] [--track A1] [--threshold-db -35] [--min-silence-ms 400]
+qrec autocut [--clips <clip>… | --all] [--track A1]… [--threshold-db -35] [--min-silence-ms 400]
              [--padding-ms 120] [--min-keep-ms 200] [--edges-only[=false]] [--dry-run]
-qrec autocut settings [--auto-run BOOL] [--track A1|auto] [--threshold-db DB] [--min-silence-ms MS]
+qrec autocut settings [--auto-run BOOL] [--track A1|auto]… [--threshold-db DB] [--min-silence-ms MS]
              [--padding-ms MS] [--min-keep-ms MS] [--edges-only BOOL]
 qrec undo [N] | redo [N] | history [--limit 20]
 
