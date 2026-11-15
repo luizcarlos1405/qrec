@@ -2665,7 +2665,10 @@ As built (WP6, round 3):
     height; 8 px wide at least) toggles it (`LocalUi.autocut_keep`) and
     neither selects nor seeks; the pointer is a hand there, with a text
     tooltip "Click to keep this silence" / "Click to cut this silence"
-    (`autocut::span_tip`) instead of the clip's; at frame level the waveform is the 1 ms
+    (`autocut::span_tip`) instead of the clip's. While the page shows its
+    analysis cue (issue #15, G§4.7) the preview has no spans, so nothing of
+    the old plan draws, and the clips it lists in `spinning` get the C16
+    plate's spinner, as a running cut's do; at frame level the waveform is the 1 ms
     min/max envelope (S09 draws a sample curve), and waveforms are color
     rects, not path fills (frame time on 300 clips).
 - **Ruler**: label interval L = the smallest of 1f, 2f, 5f, 10f, 15f, 1s,
@@ -3144,6 +3147,24 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     the clip minus what is kept, in timeline frames before the cut, each
     with its take range (`cut`); the kept cuts as `HatchKind::Kept`
     (tagged "kept").
+  - The analysis cue (issue #15, `design/boards/10-autocut-options/07`,
+    decided 2026-11-15): a dry run still unanswered 300 ms after it was
+    sent (`panel::dry_run::CUE_MS`; the 250 ms debounce comes before)
+    turns it on, and it stays until an answer shows, so a stale answer and
+    the dry run sent after it never bring the old plan back. Re-plans
+    (Padding, Min keep, edges only, kept cuts) and cached analyses answer
+    sooner: no cue. While it shows, the summary title spins and reads
+    `analyzing(&State) -> Option<AnalyzingView>`'s "Analyzing take 8" (or
+    "Analyzing 3 takes") with its percent "40%" (`mono` 14 px 600,
+    `muted`, 8 px after the title) and a 4 px bar under it (`accent` on
+    `border`, `progressbar.autocut-progress`), both only when a file's
+    length is known, "Analyzing…" when no job has started yet (the request
+    is on its way); the take/timeline rows and the region list dim to 40 %
+    (`.stale`) and the list takes no clicks (insensitive); the preview the
+    timeline gets has no spans (the hatches, padding, dims and tags go)
+    and `spinning`: the analyzed clips, whose C16 take plates spin
+    (`timeline::draw::label`; never ticking under test mode's frozen
+    clock).
   - Header subtitle: "Previewing take 8 · c3e9" (one clip), "Previewing 4
     clips", "Previewing all 10 clips".
 - **As built** (WP5, 99197b5): Apply's answer is a GUI-owned success toast

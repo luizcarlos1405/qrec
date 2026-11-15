@@ -361,7 +361,8 @@ pub struct Job { pub id: JobId, pub kind: JobKind, pub req: Option<ReqId>, pub s
 pub enum JobKind {
     Autocut { cmd: serde_json::Value /* + "skipped" until it completes, A§5.7 */,
               targets: Vec<AutocutTarget>, params: AutocutParams,
-              dry_run: bool, pending: BTreeSet<SilenceKey>, ready: bool },
+              dry_run: bool, pending: BTreeSet<SilenceKey>, ready: bool,
+              analysis: BTreeMap<SilenceKey, AnalysisProgress> /* how far each analysis read, A§5.7; serde default */ },
     Export { out: String, files: BTreeSet<String>, total_frames: u64,
              seg_frames: Vec<u64>, seg_done: Vec<u64>,
              seg_clips: Vec<Vec<u64>> /* each segment's timeline clips as frame counts, A§5.8; serde default */,
@@ -710,7 +711,7 @@ pub enum Effect {
     StopCapture { take: TakeId, cancel: bool },// → CaptureStopped
     // media jobs: argv built in the core (A§9.2)
     Probe { take: TakeId, purpose: ProbePurpose, jobs: Vec<ProbeJob> },      // → TakeProbed
-    DetectSilence { job: JobId, key: SilenceKey, argv: Vec<String> },        // → SilenceDetected | SilenceFailed
+    DetectSilence { job: JobId, key: SilenceKey, argv: Vec<String> },        // → SilenceProgress… then SilenceDetected | SilenceFailed
     RenderExport { job: JobId, plan: ExportPlan },
     SaveFrame { job: JobId, plan: FramePlan },
     CancelJob { job: JobId },
@@ -750,6 +751,7 @@ pub enum Event {
     TimerFired { timer: TimerId },
     SilenceDetected { job: JobId, key: SilenceKey, silences: Vec<Interval> },
     SilenceFailed { job: JobId, key: SilenceKey, message: String },
+    SilenceProgress { job: JobId, key: SilenceKey, out_time_ns: u64 }, // ~2 Hz, ffmpeg's -progress
     ExportProgress { job: JobId, segment: usize, frames_done: u64 },
     ExportStitchProgress { job: JobId, out_time_ns: u64 },
     ExportFinished { job: JobId, path: String, bytes: u64 },
@@ -1109,6 +1111,18 @@ Flow: `Autocut` snapshots params and targets (`AutocutTarget` with a
   clips only skipped for project reasons (no such track, missing media or
   file) ⇒ Ok "Nothing to cut: …". Clips skipped before completion ride in
   the job's `cmd` under `skipped`, stripped from the history entry.
+Progress (issue #15): the job's `analysis` holds, for each key it
+analyzes, the file's probed length (`Stream.durationNs`; a file without
+one is left out) and how far ffmpeg has read it (`AnalysisProgress {
+doneNs, totalNs }`). The shell turns the analysis's `-progress` blocks
+into `SilenceProgress { outTimeNs }`, which only moves `doneNs` on (never
+back, never past the length) and emits nothing: the requester's
+`Progress` still counts clips. A key analyzed or failed counts as read
+through. `view::autocut::analyzing` reads the dry runs that wait: the
+takes still analyzed ("Analyzing take 8", "Analyzing 3 takes"), the
+fraction read with each file weighing its length ("40%", rounded down),
+and the clips whose plates spin. Keys known when the job started
+(`runtime.silence`) aren't read again, so they don't count.
 Properties: kept ⊇ every padded-speech region with `minKeepMs` of speech;
 fragments stay inside the clip; a clip without silence is unchanged; edges
 only keeps exactly the full plan's hull (one fragment at most); a frame of
@@ -2910,10 +2924,12 @@ Every ffmpeg/ffprobe command line is built in the core (SPEC §3.1):
   `DURATION` tag or the format's; without any (a crash) it comes from the
   counted packets: video frames at `r_frame_rate`, FLAC frames × 4608
   samples (A§2.2).
-- `silence_argv(file, threshold_db, min_silence_ms)`: `ffmpeg … -i file:<f>
-  -af silencedetect=noise=<t>dB:d=<s> -vn -f null -`; `parse/silencedetect.rs`
-  turns stderr into intervals (a trailing silence without `silence_end` ends
-  at the file duration).
+- `silence_argv(file, threshold_db, min_silence_ms)`: `ffmpeg … -progress
+  pipe:1 -i file:<f> -af silencedetect=noise=<t>dB:d=<s> -vn -f null -`;
+  `parse/silencedetect.rs` turns stderr into intervals (a trailing silence
+  without `silence_end` ends at the file duration); its `-progress` blocks
+  (stdout: the null output writes nothing there) become `SilenceProgress`
+  (A§5.7).
 - `parse/progress.rs` reads `-progress` blocks (`frame`, `out_time_us` — in
   ffmpeg 8.1 `out_time_ms` is also µs — `N/A` = 0, `progress=end`).
 - The GUI's previews (docs/GUI.md G§3.11): `strip_argv`, `frames_argv` and

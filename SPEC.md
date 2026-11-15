@@ -849,7 +849,12 @@ silencedetect=noise=<thresholdDb>dB:d=<minSilence> -vn -f null -` on
    - Results are cached in `.qrec/cache/silence/` keyed by file hash and
      parameters.
    - The analysis runs in the background. The UI shows a spinner on the
-     affected clips.
+     affected clips. On the autocut page, a preview that takes longer than
+     300 ms says so: the summary reads "Analyzing take 8" with how far
+     ffmpeg has read ("40%", and a bar under it), the analyzed clips' take
+     plates spin, and the old plan leaves the timeline while its numbers
+     and regions dim on the page until the new plan shows. Re-plans and
+     cached analyses answer sooner and show none of it.
 2. **Plan (core, pure):**
    - For each clip `[in, out)`, intersect it with the silence intervals
      shifted by the stream's `startOffsetNs` and `syncOffsetMs`. With several
