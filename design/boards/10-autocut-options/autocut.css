@@ -33,11 +33,23 @@
 .ao-summary { display: flex; flex-direction: column; gap: 4px; }
 .ao-summary .title .n { font-family: var(--mono); }
 .ao-summary .title .kept { color: var(--qrec-muted); font-weight: 400; }
-.ao-regions { display: flex; flex-direction: column; width: 100%; }
-.ao-region { display: flex; align-items: center; gap: 12px; height: 32px; padding: 0 12px; border-radius: var(--qrec-radius-md);
+/* The list takes the room left above the note and scrolls when its rows don't
+   fit (2026-11-16): the modal list's bar, 4 px of border-strong, 4 px off the rows.
+   While it shows, the list steps 8 px into the page's right padding: the bar sits
+   in the gutter and the rows keep their width. */
+.ao-regions { display: flex; flex-direction: column; width: 100%; flex: 1 1 0; min-height: 128px; overflow: hidden; }
+.ao-regions > .ao-region { flex-shrink: 0; }
+.ao-regions.scroll { position: relative; width: calc(100% + 8px); margin-right: -8px; padding-right: 8px; }
+.ao-scrollbar { position: absolute; right: 0; top: 0; bottom: 0; width: 4px; }
+.ao-scrollbar > i { position: absolute; left: 0; width: 4px; border-radius: 2px; background: var(--qrec-border-strong); }
+/* The GTK row's metrics: 10 px after the box, a 21 px number column, the range
+   taking the slack (and ellipsized), the size flush right. */
+.ao-region { display: flex; align-items: center; gap: 0; height: 32px; padding: 0 12px; border-radius: var(--qrec-radius-md);
   border: 1px solid transparent; font-family: var(--mono); font-weight: 500; font-size: 12px; line-height: 16px; }
+.ao-region > .ao-cb { margin-right: 10px; }
+.ao-region .idx { min-width: 21px; }
 .ao-region .idx, .ao-region .meta { color: var(--qrec-muted); white-space: nowrap; }
-.ao-region .when { flex: 1; white-space: nowrap; }
+.ao-region .when { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ao-region.sel { background: var(--qrec-selected); border-color: var(--qrec-accent); }
 .ao-region.sel .idx, .ao-region.sel .meta { color: var(--qrec-text); }
 .ao-region.kept .when, .ao-region.kept .idx { color: var(--qrec-muted); }

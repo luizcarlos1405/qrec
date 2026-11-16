@@ -23,15 +23,16 @@
 </head>
 <body>
   <h1>Autocut options</h1>
-  <p class="lede">Issue #15: three options for autocut (SPEC §9) on the autocut page (S12) and Settings › Autocut. Not approved yet (the options' boards are, the analyzing cue is up for review). The boards are S12 with only what changes; everything else on the page is as built.</p>
+  <p class="lede">Issue #15: three options for autocut (SPEC §9) on the autocut page (S12) and Settings › Autocut. Built in 0.2.0. The boards are S12 with only what changes; everything else on the page is as built.</p>
 
   <h2>What's on the board</h2>
   <ol>
     <li><b>S12 · Keep a previewed cut</b>: every region row gets a check box (checked = cut). Silence 2 was clicked on the timeline (or unchecked in the list): it draws as kept, the summary says <i>Removes 3 silences (4.8 s) · 1 kept</i>, and the Take and Timeline lines count it back. The pointer is on silence 3, with its tooltip.</li>
-    <li><b>S12 · Trim edges only</b>: the new check box under the sliders, on. Only the silence before the first sound and after the last is hatched (2.2 s and 0.9 s); the four pauses inside stay. The summary says <i>Trims 2 edges (3.1 s)</i>.</li>
+    <li><b>S12 · Trim edges only</b>: the new check box under the sliders, on, with <i>Run autocut after every take</i> under it. Only the silence before the first sound and after the last is hatched (2.2 s and 0.9 s); the four pauses inside stay. The summary says <i>Trims 2 edges (3.1 s)</i>.</li>
     <li><b>S12 · Two tracks · dropdown</b>: <i>Detect silence on</i> stays a dropdown; its menu has a check box per track in the scope. The value reads <i>A1 · Yeti Nano + A2 · System audio</i>. Silence 3 is no longer cut, because System audio plays a sound there. Both lanes are hatched, the tag shows once, and A2's header gets the scissors.</li>
     <li><b>S12 · Two tracks · inline</b>: the same, but the tracks are listed as check boxes on the page. It's one click less, but it takes a row per track.</li>
     <li><b>S12 · Analyzing</b>: the threshold just moved to −40 dB, so take 8 is being analyzed again. The summary title becomes <i>Analyzing take 8 · 40%</i> with a progress bar under it. The old plan's numbers and regions dim (the panel keeps its layout). On the timeline the old hatches are gone, and the take plate spins, as it does for a real autocut job.</li>
+    <li><b>S12 · Many silences</b>: Min silence at 250 ms finds 14 silences in take 8. The region list takes the room left above the note and scrolls; its bar (4 px of <code>border-strong</code>, as in the modal lists) shows only when the rows don't fit. While it shows, the list steps 8 px into the page's right padding: the bar sits in the gutter and the rows keep their width.</li>
     <li><b>Span states</b> at 48 px/s: cut, cut with the pointer on it, kept, kept with the pointer on it. Also the region rows: selected, kept, and a box with keyboard focus.</li>
     <li><b>Settings › Autocut</b>: a <i>Trim edges only</i> switch for new projects. Other settings in the dialog are saved at once, so this one is a switch here and a check box (a draft until Apply) on S12.</li>
   </ol>
@@ -44,6 +45,12 @@
     <li><b>The track picker is the dropdown</b> (board 3). Settings › Autocut gets no track choice: a new project listens to its first mic. No extra key for keeping a span: the region list's boxes are the keyboard path. The wording stays as drawn.</li>
     <li><b>Several tracks: keep only the intersection</b> of their silences (sound on any chosen track keeps the region), never the union.</li>
     <li>Exceptions are part of the page's draft: Cancel or <code>Esc</code> drops them, and "Run autocut after every take" never uses them. Edges only and the tracks do apply after every take.</li>
+  </ul>
+
+  <h2>After using it (decided 2026-11-16)</h2>
+  <ul>
+    <li><b><i>Run autocut after every take</i> sits under <i>Trim edges only</i></b>, above the summary: both say how autocut cuts, and a long region list no longer pushes the switch out of sight. It's still a switch, saved at once.</li>
+    <li><b>The region list scrolls on its own</b> (board 08). It takes the room left above the note, at least four rows; a window too short even for that scrolls the whole page, as before. The note sits at the page's foot, over the buttons.</li>
   </ul>
 
   <h2>The analyzing cue (decided 2026-11-15)</h2>
