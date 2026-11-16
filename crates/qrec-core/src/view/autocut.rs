@@ -43,7 +43,7 @@ pub const ANALYZING: &str = "Analyzing\u{2026}";
 pub const NOTHING_TO_CUT: &str = "Nothing to cut";
 /// The summary title when an edges-only plan trims nothing.
 pub const NOTHING_TO_TRIM: &str = "Nothing to trim";
-/// The check box under the sliders (issue #15, board 02).
+/// The switch under the sliders (issue #15, board 02).
 pub const EDGES_ONLY: &str = "Trim edges only";
 /// Its caption.
 pub const EDGES_ONLY_CAPTION: &str = "Keeps the pauses inside each clip.";

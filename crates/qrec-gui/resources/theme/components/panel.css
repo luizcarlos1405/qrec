@@ -368,10 +368,10 @@ popover.qrec-value-tooltip > contents {
   min-width: 80px;
 }
 
-/* "Trim edges only": the caption under the label, in line with its text
-   (the 16 px box and checkbutton's 8 px spacing). */
-.qrec-panel .autocut-edges .edges-caption {
-  margin-left: 24px;
+/* "Trim edges only": a C27 switch row like "Run autocut after every
+   take", its caption under its label (2026-11-16). */
+.qrec-panel .autocut-edges {
+  min-height: 22px;
 }
 
 /* "Detect silence on" (issue #15, board 03): a menu button drawn as the

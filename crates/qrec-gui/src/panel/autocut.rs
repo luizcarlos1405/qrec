@@ -1,6 +1,6 @@
 //! The autocut page (S12, D-15): it replaces the panel's content, a pushed
 //! page with a back button. "Detect silence on", four sliders with value
-//! fields, the "Trim edges only" check box (issue #15: part of the draft),
+//! fields, the "Trim edges only" switch (issue #15: part of the draft),
 //! "Run autocut after every take" under it, the summary of the newest dry
 //! run, the region list (a click seeks; it takes the room left and scrolls
 //! when its rows don't fit, board 08), the note, and Cancel / Apply autocut.
@@ -102,7 +102,7 @@ struct Inner {
     tracks: RefCell<Vec<TrackId>>,
     knobs: Vec<KnobView>,
     /// "Trim edges only" (the draft's `edges_only`).
-    edges: gtk::CheckButton,
+    edges: gtk::Switch,
     spinner: Spinner,
     summary_title: gtk::Label,
     summary_mono: gtk::Label,
@@ -391,23 +391,32 @@ impl AutocutPage {
                 _tooltip: tooltip,
             });
         }
-        // "Trim edges only" under the sliders, its caption under its label
-        // (issue #15, board 02).
-        let edges_block = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        // "Trim edges only" under the sliders (issue #15, board 02): a C27
+        // switch like every on/off option, its caption under its label
+        // (2026-11-16: check boxes only pick items in a list).
+        let edges_block = gtk::Box::new(gtk::Orientation::Horizontal, 16);
         edges_block.add_css_class("autocut-block");
         edges_block.add_css_class("autocut-edges");
-        let edges = gtk::CheckButton::with_label(EDGES_ONLY);
-        edges.set_widget_name("autocut-edges-only");
-        edges.set_focus_on_click(false);
-        edges.update_property(&[gtk::accessible::Property::Description(EDGES_ONLY_CAPTION)]);
+        let edges_text = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        edges_text.set_hexpand(true);
         let edges_caption = label(EDGES_ONLY_CAPTION, &["t-caption", "muted", "edges-caption"]);
         edges_caption.set_wrap(true);
+        edges_text.append(&label(EDGES_ONLY, &["t-body"]));
+        edges_text.append(&edges_caption);
+        let edges = gtk::Switch::new();
+        edges.set_widget_name("autocut-edges-only");
+        edges.set_valign(gtk::Align::Center);
+        edges.set_focus_on_click(false);
+        edges.update_property(&[
+            gtk::accessible::Property::Label(EDGES_ONLY),
+            gtk::accessible::Property::Description(EDGES_ONLY_CAPTION),
+        ]);
+        edges_block.append(&edges_text);
         edges_block.append(&edges);
-        edges_block.append(&edges_caption);
         content.append(&edges_block);
         // "Run autocut after every take" under it (boards 01–08, 2026-11-16):
         // a long region list no longer pushes it out of sight.
-        let switch_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let switch_row = gtk::Box::new(gtk::Orientation::Horizontal, 16);
         switch_row.add_css_class("autocut-switch-row");
         switch_row.set_widget_name("autocut-auto-run");
         let switch_label = label(AUTO_RUN, &["t-body"]);
@@ -635,14 +644,14 @@ impl AutocutPage {
         let weak = Rc::downgrade(inner);
         inner
             .edges
-            .connect_toggled(guarded!("autocut: edges only", move |check| {
+            .connect_active_notify(guarded!("autocut: edges only", move |edges| {
                 let Some(inner) = weak.upgrade() else { return };
                 if inner.setting.get() || !inner.open.get() {
                     return;
                 }
                 let page = AutocutPage { inner };
                 let mut draft = page.inner.draft.borrow().clone();
-                draft.edges_only = check.is_active();
+                draft.edges_only = edges.is_active();
                 page.set_draft(draft);
             }));
         let weak = Rc::downgrade(inner);

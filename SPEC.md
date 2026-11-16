@@ -891,7 +891,7 @@ silencedetect=noise=<thresholdDb>dB:d=<minSilence> -vn -f null -` on
 4. **Preview first (optional).**
    - Shift+C opens autocut settings with a live preview of what would be cut:
      hatched regions with sliders, and the padding kept beside each in blue.
-     A _Trim edges only_ check box under the sliders is part of the same
+     A _Trim edges only_ switch under the sliders is part of the same
      draft: Apply saves it with them, and the summary then reads _"Trims 2
      edges (3.1 s)"_ (or _"Nothing to trim"_).
    - A click on a hatched cut keeps it, and a click on a kept one cuts it

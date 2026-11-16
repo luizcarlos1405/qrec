@@ -3094,9 +3094,12 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     Autocut has no track choice: track ids belong to a project (decided
     2026-11-15).
     "Trim edges only" (issue #15, `design/boards/10-autocut-options/02`):
-    a C20 check box under the sliders with its caption "Keeps the pauses
-    inside each clip.", the draft's `edges_only` (its toggle re-runs the
-    dry run; Apply saves it, Cancel drops it).
+    a C27 switch under the sliders, its caption "Keeps the pauses inside
+    each clip." under its label, the draft's `edges_only` (its toggle
+    re-runs the dry run; Apply saves it, Cancel drops it). A switch like
+    every on/off option; C20 check boxes only pick items in a list (the
+    first run's sources, the track menu, the region rows; decided
+    2026-11-16).
     Keeping a previewed cut (issue #15, `design/boards/10-autocut-options/01`
     and `05`): the draft's `keep` (`AutocutKeep { clip, in, out }`, take
     frames), toggled by `autocut::toggle_keep` from a region row's box or a
@@ -4599,7 +4602,7 @@ same where not named; `tmp/fix12/notes/`, `tmp/icons-art/measure/`,
   the case had it over S06's Program and take 5.
 - Settings › Autocut's "Trim edges only" is a switch under "Run autocut
   after every take", saved at once like the page's other rows (issue #15,
-  `design/boards/10-autocut-options/06`; S12's check box is a draft until
+  `design/boards/10-autocut-options/06`; S12's switch is a draft until
   Apply).
 - Settings › Recording and › Autocut (not drawn) follow S21's patterns:
   the group header, 60 px rows with a caption, 104 px C29 fields, C28's

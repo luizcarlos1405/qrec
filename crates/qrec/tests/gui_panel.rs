@@ -2002,11 +2002,11 @@ fn s12_the_autocut_page() {
         let (dx, dy) = nested.opts.pixel_px(x, y);
         gui_support::rgb_pixels(&shot, [dx, dy, 1, 1])[0]
     };
-    // Issue #15's "Trim edges only" (under the sliders) and the boards'
-    // tighter spacing (12 px between the knobs, 16 between the groups)
-    // move the summary and the regions 33 px down from S12's frame, and
-    // "Run autocut after every take" over them (board 08) 34 px more.
-    let row = px(1300.0, 717.0);
+    // Issue #15's "Trim edges only" (a switch row under the sliders), the
+    // boards' tighter spacing (12 px between the knobs, 16 between the
+    // groups) and "Run autocut after every take" over the summary (board
+    // 08) move the summary and the regions 60 px down from S12's frame.
+    let row = px(1300.0, 710.0);
     assert!(
         row.iter()
             .zip([0x2E, 0x3E, 0x1B])
@@ -2018,21 +2018,21 @@ fn s12_the_autocut_page() {
         gui_support::token_rgb("swamp-night", "accent"),
         "c3e9's stroke inside a region"
     );
-    // The summary's heading on S12's baseline, 67 px lower (issue #15 and
-    // board 08): its title's ink from y 630 (S12's 563: its glyphs a pixel
+    // The summary's heading on S12's baseline, 60 px lower (issue #15 and
+    // board 08): its title's ink from y 623 (S12's 563: its glyphs a pixel
     // shorter than the frame's, from 562; it sat a pixel lower, from 564),
-    // its rows' from 654 (S12's 587). The footer's Esc cap is a medium one, its `keycap` fill 17 px
+    // its rows' from 647 (S12's 587). The footer's Esc cap is a medium one, its `keycap` fill 17 px
     // tall (20 with the stroke; the small one's was 13). WP10's shot
     // review.
-    let surface = px(1300.0, 619.0);
-    let heading = ink_top(&nested, &shot, [1228.0, 617.0, 154.0, 30.0], surface);
+    let surface = px(1300.0, 612.0);
+    let heading = ink_top(&nested, &shot, [1228.0, 610.0, 154.0, 30.0], surface);
     assert!(
-        (heading - 630.0).abs() <= 0.75,
+        (heading - 623.0).abs() <= 0.75,
         "the summary's heading from y {heading}"
     );
-    let rows = ink_top(&nested, &shot, [1300.0, 647.0, 190.0, 20.0], surface);
+    let rows = ink_top(&nested, &shot, [1300.0, 640.0, 190.0, 20.0], surface);
     assert!(
-        (rows - 654.0).abs() <= 1.0,
+        (rows - 647.0).abs() <= 1.0,
         "the summary's rows from y {rows}"
     );
     let caps = gui_support::keycap_fills(&nested.opts, &shot, [1340.0, 915.0, 100.0, 40.0]);

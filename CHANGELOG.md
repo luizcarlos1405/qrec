@@ -26,8 +26,8 @@ analysis as it runs.
 ### New
 
 - **Trim edges only.** Autocut removes only the silence before the first
-  sound and after the last, and leaves the pauses in between. It's a check
-  box on the autocut page, a switch in Settings › Autocut, and
+  sound and after the last, and leaves the pauses in between. It's a
+  switch on the autocut page and in Settings › Autocut, and
   `qrec autocut --edges-only`.
 - **Keep a previewed cut.** On the autocut page, click a hatched silence on
   the timeline, or uncheck its row, to keep it; Apply cuts the rest. Kept
