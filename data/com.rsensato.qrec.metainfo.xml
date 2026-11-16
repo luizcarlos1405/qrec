@@ -82,6 +82,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.0" date="2026-11-16">
+      <description>
+        <p>Autocut can trim only the edges, keep a cut you previewed, and look for silence on several tracks; its page shows how far the analysis got.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-11-13">
       <description>
         <p>The first release: recording, the timeline editor, autocut and export, on Wayland and X11.</p>

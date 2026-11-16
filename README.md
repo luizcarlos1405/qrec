@@ -144,9 +144,9 @@ session (the display, the desktop portal, PipeWire or PulseAudio) and the
 GPU's kernel driver.
 
 ```sh
-chmod +x Qrec-0.1.0-x86_64.AppImage
-./Qrec-0.1.0-x86_64.AppImage              # the window
-./Qrec-0.1.0-x86_64.AppImage doctor       # any qrec command: the AppImage is qrec
+chmod +x Qrec-0.2.0-x86_64.AppImage
+./Qrec-0.2.0-x86_64.AppImage              # the window
+./Qrec-0.2.0-x86_64.AppImage doctor       # any qrec command: the AppImage is qrec
 ```
 
 It needs neither FUSE nor root: without FUSE it extracts itself to `/tmp`
@@ -171,9 +171,9 @@ nix run github:luizcarlos1405/qrec                # try it
 nix profile install github:luizcarlos1405/qrec    # install it, with its desktop entry and icons
 ```
 
-That's `main` as it is now; `github:luizcarlos1405/qrec/v0.1.0` is a
+That's `main` as it is now; `github:luizcarlos1405/qrec/v0.2.0` is a
 release. In a NixOS configuration that is a flake, add the input
-`qrec.url = "github:luizcarlos1405/qrec/v0.1.0";` and put
+`qrec.url = "github:luizcarlos1405/qrec/v0.2.0";` and put
 `inputs.qrec.packages.${pkgs.stdenv.hostPlatform.system}.default` in
 `environment.systemPackages`.
 

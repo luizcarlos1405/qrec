@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-11-16)
 
 Three new autocut options (issue #15), and the autocut page shows its
 analysis as it runs.
