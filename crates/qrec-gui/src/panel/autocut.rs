@@ -1,8 +1,9 @@
 //! The autocut page (S12, D-15): it replaces the panel's content, a pushed
 //! page with a back button. "Detect silence on", four sliders with value
 //! fields, the "Trim edges only" check box (issue #15: part of the draft),
-//! the summary of the newest dry run, the region list (a click seeks),
-//! "Run autocut after every take", the note, and Cancel / Apply autocut.
+//! "Run autocut after every take" under it, the summary of the newest dry
+//! run, the region list (a click seeks; it takes the room left and scrolls
+//! when its rows don't fit, board 08), the note, and Cancel / Apply autocut.
 //!
 //! - Tuning is a draft (`view::autocut::AutocutDraft`): no history. Each
 //!   change sends a dry run 250 ms later, one at a time
@@ -58,6 +59,11 @@ use crate::widgets::button::{self, Kind};
 use crate::widgets::numeric::{self, NumericField};
 use crate::widgets::scale_tooltip::{self, ValueTooltip};
 use crate::{Ctx, guard, guarded};
+
+/// A region row's height (`row-32`), and how many rows the list always
+/// shows before the page itself has to scroll (board 08).
+const REGION_ROW_PX: i32 = 32;
+const REGION_ROWS_MIN: i32 = 4;
 
 /// One slider row.
 struct KnobView {
@@ -399,6 +405,19 @@ impl AutocutPage {
         edges_block.append(&edges);
         edges_block.append(&edges_caption);
         content.append(&edges_block);
+        // "Run autocut after every take" under it (boards 01–08, 2026-11-16):
+        // a long region list no longer pushes it out of sight.
+        let switch_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        switch_row.add_css_class("autocut-switch-row");
+        switch_row.set_widget_name("autocut-auto-run");
+        let switch_label = label(AUTO_RUN, &["t-body"]);
+        switch_label.set_hexpand(true);
+        let switch = gtk::Switch::new();
+        switch.set_valign(gtk::Align::Center);
+        switch.update_property(&[gtk::accessible::Property::Label(AUTO_RUN)]);
+        switch_row.append(&switch_label);
+        switch_row.append(&switch);
+        content.append(&switch_row);
         // The summary.
         let summary = gtk::Box::new(gtk::Orientation::Vertical, 2);
         summary.add_css_class("autocut-summary");
@@ -441,18 +460,42 @@ impl AutocutPage {
         regions.set_selection_mode(gtk::SelectionMode::None);
         regions.set_widget_name("autocut-regions");
         regions.update_property(&[gtk::accessible::Property::Label("Silences")]);
-        content.append(&regions);
-        let switch_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        switch_row.add_css_class("autocut-switch-row");
-        let switch_label = label(AUTO_RUN, &["t-body"]);
-        switch_label.set_hexpand(true);
-        let switch = gtk::Switch::new();
-        switch.set_valign(gtk::Align::Center);
-        switch.update_property(&[gtk::accessible::Property::Label(AUTO_RUN)]);
-        switch_row.append(&switch_label);
-        switch_row.append(&switch);
-        content.append(&switch_row);
+        // The list takes the room left above the note and scrolls when its
+        // rows don't fit (board 08), with the modal lists' 4 px bar, shown
+        // only then. At least four rows: a window too short for them scrolls
+        // the whole page, as before.
+        let region_scroller = gtk::ScrolledWindow::new();
+        region_scroller.add_css_class("region-scroller");
+        region_scroller.set_widget_name("autocut-regions-scroller");
+        region_scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        region_scroller.set_overlay_scrolling(false);
+        region_scroller.set_propagate_natural_height(true);
+        region_scroller.set_min_content_height(REGION_ROWS_MIN * REGION_ROW_PX);
+        region_scroller.set_vexpand(true);
+        region_scroller.set_child(Some(&regions));
+        // While the bar shows (the rows taller than the list, GTK's own
+        // test), the list steps 8 px into the page's right padding: the bar
+        // sits in the gutter and the rows keep their width.
+        let weak = region_scroller.downgrade();
+        region_scroller.vadjustment().connect_changed(guarded!(
+            "autocut: the region list's bar",
+            move |adj| {
+                let Some(scroller) = weak.upgrade() else {
+                    return;
+                };
+                let overflows = adj.upper() - adj.lower() > adj.page_size() + 0.5;
+                if overflows != scroller.has_css_class("overflowing") {
+                    if overflows {
+                        scroller.add_css_class("overflowing");
+                    } else {
+                        scroller.remove_css_class("overflowing");
+                    }
+                }
+            }
+        ));
+        content.append(&region_scroller);
         let note = label(NOTE, &["t-caption", "muted", "autocut-note"]);
+        note.set_widget_name("autocut-note");
         note.set_wrap(true);
         content.append(&note);
         let scroller = gtk::ScrolledWindow::new();

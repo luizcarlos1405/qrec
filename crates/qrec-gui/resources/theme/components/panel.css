@@ -553,9 +553,45 @@ popover.autocut-track-popover .menu-caption {
   font-weight: 600;
 }
 
-.qrec-panel list.region-list {
+/* The list scrolls on its own when its rows don't fit (board 08). */
+.qrec-panel scrolledwindow.region-scroller {
   margin-top: 10px;
+}
+
+.qrec-panel list.region-list {
   background-color: transparent;
+}
+
+/* While its bar shows, the list steps into the page's right padding: the
+   bar sits in the gutter, 8 px from the panel's edge, and the rows keep
+   their width. */
+.qrec-panel scrolledwindow.region-scroller.overflowing {
+  margin-right: -8px;
+}
+
+/* Its bar: the modal lists' 4 px `border-strong` bar (chrome.css), 4 px off
+   the rows, shown only when they don't fit. */
+.qrec-panel .region-scroller scrollbar {
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+.qrec-panel .region-scroller scrollbar > range > trough {
+  min-width: 4px;
+  margin: 0 0 0 4px;
+  border-radius: 2px;
+  background: none;
+}
+
+.qrec-panel .region-scroller scrollbar > range > trough > slider {
+  min-width: 4px;
+  min-height: 24px;
+  margin: 0;
+  border: none;
+  border-radius: 2px;
+  background-color: var(--qrec-border-strong);
 }
 
 .qrec-panel list.region-list > row.region-row {
@@ -584,13 +620,16 @@ popover.autocut-track-popover .menu-caption {
   font-style: italic;
 }
 
+/* Under "Trim edges only", 12 px from it like the knobs, 16 px over the
+   summary (2026-11-16). */
 .qrec-panel .autocut-switch-row {
-  margin-top: 16px;
+  margin-bottom: 12px;
   min-height: 22px;
 }
 
+/* At the page's foot, under the list that takes the room left. */
 .qrec-panel .autocut-note {
-  margin-top: 12px;
+  margin-top: 16px;
 }
 
 .qrec-panel .autocut-footer {

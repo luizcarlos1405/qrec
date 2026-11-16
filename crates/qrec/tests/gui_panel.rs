@@ -2004,8 +2004,9 @@ fn s12_the_autocut_page() {
     };
     // Issue #15's "Trim edges only" (under the sliders) and the boards'
     // tighter spacing (12 px between the knobs, 16 between the groups)
-    // move the summary and the regions 33 px down from S12's frame.
-    let row = px(1300.0, 683.0);
+    // move the summary and the regions 33 px down from S12's frame, and
+    // "Run autocut after every take" over them (board 08) 34 px more.
+    let row = px(1300.0, 717.0);
     assert!(
         row.iter()
             .zip([0x2E, 0x3E, 0x1B])
@@ -2017,21 +2018,21 @@ fn s12_the_autocut_page() {
         gui_support::token_rgb("swamp-night", "accent"),
         "c3e9's stroke inside a region"
     );
-    // The summary's heading on S12's baseline, 33 px lower (issue #15): its
-    // title's ink from y 596 (S12's 563: its glyphs a pixel shorter than
-    // the frame's, from 562; it sat a pixel lower, from 564), its rows'
-    // from 620 (S12's 587). The footer's Esc cap is a medium one, its `keycap` fill 17 px
+    // The summary's heading on S12's baseline, 67 px lower (issue #15 and
+    // board 08): its title's ink from y 630 (S12's 563: its glyphs a pixel
+    // shorter than the frame's, from 562; it sat a pixel lower, from 564),
+    // its rows' from 654 (S12's 587). The footer's Esc cap is a medium one, its `keycap` fill 17 px
     // tall (20 with the stroke; the small one's was 13). WP10's shot
     // review.
-    let surface = px(1300.0, 585.0);
-    let heading = ink_top(&nested, &shot, [1228.0, 583.0, 154.0, 30.0], surface);
+    let surface = px(1300.0, 619.0);
+    let heading = ink_top(&nested, &shot, [1228.0, 617.0, 154.0, 30.0], surface);
     assert!(
-        (heading - 596.0).abs() <= 0.75,
+        (heading - 630.0).abs() <= 0.75,
         "the summary's heading from y {heading}"
     );
-    let rows = ink_top(&nested, &shot, [1300.0, 613.0, 190.0, 20.0], surface);
+    let rows = ink_top(&nested, &shot, [1300.0, 647.0, 190.0, 20.0], surface);
     assert!(
-        (rows - 620.0).abs() <= 1.0,
+        (rows - 654.0).abs() <= 1.0,
         "the summary's rows from y {rows}"
     );
     let caps = gui_support::keycap_fills(&nested.opts, &shot, [1340.0, 915.0, 100.0, 40.0]);
@@ -2269,6 +2270,116 @@ fn a_previewed_cut_is_kept() {
         None,
         "kept cuts aren't a setting: {status}"
     );
+    assert_clean(nested.window(0));
+}
+
+/// Board 08 (2026-11-16): "Run autocut after every take" sits under "Trim
+/// edges only", over the summary, and a region list longer than the room
+/// left scrolls on its own. The page doesn't: the switch, the note and the
+/// footer stay in view, and the wheel over the list moves its rows, not the
+/// switch. Every clip selected gives the plan more regions than fit.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_long_region_list_scrolls_on_its_own() {
+    let mut nested = Nested::start(AREA, "autocut-long-list", Options::default());
+    let preset = ui(|u| {
+        u.canvas_mode = CanvasMode::Program;
+        u.selection = [
+            "c7f3", "c8a1", "c1b2", "c1b3", "c1b4", "c1b5", "c1b6", "c2d0", "c2d1", "c3e9",
+        ]
+        .map(clip)
+        .to_vec();
+    });
+    let project = fixture(&nested, DesignVariant::Base, &preset);
+    open(&mut nested, &project, levels(DESIGN_LEVELS));
+    nested.keys(&["-M", "shift", "-k", "c", "-m", "shift"]);
+    wait_for_label(nested.window(0), "Apply autocut");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let rows: Vec<String> = (1..=40).map(|n| format!("autocut-region-{n}")).collect();
+    let names = |extra: &[&str]| -> Vec<String> {
+        rows.iter()
+            .cloned()
+            .chain(extra.iter().map(|s| (*s).to_owned()))
+            .collect()
+    };
+    let parts = [
+        "autocut-edges-only",
+        "autocut-auto-run",
+        "autocut-regions-scroller",
+        "autocut-note",
+        "autocut-apply",
+    ];
+    let at = |nested: &mut Nested| {
+        let gui = nested.window(0);
+        gui.wait_idle();
+        let names = names(&parts);
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        gui.regions(&names)
+    };
+    let regions = loop {
+        let regions = at(&mut nested);
+        if regions.contains_key("autocut-region-6") {
+            break regions;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no long region list: {regions:#?}"
+        );
+        thread::sleep(Duration::from_millis(100));
+    };
+    let n = (1..=40)
+        .take_while(|n| regions.contains_key(&format!("autocut-region-{n}")))
+        .count();
+    let get = |r: &BTreeMap<String, [f64; 4]>, name: &str| -> [f64; 4] {
+        *r.get(name).unwrap_or_else(|| panic!("no {name}: {r:#?}"))
+    };
+    let edges = get(&regions, "autocut-edges-only");
+    let switch = get(&regions, "autocut-auto-run");
+    let scroller = get(&regions, "autocut-regions-scroller");
+    let note = get(&regions, "autocut-note");
+    let apply = get(&regions, "autocut-apply");
+    let first = get(&regions, "autocut-region-1");
+    let last = get(&regions, &format!("autocut-region-{n}"));
+    // The switch under the edges box, the list under the switch.
+    assert!(
+        edges[1] + edges[3] <= switch[1] && switch[1] + switch[3] < scroller[1],
+        "edges {edges:?}, the switch {switch:?}, the list {scroller:?}"
+    );
+    // More rows than the list shows, the last one past its foot.
+    assert!(
+        last[1] + last[3] > scroller[1] + scroller[3] + 1.0,
+        "{n} rows, the last {last:?} in the list {scroller:?}"
+    );
+    // The bar sits in the page's right padding: the rows keep the width of
+    // the page's other rows, the list reaches 8 px past them.
+    assert!(
+        (first[2] - switch[2]).abs() <= 1.0
+            && (scroller[0] + scroller[2] - (switch[0] + switch[2] + 8.0)).abs() <= 1.0,
+        "row 1 {first:?}, the switch's row {switch:?}, the list {scroller:?}"
+    );
+    // The page itself fits: the note under the list, over the footer.
+    assert!(
+        scroller[1] + scroller[3] <= note[1] && note[1] + note[3] <= apply[1],
+        "the list {scroller:?}, the note {note:?}, Apply {apply:?}"
+    );
+    nested.screenshot("long-list");
+    // The wheel over the list scrolls its rows; the switch stays.
+    let (x, y) = center(scroller);
+    nested.pointer().move_to(x, y);
+    nested.pointer().wheel(3);
+    let after = at(&mut nested);
+    let first_after = get(&after, "autocut-region-1");
+    assert!(
+        first_after[1] < first[1] - 16.0,
+        "the rows didn't scroll: row 1 at {first:?}, then {first_after:?}"
+    );
+    assert_eq!(
+        get(&after, "autocut-auto-run"),
+        switch,
+        "the page scrolled with the list"
+    );
+    let shot = nested.screenshot("long-list-scrolled");
+    crop(&nested, &shot, PANEL, "panel");
     assert_clean(nested.window(0));
 }
 

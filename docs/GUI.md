@@ -3106,6 +3106,17 @@ aspect-locked resize keeps w/h within 1 px; a crop never leaves fewer than
     run's overrides and in Apply's cut (`AutocutOverrides.keep`); it is
     never saved (`changed` ignores it). The page's spacing follows boards
     01–04: 12 px between the knobs, 16 px between the groups.
+    "Run autocut after every take" sits under "Trim edges only", over the
+    summary, and the region list scrolls on its own
+    (`design/boards/10-autocut-options/08`; the owner asked, 2026-11-16: a
+    long list pushed the switch out of sight). The list is its own
+    `ScrolledWindow` (`autocut-regions-scroller`): it takes the room left
+    above the note, at least four 32 px rows (a window too short even for
+    those scrolls the whole page, as before), and scrolls when its rows
+    don't fit, with the modal lists' 4 px `border-strong` bar, shown only
+    then. While the bar shows, the list steps 8 px into the page's right
+    padding (`.overflowing`, set from its vadjustment), so the rows keep
+    their width. The note sits at the page's foot, over the footer.
   - `dry_run(&State, &draft) -> Command`: scope = the selection, or All;
     overrides = the draft. `dry_run_key(&State, &draft) -> DryRunKey`: the
     command and what it doesn't carry but its answer is worked out on (the
