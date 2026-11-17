@@ -198,7 +198,7 @@
       packages = forAllSystems (pkgs: {
         default = pkgs.rustPlatform.buildRustPackage {
           pname = "qrec";
-          version = "0.2.0";
+          version = "0.2.1";
           src = pkgs.lib.cleanSourceWith {
             src = ./.;
             filter =

@@ -1911,7 +1911,7 @@ dependencies = [
 
 [[package]]
 name = "qrec"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "assert_cmd",
  "chrono",
@@ -1929,7 +1929,7 @@ dependencies = [
 
 [[package]]
 name = "qrec-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1941,7 +1941,7 @@ dependencies = [
 
 [[package]]
 name = "qrec-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "hex",
@@ -1961,7 +1961,7 @@ dependencies = [
 
 [[package]]
 name = "qrec-gui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "crossbeam-channel",
@@ -1980,7 +1980,7 @@ dependencies = [
 
 [[package]]
 name = "qrec-shell"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "ashpd",
