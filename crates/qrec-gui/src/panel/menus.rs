@@ -64,7 +64,8 @@ pub fn ui_item(label: &str, action: &str, id: &str, enabled: bool) -> gio::MenuI
 #[derive(Clone)]
 pub struct Menu {
     model: gio::Menu,
-    shown: Rc<RefCell<String>>,
+    /// The signature of the items shown; `None` until the first update.
+    shown: Rc<RefCell<Option<String>>>,
 }
 
 impl std::fmt::Debug for Menu {
@@ -91,12 +92,14 @@ impl Menu {
         self.model.clone()
     }
 
-    /// Replaces the items with `build`'s when `signature` changed.
+    /// Replaces the items with `build`'s when `signature` changed. The
+    /// first update always builds, whatever its signature: an empty one
+    /// (an Add menu with no sources found) must still fill the menu.
     pub fn update(&self, signature: String, build: impl FnOnce(&gio::Menu)) {
-        if *self.shown.borrow() == signature {
+        if self.shown.borrow().as_ref() == Some(&signature) {
             return;
         }
-        *self.shown.borrow_mut() = signature;
+        *self.shown.borrow_mut() = Some(signature);
         self.model.remove_all();
         build(&self.model);
     }
@@ -329,4 +332,26 @@ pub fn install_actions(
         group.add_action(&action);
     }
     widget.insert_action_group(PREFIX, Some(&group));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A new menu's first update builds, even with an empty signature: a
+    /// saved scene's actions came up empty when theirs was `""`, which is
+    /// what a new menu used to count as shown.
+    #[test]
+    fn the_first_update_builds_and_an_unchanged_one_keeps_the_items() {
+        let menu = Menu::new();
+        menu.update(String::new(), |m| m.append(Some("Delete\u{2026}"), None));
+        assert_eq!(menu.model().n_items(), 1);
+        menu.update(String::new(), |m| m.append(Some("Again"), None));
+        assert_eq!(menu.model().n_items(), 1, "the same signature rebuilt");
+        menu.update("two".to_owned(), |m| {
+            m.append(Some("Rename"), None);
+            m.append(Some("Remove"), None);
+        });
+        assert_eq!(menu.model().n_items(), 2);
+    }
 }
