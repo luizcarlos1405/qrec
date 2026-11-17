@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+A fix for the saved scenes' menu.
+
+### Get it
+
+- **The AppImage**, `Qrec-0.2.1-x86_64.AppImage`: `chmod +x` it and run
+  it, as before. The `.sha256` file is its checksum, and `.build.txt`
+  lists what it was built from.
+- **Nix**: `nix run github:luizcarlos1405/qrec/v0.2.1`, or
+  `nix profile install github:luizcarlos1405/qrec/v0.2.1`. In a NixOS
+  flake, the input is `qrec.url = "github:luizcarlos1405/qrec/v0.2.1";`.
+
+### Fixed
+
+- A saved scene's ⋮ in the scene menu opened empty. It lists Rename…,
+  Replace with current scene, Duplicate and Delete… again. Delete… and
+  Replace close the menu and ask first; Duplicate keeps the menu open, the
+  copy under the original.
+- The Add layer and Add audio track menus say "No sources found" when
+  nothing was found, instead of opening empty.
+
 ## 0.2.0 (2026-11-16)
 
 Three new autocut options (issue #15), and the autocut page shows its
