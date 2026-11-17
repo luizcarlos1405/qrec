@@ -330,6 +330,187 @@ fn saved_scenes_in_the_panel() {
     assert_clean(nested.window(0));
 }
 
+/// A saved scene's own actions, its `⋮` in the scene menu (board
+/// 07-named-scenes/02, `?state=row-menu`; it used to open empty): Rename…,
+/// Replace with current scene, Duplicate, Delete…. Duplicate adds the copy
+/// under the original, the menu still open; Rename… opens the save popover
+/// on the name; Replace and Delete close the menu and ask first, and what
+/// was confirmed is what the library holds.
+#[test]
+#[ignore = "needs a nested compositor (sway, grim, wtype): G§8.4"]
+fn a_saved_scenes_own_actions() {
+    let mut nested = Nested::start(AREA, "scene-actions", Options::default());
+    let project = fixture(&nested, DesignVariant::Base, &ui(|_| {}));
+    open(&mut nested, &project, levels(DESIGN_LEVELS));
+    cli_ok(&nested, &project, &["scene", "save", "Screen + camera"]);
+    cli_ok(&nested, &project, &["scene", "layer", "remove", "L1"]);
+    cli_ok(&nested, &project, &["scene", "save", "Camera only"]);
+    wait_for_label(nested.window(0), "Camera only");
+
+    // Camera only's actions.
+    let labels = open_scene_actions(&mut nested, 1);
+    assert_has(
+        &labels,
+        &[
+            "Rename\u{2026}",
+            "Replace with current scene",
+            "Duplicate",
+            "Delete\u{2026}",
+        ],
+    );
+    let shot = nested.screenshot("row-menu");
+    crop(&nested, &shot, [1216.0, 48.0, 384.0, 460.0], "panel");
+
+    // Duplicate (the third): the copy right under it, the menu open.
+    nested.keys(&["-k", "Down", "-k", "Down", "-k", "Return"]);
+    let copy = "Camera only copy";
+    poll(Duration::from_secs(10), "the copy in the open menu", || {
+        nested.window(0).wait_idle();
+        let rows = nested.window(0).labels("scene-list");
+        rows.iter().any(|l| l == copy).then_some(())
+    });
+    wait_for_scenes(&nested, &project, &["Screen + camera", "Camera only", copy]);
+    nested.screenshot("duplicated");
+    nested.keys(&["-k", "Escape"]);
+    poll(Duration::from_secs(10), "the scene menu to close", || {
+        nested.window(0).wait_idle();
+        nested
+            .window(0)
+            .labels("scene-list")
+            .is_empty()
+            .then_some(())
+    });
+
+    // Rename… (the first) on the copy: the save popover, the name typed
+    // over the old one, Enter.
+    open_scene_actions(&mut nested, 2);
+    nested.keys(&["-k", "Return"]);
+    let gui = nested.window(0);
+    gui.wait_idle();
+    assert_has(&panel_labels(gui), &["Rename scene"]);
+    assert_eq!(
+        gui.entries("region-panel")
+            .get("scene-name")
+            .map(String::as_str),
+        Some(copy),
+        "the popover names the scene"
+    );
+    nested.screenshot("rename");
+    nested.keys(&["Close-up", "-k", "Return"]);
+    wait_for_scenes(
+        &nested,
+        &project,
+        &["Screen + camera", "Camera only", "Close-up"],
+    );
+
+    // Replace with current scene (the second) on Screen + camera: the menu
+    // closes and the modal asks; confirmed, the scene holds the one layer
+    // the panel shows now.
+    open_scene_actions(&mut nested, 0);
+    nested.keys(&["-k", "Down", "-k", "Return"]);
+    let labels = wait_for_modal(&mut nested);
+    assert_has(
+        &labels,
+        &["Replace the saved scene \u{201c}Screen + camera\u{201d}?"],
+    );
+    click_named(&mut nested, "modal-confirm");
+    poll(Duration::from_secs(10), "Screen + camera replaced", || {
+        (saved_scene_layers(&nested, "Screen + camera") == 1).then_some(())
+    });
+
+    // Delete… (the last) on Close-up: asked, then gone.
+    open_scene_actions(&mut nested, 2);
+    nested.keys(&["-k", "Down", "-k", "Down", "-k", "Down", "-k", "Return"]);
+    let labels = wait_for_modal(&mut nested);
+    assert_has(
+        &labels,
+        &[
+            "Peel off this scene?",
+            "Delete the scene \u{201c}Close-up\u{201d} from this computer.",
+            "Delete scene",
+        ],
+    );
+    nested.screenshot("delete");
+    click_named(&mut nested, "modal-confirm");
+    wait_for_scenes(&nested, &project, &["Screen + camera", "Camera only"]);
+    assert_clean(nested.window(0));
+}
+
+/// Opens the scene menu, then the `⋮` of its scene `row` (from 0) with the
+/// keyboard: the menu focuses its first row, Down to `row`, Tab into it,
+/// Enter. Answers the scene menu's labels, its open actions' included.
+fn open_scene_actions(nested: &mut Nested, row: usize) -> Vec<String> {
+    let (x, y) = center(region(nested.window(0), "scene-bar"));
+    nested.pointer().click(x, y);
+    nested.window(0).wait_idle();
+    let mut keys = Vec::new();
+    for _ in 0..row {
+        keys.extend(["-k", "Down"]);
+    }
+    keys.extend(["-k", "Tab", "-k", "Return"]);
+    nested.keys(&keys);
+    poll(Duration::from_secs(10), "the scene's actions", || {
+        nested.window(0).wait_idle();
+        let labels = nested.window(0).labels("scene-list");
+        labels.iter().any(|l| l == "Duplicate").then_some(labels)
+    })
+}
+
+/// Waits for the confirmation modal (the scene menu closed under it) and
+/// answers its labels.
+fn wait_for_modal(nested: &mut Nested) -> Vec<String> {
+    let labels = poll(Duration::from_secs(10), "the confirmation", || {
+        nested.window(0).wait_idle();
+        let labels = nested.window(0).labels("modal");
+        (!labels.is_empty()).then_some(labels)
+    });
+    assert!(
+        nested.window(0).labels("scene-list").is_empty(),
+        "the scene menu stays open over the modal"
+    );
+    labels
+}
+
+fn click_named(nested: &mut Nested, name: &str) {
+    let (x, y) = center(region(nested.window(0), name));
+    nested.pointer().click(x, y);
+    nested.window(0).wait_idle();
+}
+
+/// Polls `qrec scene list` until the saved scenes are `names`, in the
+/// menu's order (10 s).
+fn wait_for_scenes(nested: &Nested, project: &Path, names: &[&str]) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let list = cli_ok(nested, project, &["scene", "list"]);
+        let now: Vec<&str> = list["data"]["scenes"]
+            .as_array()
+            .unwrap_or_else(|| panic!("no scenes: {list}"))
+            .iter()
+            .map(|s| s["name"].as_str().unwrap_or_default())
+            .collect();
+        if now == names {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the scenes are {now:?}, not {names:?}"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// How many layers the saved scene `name` holds (scenes.json).
+fn saved_scene_layers(nested: &Nested, name: &str) -> usize {
+    let file = nested.env.config_home().join("qrec").join("scenes.json");
+    let library: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    library["scenes"]
+        .as_array()
+        .and_then(|all| all.iter().find(|s| s["name"] == name))
+        .and_then(|s| s["scene"]["layers"].as_array())
+        .map_or_else(|| panic!("no scene {name}: {library}"), Vec::len)
+}
+
 // ------------------------------------------------------------------ S02
 
 /// S02's panel: Live, the project scene, the meters live, the inspector's

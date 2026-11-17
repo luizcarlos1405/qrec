@@ -24,7 +24,7 @@ use qrec_core::model::{Scene, VideoSource};
 use qrec_core::scenes::{self, SceneRow};
 use qrec_core::view::panel::SceneBar;
 
-use super::menus::{self, Menu};
+use super::menus;
 use crate::Ctx;
 use crate::guarded;
 use crate::widgets::keycap::{self, CapSize, CapVariant};
@@ -180,6 +180,17 @@ fn foot_item(label: &str, icon: Option<&str>) -> gtk::Button {
     content.append(&text);
     button.set_child(Some(&content));
     button
+}
+
+/// A scene's action that closes the scene menu, then sends `cmd`
+/// (`scenes.run`, the command's JSON as its target).
+fn closing_item(label: &str, cmd: &Command) -> gio::MenuItem {
+    let item = gio::MenuItem::new(Some(label), None);
+    item.set_action_and_target_value(
+        Some(&format!("{PREFIX}.run")),
+        Some(&cmd.to_json().to_string().to_variant()),
+    );
+    item
 }
 
 impl SceneBarView {
@@ -508,6 +519,25 @@ impl SceneBarView {
             inner.open_save(SaveMode::Rename(name));
         }));
         group.add_action(&rename);
+        // Replace and Delete, from a row's actions: the scene menu closes
+        // before the core's confirmation can show.
+        let run = gio::SimpleAction::new("run", Some(glib::VariantTy::STRING));
+        let weak = Rc::downgrade(inner);
+        run.connect_activate(guarded!("scenes: a scene's action", move |_, target| {
+            let (Some(inner), Some(json)) =
+                (weak.upgrade(), target.and_then(|t| t.get::<String>()))
+            else {
+                return;
+            };
+            match serde_json::from_str::<Command>(&json) {
+                Ok(cmd) => {
+                    inner.menu.popdown();
+                    inner.ctx.store.dispatch(cmd);
+                }
+                Err(e) => tracing::warn!("scenes: a scene action's command doesn't parse: {e}"),
+            }
+        }));
+        group.add_action(&run);
         inner.root.insert_action_group(PREFIX, Some(&group));
         // The palette's "Save scene as…".
         let weak = Rc::downgrade(inner);
@@ -685,39 +715,44 @@ impl Inner {
             caps.set_valign(gtk::Align::Center);
             line.append(&caps);
         }
-        // The scene's own actions (C25), revealed on hover.
-        let actions = Menu::new();
-        let rename_target = row.name.to_variant();
-        actions.update(String::new(), |menu| {
-            let rename = gio::MenuItem::new(Some("Rename\u{2026}"), None);
-            rename.set_action_and_target_value(
-                Some(&format!("{PREFIX}.rename")),
-                Some(&rename_target),
-            );
-            menu.append_item(&rename);
-            menu.append_item(&menus::command_item(
-                "Replace with current scene",
-                Some(&Command::SceneSave {
-                    name: Some(row.name.clone()),
-                }),
-            ));
-            menu.append_item(&menus::command_item(
-                "Duplicate",
-                Some(&Command::SceneDuplicate {
-                    name: row.name.clone(),
-                    to: None,
-                }),
-            ));
-            let danger = gio::Menu::new();
-            danger.append_item(&menus::command_item(
-                "Delete\u{2026}",
-                Some(&Command::SceneDelete {
-                    name: row.name.clone(),
-                }),
-            ));
-            menu.append_section(None, &danger);
-        });
-        let more = menus::menu_button(&actions, &["flat", "icon-24", "scene-more"], "More");
+        // The scene's own actions (C25), revealed on hover; built with the
+        // row (the rows are rebuilt when they change). Rename, Replace and
+        // Delete close the scene menu first: the save popover and the
+        // confirmation show where it was. Duplicate leaves it open, so the
+        // copy shows up under the original.
+        let actions = gio::Menu::new();
+        let rename = gio::MenuItem::new(Some("Rename\u{2026}"), None);
+        rename.set_action_and_target_value(
+            Some(&format!("{PREFIX}.rename")),
+            Some(&row.name.to_variant()),
+        );
+        actions.append_item(&rename);
+        actions.append_item(&closing_item(
+            "Replace with current scene",
+            &Command::SceneSave {
+                name: Some(row.name.clone()),
+            },
+        ));
+        actions.append_item(&menus::command_item(
+            "Duplicate",
+            Some(&Command::SceneDuplicate {
+                name: row.name.clone(),
+                to: None,
+            }),
+        ));
+        let danger = gio::Menu::new();
+        danger.append_item(&closing_item(
+            "Delete\u{2026}",
+            &Command::SceneDelete {
+                name: row.name.clone(),
+            },
+        ));
+        actions.append_section(None, &danger);
+        let more = crate::widgets::button::menu_button(
+            &actions,
+            &["flat", "icon-24", "scene-more"],
+            "More",
+        );
         more.set_icon_name("qrec-ellipsis-vertical-symbolic");
         more.set_valign(gtk::Align::Center);
         menus::set_menu_label(&more, &format!("More for scene {}", row.name));
