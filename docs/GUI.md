@@ -3788,7 +3788,7 @@ devShells.default = pkgs.mkShell {
 - `postInstall` (issue #9): the AppStream metainfo,
   `share/metainfo/com.rsensato.qrec.metainfo.xml` (`data/`: the app id,
   the desktop entry as its launchable, the design frames as screenshots,
-  MIT), checked with `appstreamcli validate --no-net` (`appstream` in
+  GPL-3.0-or-later), checked with `appstreamcli validate --no-net` (`appstream` in
   `nativeBuildInputs`), and Qrec's own license in
   `share/licenses/qrec/LICENSE`.
 - `cargoTestFlags` unchanged (core tests only in the sandbox).

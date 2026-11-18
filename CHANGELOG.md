@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Qrec is now under the GNU General Public License, version 3 or later
+  (GPL-3.0-or-later), instead of the MIT license. Releases up to 0.2.1
+  stay under the MIT license.
+
 ## 0.2.1 (2026-11-17)
 
 A fix for the saved scenes' menu.

@@ -416,5 +416,7 @@ A camera that hangs mid-take is now lost after 3 s instead (SPEC §16).
 
 ## License
 
-Qrec is under the MIT license (`LICENSE`), © 2026 RSensato. The icons and
-fonts it ships are under their own licenses: see `THIRD-PARTY.md`.
+Qrec is free software under the GNU General Public License, version 3 or
+(at your option) any later version (`LICENSE`), © 2026 RSensato. Releases
+up to 0.2.1 were under the MIT license. The icons and fonts it ships are
+under their own licenses: see `THIRD-PARTY.md`.

@@ -280,7 +280,7 @@
           meta = {
             description = "Quick screen and camera recorder with a built-in editor";
             homepage = "https://github.com/luizcarlos1405/qrec";
-            license = pkgs.lib.licenses.mit;
+            license = pkgs.lib.licenses.gpl3Plus;
             mainProgram = "qrec";
             platforms = pkgs.lib.platforms.linux;
           };

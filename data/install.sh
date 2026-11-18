@@ -7,7 +7,7 @@
 #   share/icons/hicolor/scalable/apps/com.rsensato.qrec.svg
 #   share/icons/hicolor/{16x16,32x32,48x48,64x64,128x128,256x256,512x512}/apps/com.rsensato.qrec.png
 #   share/icons/hicolor/symbolic/apps/com.rsensato.qrec-symbolic.svg
-#   share/licenses/qrec/LICENSE (Qrec's, MIT)
+#   share/licenses/qrec/LICENSE (Qrec's, GPL-3.0-or-later)
 #   share/licenses/qrec/LICENSE-lucide.txt
 #
 # The file and icon names are the app id (SPEC's App ID row; the window's

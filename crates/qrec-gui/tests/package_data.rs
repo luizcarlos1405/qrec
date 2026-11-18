@@ -79,14 +79,14 @@ fn the_metainfo_names_the_app() {
     for wanted in [
         format!("<id>{APP_ID}</id>"),
         format!("<launchable type=\"desktop-id\">{APP_ID}.desktop</launchable>"),
-        "<project_license>MIT</project_license>".to_owned(),
+        "<project_license>GPL-3.0-or-later</project_license>".to_owned(),
         "<binary>qrec</binary>".to_owned(),
     ] {
         assert!(text.contains(&wanted), "{}: no {wanted}", path.display());
     }
     let cargo = fs::read_to_string(repo().join("Cargo.toml")).expect("the workspace manifest");
     assert!(
-        cargo.contains("license = \"MIT\""),
+        cargo.contains("license = \"GPL-3.0-or-later\""),
         "the metainfo's project_license is the workspace's"
     );
 }

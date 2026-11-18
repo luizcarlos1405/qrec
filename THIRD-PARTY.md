@@ -1,7 +1,7 @@
 # Third-party notices
 
-Qrec's own code is under the MIT license (`LICENSE`). These parts come from
-others, under their own licenses, and ship with every package:
+Qrec's own code is under the GNU GPL, version 3 or later (`LICENSE`). These
+parts come from others, under their own licenses, and ship with every package:
 
 | What | Where | License |
 | --- | --- | --- |

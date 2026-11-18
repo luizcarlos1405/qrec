@@ -7,7 +7,7 @@ default-members = ["crates/qrec"]
 version = "0.2.1"
 edition = "2024"
 rust-version = "1.92"
-license = "MIT"
+license = "GPL-3.0-or-later"
 repository = "https://github.com/luizcarlos1405/qrec"
 authors = ["RSensato"]
 
